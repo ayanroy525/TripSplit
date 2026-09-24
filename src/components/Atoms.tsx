@@ -1,7 +1,7 @@
 import React from "react";
 import { Crown, Eye, UserCircle2, X } from "lucide-react";
 import { Member, Role } from "../types";
-import { C, CATEGORY_META } from "../utils/constants";
+import { C, CATEGORY_META, getCategoryMeta } from "../utils/constants";
 
 export function Avatar({
   member,
@@ -84,8 +84,16 @@ export function RoleBadge({ role }: { role: Role }) {
   );
 }
 
-export function CategoryBadge({ category, size = "md" }: { category: string; size?: "sm" | "md" }) {
-  const meta = CATEGORY_META[category] || CATEGORY_META["Other"];
+export function CategoryBadge({
+  category,
+  title,
+  size = "md",
+}: {
+  category: string;
+  title?: string;
+  size?: "sm" | "md";
+}) {
+  const meta = getCategoryMeta(category, title);
   const Icon = meta.icon;
 
   return (
@@ -96,8 +104,8 @@ export function CategoryBadge({ category, size = "md" }: { category: string; siz
         gap: size === "sm" ? 4 : 6,
         fontSize: size === "sm" ? 11.5 : 12.5,
         fontWeight: 700,
-        color: meta.color,
-        background: `${meta.color}15`,
+        color: meta.text || meta.color,
+        background: meta.bg || `${meta.color}15`,
         border: `1px solid ${meta.color}35`,
         borderRadius: 999,
         padding: size === "sm" ? "2px 8px" : "4px 10px",
@@ -105,7 +113,7 @@ export function CategoryBadge({ category, size = "md" }: { category: string; siz
       }}
     >
       <Icon size={size === "sm" ? 12 : 14} />
-      {category}
+      {meta.resolvedCategory}
     </span>
   );
 }

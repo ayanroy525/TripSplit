@@ -21,6 +21,7 @@ import {
   mapActivityRowToActivity,
   mapActivityToRow,
 } from "./supabaseClient";
+import { enqueueOfflineMutation } from "./offlineSync";
 
 export type Unsubscribe = () => void;
 
@@ -94,15 +95,22 @@ export function extractTripDocData(trip: Trip): Record<string, any> {
 
 /**
  * Saves or updates an entire Trip including all sub-tables into Supabase.
+ * If offline or if the network request fails, transparently enqueues mutation for auto-sync.
  */
 export async function saveTripToDatabase(trip: Trip): Promise<void> {
+  if (typeof navigator !== "undefined" && !navigator.onLine) {
+    enqueueOfflineMutation("SAVE_TRIP_SNAPSHOT", trip.id, trip);
+    return;
+  }
+
   try {
     // 1. Root Trip
     const tripRow = mapTripToRow(trip);
     const { error: tripError } = await supabase.from("trips").upsert(tripRow);
     if (tripError) {
-      console.error("Supabase trip upsert error:", tripError);
-      throw new Error(tripError.message);
+      console.warn("Supabase trip upsert notice (queuing offline):", tripError.message);
+      enqueueOfflineMutation("SAVE_TRIP_SNAPSHOT", trip.id, trip);
+      return;
     }
 
     // 2. Members
@@ -141,8 +149,8 @@ export async function saveTripToDatabase(trip: Trip): Promise<void> {
       }
     }
   } catch (error: any) {
-    console.error(`Error saving trip ${trip.id} to Supabase:`, error);
-    throw error;
+    console.warn(`Network error saving trip ${trip.id} to Supabase, queued offline:`, error);
+    enqueueOfflineMutation("SAVE_TRIP_SNAPSHOT", trip.id, trip);
   }
 }
 
@@ -355,97 +363,187 @@ export function subscribeToAllTrips(
  */
 
 export async function addExpenseToDatabase(tripId: string, expense: Expense): Promise<void> {
-  const row = mapExpenseToRow(tripId, expense);
-  const { error } = await supabase.from("expenses").upsert(row);
-  if (error) {
-    console.error("Error adding expense to Supabase:", error);
-    throw new Error(error.message);
+  if (typeof navigator !== "undefined" && !navigator.onLine) {
+    enqueueOfflineMutation("SAVE_EXPENSE", tripId, expense);
+    return;
+  }
+  try {
+    const row = mapExpenseToRow(tripId, expense);
+    const { error } = await supabase.from("expenses").upsert(row);
+    if (error) {
+      console.warn("Error adding expense to Supabase (queuing offline):", error.message);
+      enqueueOfflineMutation("SAVE_EXPENSE", tripId, expense);
+    }
+  } catch (err) {
+    console.warn("Network error adding expense (queuing offline):", err);
+    enqueueOfflineMutation("SAVE_EXPENSE", tripId, expense);
   }
 }
 
 export async function updateExpenseInDatabase(tripId: string, expense: Expense): Promise<void> {
-  const row = mapExpenseToRow(tripId, expense);
-  const { error } = await supabase.from("expenses").upsert(row);
-  if (error) {
-    console.error("Error updating expense in Supabase:", error);
-    throw new Error(error.message);
+  if (typeof navigator !== "undefined" && !navigator.onLine) {
+    enqueueOfflineMutation("SAVE_EXPENSE", tripId, expense);
+    return;
+  }
+  try {
+    const row = mapExpenseToRow(tripId, expense);
+    const { error } = await supabase.from("expenses").upsert(row);
+    if (error) {
+      console.warn("Error updating expense in Supabase (queuing offline):", error.message);
+      enqueueOfflineMutation("SAVE_EXPENSE", tripId, expense);
+    }
+  } catch (err) {
+    console.warn("Network error updating expense (queuing offline):", err);
+    enqueueOfflineMutation("SAVE_EXPENSE", tripId, expense);
   }
 }
 
-export async function deleteExpenseFromDatabase(_tripId: string, expenseId: string): Promise<void> {
-  const { error } = await supabase.from("expenses").delete().eq("id", expenseId);
-  if (error) {
-    console.error("Error deleting expense from Supabase:", error);
-    throw new Error(error.message);
+export async function deleteExpenseFromDatabase(tripId: string, expenseId: string): Promise<void> {
+  if (typeof navigator !== "undefined" && !navigator.onLine) {
+    enqueueOfflineMutation("DELETE_EXPENSE", tripId, { expenseId });
+    return;
+  }
+  try {
+    const { error } = await supabase.from("expenses").delete().eq("id", expenseId);
+    if (error) {
+      console.warn("Error deleting expense from Supabase (queuing offline):", error.message);
+      enqueueOfflineMutation("DELETE_EXPENSE", tripId, { expenseId });
+    }
+  } catch (err) {
+    console.warn("Network error deleting expense (queuing offline):", err);
+    enqueueOfflineMutation("DELETE_EXPENSE", tripId, { expenseId });
   }
 }
 
 export async function addPaymentToDatabase(tripId: string, payment: Payment): Promise<void> {
-  const row = mapPaymentToRow(tripId, payment);
-  const { error } = await supabase.from("payments").upsert(row);
-  if (error) {
-    console.error("Error adding payment to Supabase:", error);
-    throw new Error(error.message);
+  if (typeof navigator !== "undefined" && !navigator.onLine) {
+    enqueueOfflineMutation("RECORD_PAYMENT", tripId, payment);
+    return;
+  }
+  try {
+    const row = mapPaymentToRow(tripId, payment);
+    const { error } = await supabase.from("payments").upsert(row);
+    if (error) {
+      console.warn("Error adding payment to Supabase (queuing offline):", error.message);
+      enqueueOfflineMutation("RECORD_PAYMENT", tripId, payment);
+    }
+  } catch (err) {
+    console.warn("Network error adding payment (queuing offline):", err);
+    enqueueOfflineMutation("RECORD_PAYMENT", tripId, payment);
   }
 }
 
 export async function updatePaymentInDatabase(tripId: string, payment: Payment): Promise<void> {
-  const row = mapPaymentToRow(tripId, payment);
-  const { error } = await supabase.from("payments").upsert(row);
-  if (error) {
-    console.error("Error updating payment in Supabase:", error);
-    throw new Error(error.message);
+  if (typeof navigator !== "undefined" && !navigator.onLine) {
+    enqueueOfflineMutation("RECORD_PAYMENT", tripId, payment);
+    return;
+  }
+  try {
+    const row = mapPaymentToRow(tripId, payment);
+    const { error } = await supabase.from("payments").upsert(row);
+    if (error) {
+      console.warn("Error updating payment in Supabase (queuing offline):", error.message);
+      enqueueOfflineMutation("RECORD_PAYMENT", tripId, payment);
+    }
+  } catch (err) {
+    console.warn("Network error updating payment (queuing offline):", err);
+    enqueueOfflineMutation("RECORD_PAYMENT", tripId, payment);
   }
 }
 
-export async function deletePaymentFromDatabase(_tripId: string, paymentId: string): Promise<void> {
-  const { error } = await supabase.from("payments").delete().eq("id", paymentId);
-  if (error) {
-    console.error("Error deleting payment from Supabase:", error);
-    throw new Error(error.message);
+export async function deletePaymentFromDatabase(tripId: string, paymentId: string): Promise<void> {
+  if (typeof navigator !== "undefined" && !navigator.onLine) {
+    enqueueOfflineMutation("DELETE_PAYMENT", tripId, { paymentId });
+    return;
+  }
+  try {
+    const { error } = await supabase.from("payments").delete().eq("id", paymentId);
+    if (error) {
+      console.warn("Error deleting payment from Supabase (queuing offline):", error.message);
+      enqueueOfflineMutation("DELETE_PAYMENT", tripId, { paymentId });
+    }
+  } catch (err) {
+    console.warn("Network error deleting payment (queuing offline):", err);
+    enqueueOfflineMutation("DELETE_PAYMENT", tripId, { paymentId });
   }
 }
 
 export async function addMemberToDatabase(tripId: string, member: Member): Promise<void> {
-  const row = mapMemberToRow(tripId, member);
-  const { error } = await supabase.from("trip_members").upsert(row);
-  if (error) {
-    console.error("Error adding member to Supabase:", error);
-    throw new Error(error.message);
+  if (typeof navigator !== "undefined" && !navigator.onLine) {
+    enqueueOfflineMutation("SAVE_MEMBER", tripId, member);
+    return;
+  }
+  try {
+    const row = mapMemberToRow(tripId, member);
+    const { error } = await supabase.from("trip_members").upsert(row);
+    if (error) {
+      console.warn("Error adding member to Supabase (queuing offline):", error.message);
+      enqueueOfflineMutation("SAVE_MEMBER", tripId, member);
+    }
+  } catch (err) {
+    console.warn("Network error adding member (queuing offline):", err);
+    enqueueOfflineMutation("SAVE_MEMBER", tripId, member);
   }
 }
 
 export async function updateMemberInDatabase(tripId: string, member: Member): Promise<void> {
-  const row = mapMemberToRow(tripId, member);
-  const { error } = await supabase.from("trip_members").upsert(row);
-  if (error) {
-    console.error("Error updating member in Supabase:", error);
-    throw new Error(error.message);
+  if (typeof navigator !== "undefined" && !navigator.onLine) {
+    enqueueOfflineMutation("SAVE_MEMBER", tripId, member);
+    return;
+  }
+  try {
+    const row = mapMemberToRow(tripId, member);
+    const { error } = await supabase.from("trip_members").upsert(row);
+    if (error) {
+      console.warn("Error updating member in Supabase (queuing offline):", error.message);
+      enqueueOfflineMutation("SAVE_MEMBER", tripId, member);
+    }
+  } catch (err) {
+    console.warn("Network error updating member (queuing offline):", err);
+    enqueueOfflineMutation("SAVE_MEMBER", tripId, member);
   }
 }
 
-export async function deleteMemberFromDatabase(_tripId: string, memberId: string): Promise<void> {
-  const { error } = await supabase.from("trip_members").delete().eq("id", memberId);
-  if (error) {
-    console.error("Error deleting member from Supabase:", error);
-    throw new Error(error.message);
+export async function deleteMemberFromDatabase(tripId: string, memberId: string): Promise<void> {
+  if (typeof navigator !== "undefined" && !navigator.onLine) {
+    enqueueOfflineMutation("DELETE_MEMBER", tripId, { memberId });
+    return;
+  }
+  try {
+    const { error } = await supabase.from("trip_members").delete().eq("id", memberId);
+    if (error) {
+      console.warn("Error deleting member from Supabase (queuing offline):", error.message);
+      enqueueOfflineMutation("DELETE_MEMBER", tripId, { memberId });
+    }
+  } catch (err) {
+    console.warn("Network error deleting member (queuing offline):", err);
+    enqueueOfflineMutation("DELETE_MEMBER", tripId, { memberId });
   }
 }
 
 export async function addActivityToDatabase(tripId: string, activity: Activity): Promise<void> {
-  const row = mapActivityToRow(tripId, activity);
-  const { error } = await supabase.from("activities").upsert(row);
-  if (error) {
-    console.error("Error adding activity to Supabase:", error);
-    throw new Error(error.message);
+  try {
+    const row = mapActivityToRow(tripId, activity);
+    await supabase.from("activities").upsert(row);
+  } catch (err) {
+    console.warn("Network error adding activity:", err);
   }
 }
 
 export async function deleteTripFromDatabase(tripId: string): Promise<void> {
-  const { error } = await supabase.from("trips").delete().eq("id", tripId);
-  if (error) {
-    console.error("Error deleting trip from Supabase:", error);
-    throw new Error(error.message);
+  if (typeof navigator !== "undefined" && !navigator.onLine) {
+    enqueueOfflineMutation("DELETE_TRIP", tripId, {});
+    return;
+  }
+  try {
+    const { error } = await supabase.from("trips").delete().eq("id", tripId);
+    if (error) {
+      console.warn("Error deleting trip from Supabase (queuing offline):", error.message);
+      enqueueOfflineMutation("DELETE_TRIP", tripId, {});
+    }
+  } catch (err) {
+    console.warn("Network error deleting trip (queuing offline):", err);
+    enqueueOfflineMutation("DELETE_TRIP", tripId, {});
   }
 }
 

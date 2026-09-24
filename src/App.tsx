@@ -1,71 +1,39 @@
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState } from "react";
 import {
-  Plus,
-  Receipt,
-  Scale,
-  PieChart as PieIcon,
-  Users,
-  RotateCcw,
-  Sparkles,
   MapPin,
   ChevronDown,
   MoreVertical,
   Banknote,
   Compass,
-  ArrowRight,
-  Shield,
-  Activity as ActivityIcon,
+  Plus,
 } from "lucide-react";
-import confetti from "canvas-confetti";
 import {
-  Trip,
   Member,
   Expense,
-  Payment,
-  SimplifiedDebt,
   NavTab,
+  WhatsAppNotificationPayload,
 } from "./types";
-import {
-  money,
-  nowStr,
-  uid,
-  computeBalances,
-  simplifyDebts,
-} from "./utils/calculations";
-import {
-  loadStateFromStorage,
-  saveStateToStorage,
-  loadUserLocalState,
-  saveUserLocalState,
-  isUserAuthorizedForTrip,
-  resetStorageState,
-  subscribeToUserTrips,
-  subscribeToAllTrips,
-  saveTripToDatabase,
-  deleteTripFromDatabase,
-  addExpenseToDatabase,
-  updateExpenseInDatabase,
-  deleteExpenseFromDatabase,
-  addPaymentToDatabase,
-  updatePaymentInDatabase,
-  addMemberToDatabase,
-  updateMemberInDatabase,
-  deleteMemberFromDatabase,
-  addActivityToDatabase,
-  DEFAULT_AUTH_USER,
-} from "./utils/storage";
-import { C } from "./utils/constants";
-import { Avatar } from "./components/Atoms";
+import { useAuth } from "./context/AuthContext";
+import { useNotifications } from "./context/NotificationContext";
+import { useTripData } from "./hooks/useTripData";
+import { useTripActions } from "./hooks/useTripActions";
+
+// Views
 import { HomeDashboardView } from "./components/HomeDashboardView";
 import { ExpensesListView } from "./components/ExpensesListView";
 import { BalanceView } from "./components/BalanceView";
 import { AnalyticsView } from "./components/AnalyticsView";
 import { PeopleView } from "./components/PeopleView";
 import { ActivityLogView } from "./components/ActivityLogView";
+import { EmptyTripStateView } from "./components/EmptyTripStateView";
+import { LoginPage } from "./components/LoginPage";
+
+// Shell & Navigation Components
 import { BottomNavigation } from "./components/BottomNavigation";
 import { NotificationBell } from "./components/NotificationBell";
-import { NotificationCenterModal } from "./components/NotificationCenterModal";
 import { NotificationToastContainer } from "./components/NotificationToastContainer";
+
+// Modals
 import { ExpenseFormModal } from "./components/ExpenseFormModal";
 import { SettleUpModal } from "./components/SettleUpModal";
 import { MemberManagementModal } from "./components/MemberManagementModal";
@@ -75,41 +43,74 @@ import { TripsHubModal } from "./components/TripsHubModal";
 import { ShareExportModal } from "./components/ShareExportModal";
 import { TripMoreMenuModal } from "./components/TripMoreMenuModal";
 import { UserProfileModal } from "./components/UserProfileModal";
+import { NotificationCenterModal } from "./components/NotificationCenterModal";
 import { WhatsAppNotificationModal } from "./components/WhatsAppNotificationModal";
-import { LoginPage } from "./components/LoginPage";
-import { EmptyTripStateView } from "./components/EmptyTripStateView";
 import { JoinTripModal } from "./components/JoinTripModal";
 import { ResetPasswordModal } from "./components/ResetPasswordModal";
-import { useAuth } from "./context/AuthContext";
-import { useNotifications } from "./context/NotificationContext";
 
 export default function App() {
-  const [isHydrated, setIsHydrated] = useState(false);
   const {
     currentUser: authUser,
-    accounts: allUsers,
-    updateProfile: updateAuthUser,
     logout,
   } = useAuth();
   const { notify } = useNotifications();
 
-  // Core Trip State
-  const [trips, setTrips] = useState<Trip[]>([]);
-  const [activeTripId, setActiveTripId] = useState<string>("");
-  const [currentUserId, setCurrentUserId] = useState<string>(() => authUser?.id || "");
+  // 1. Data Layer Hook
+  const {
+    isHydrated,
+    trips,
+    setTrips,
+    activeTripId,
+    setActiveTripId,
+    setCurrentUserId,
+    userTrips,
+    trip,
+    currentUser,
+    updateActiveTrip,
+    activeExpenses,
+    totalTripSpent,
+    paidShare,
+    netBalances,
+    simplifiedDebts,
+    userStats,
+    memberStatsObj,
+    initialJoinCode,
+    setInitialJoinCode,
+    autoOpenJoinModal,
+    setAutoOpenJoinModal,
+  } = useTripData({ authUser, onNotify: notify });
 
-  // Keep currentUserId in sync with authUser.id
-  useEffect(() => {
-    const activeUid = authUser?.id;
-    if (activeUid && activeUid !== currentUserId) {
-      setCurrentUserId(activeUid);
-    }
-  }, [authUser?.id]);
+  // 2. Action Layer Hook
+  const {
+    handleSaveExpense,
+    handleDeleteExpense,
+    handleRecordPayment,
+    handleConfirmPayment,
+    handleRejectPayment,
+    handleSaveMember,
+    handleDeleteMember,
+    handleCreateTrip,
+    handleDeleteTrip,
+    handleConfirmReset,
+    buildWhatsAppStatementPayload,
+    buildWhatsAppReminderPayload,
+  } = useTripActions({
+    trip,
+    trips,
+    currentUser,
+    authUser,
+    activeTripId,
+    setTrips,
+    setActiveTripId,
+    updateActiveTrip,
+    notify,
+    paidShare,
+    netBalances,
+    totalTripSpent,
+  });
 
-  // Navigation tab state: "home" | "expenses" | "settlement" | "analytics" | "people" | "activity"
-  const [activeTab, setActiveTab] = useState<"home" | "expenses" | "settlement" | "analytics" | "people" | "activity">("home");
-
-  // Modal dialog states
+  // 3. UI Presentation States
+  const [activeTab, setActiveTab] = useState<NavTab>("home");
   const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
   const [isSettleModalOpen, setIsSettleModalOpen] = useState(false);
@@ -124,598 +125,18 @@ export default function App() {
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [isUserProfileOpen, setIsUserProfileOpen] = useState(false);
   const [isWhatsAppModalOpen, setIsWhatsAppModalOpen] = useState(false);
-  const [whatsAppPayload, setWhatsAppPayload] = useState<any>(null);
+  const [whatsAppPayload, setWhatsAppPayload] = useState<WhatsAppNotificationPayload | null>(null);
   const [isJoinTripModalOpen, setIsJoinTripModalOpen] = useState(false);
-  const [initialJoinCode, setInitialJoinCode] = useState("");
 
-  // 1. HYDRATION & REAL-TIME SUPABASE REALTIME LISTENER (STRICT USER ISOLATION)
-  useEffect(() => {
-    let isMounted = true;
-    const effectiveUid = authUser?.id;
-
-    if (!effectiveUid || !authUser) {
-      setTrips([]);
-      setActiveTripId("");
-      setIsHydrated(true);
-      return;
+  // Sync autoOpenJoinModal from deep-link routing
+  React.useEffect(() => {
+    if (autoOpenJoinModal) {
+      setIsJoinTripModalOpen(true);
+      setAutoOpenJoinModal(false);
     }
+  }, [autoOpenJoinModal, setAutoOpenJoinModal]);
 
-    // Load user-namespaced local cache with strict authorization check
-    const loaded = loadUserLocalState(effectiveUid);
-    if (loaded.trips && loaded.trips.length > 0) {
-      setTrips(loaded.trips);
-      setActiveTripId(loaded.activeTripId || loaded.trips[0].id);
-    } else {
-      setTrips([]);
-      setActiveTripId("");
-    }
-
-    // Parse URL deep links & invite links
-    const handleUrlRouting = (currentAuthorizedTrips: Trip[]) => {
-      const hash = window.location.hash || "";
-      const search = window.location.search || "";
-      const pathname = window.location.pathname || "";
-
-      // A. Invite Links: #join?code=..., #join?tripId=..., ?code=..., ?join=...
-      let detectedInviteCode = "";
-      if (hash.includes("join?")) {
-        const params = new URLSearchParams(hash.split("join?")[1]);
-        detectedInviteCode = params.get("code") || "";
-        const tripIdParam = params.get("tripId");
-        if (!detectedInviteCode && tripIdParam) {
-          detectedInviteCode = `TRIP-${tripIdParam.slice(-6).toUpperCase()}`;
-        }
-      } else if (search.includes("code=") || search.includes("join=")) {
-        const params = new URLSearchParams(search);
-        detectedInviteCode = params.get("code") || params.get("join") || "";
-      }
-
-      if (detectedInviteCode) {
-        setInitialJoinCode(detectedInviteCode.toUpperCase());
-        setIsJoinTripModalOpen(true);
-        window.history.replaceState(null, "", window.location.pathname);
-        return;
-      }
-
-      // B. Trip Deep Links: #/trip/<id>, /trip/<id>, or ?tripId=<id>
-      let requestedTripId = "";
-      if (hash.startsWith("#/trip/") || hash.startsWith("#trip/")) {
-        requestedTripId = hash.replace(/^#\/?trip\//, "").split("?")[0].trim();
-      } else if (pathname.startsWith("/trip/")) {
-        requestedTripId = pathname.replace(/^\/trip\//, "").split("?")[0].trim();
-      } else if (search.includes("tripId=")) {
-        const params = new URLSearchParams(search);
-        requestedTripId = params.get("tripId") || "";
-      }
-
-      if (requestedTripId) {
-        const isAuthorized = currentAuthorizedTrips.some((t) => t.id === requestedTripId);
-        if (isAuthorized) {
-          setActiveTripId(requestedTripId);
-        } else if (currentAuthorizedTrips.length > 0) {
-          // Clean unauthorized parameter from URL and inform user
-          window.history.replaceState(null, "", window.location.pathname);
-          notify({
-            tripId: "system",
-            tripTitle: "Trip Access",
-            type: "system",
-            title: "Trip Not Accessible",
-            body: "You do not have access to this trip or it does not exist.",
-            actorName: "System",
-            actorAvatarColor: "#F59E0B",
-          });
-          setActiveTripId(currentAuthorizedTrips[0].id);
-        }
-      }
-    };
-
-    // Real-time Supabase listener for trips belonging ONLY to the authenticated user
-    const unsubscribeTrips = subscribeToUserTrips(
-      effectiveUid,
-      (userTrips) => {
-        if (!isMounted) return;
-        setTrips(userTrips);
-        
-        setActiveTripId((prev) => {
-          if (prev && userTrips.some((t) => t.id === prev)) {
-            return prev;
-          }
-          return userTrips.length > 0 ? userTrips[0].id : "";
-        });
-
-        handleUrlRouting(userTrips);
-        setIsHydrated(true);
-      },
-      (err) => {
-        console.warn("Database real-time subscription error:", err);
-        if (isMounted) setIsHydrated(true);
-      }
-    );
-
-    // Also listen to hashchange / popstate for browser navigation
-    const onHashChange = () => {
-      handleUrlRouting(trips);
-    };
-    window.addEventListener("hashchange", onHashChange);
-    window.addEventListener("popstate", onHashChange);
-
-    return () => {
-      isMounted = false;
-      window.removeEventListener("hashchange", onHashChange);
-      window.removeEventListener("popstate", onHashChange);
-      unsubscribeTrips();
-    };
-  }, [authUser?.id]);
-
-  // Read-only backup snapshot in user-namespaced localStorage
-  useEffect(() => {
-    const effectiveUid = authUser?.id;
-    if (!isHydrated || !effectiveUid) return;
-
-    saveUserLocalState(effectiveUid, {
-      trips,
-      activeTripId,
-    });
-  }, [trips, activeTripId, currentUserId, authUser?.id, isHydrated]);
-
-  // Active user's trips filter with strict authorization
-  const userTrips = useMemo(() => {
-    const effectiveUid = authUser?.id || currentUserId;
-    if (!effectiveUid) return [];
-    return trips.filter((t) => isUserAuthorizedForTrip(t, effectiveUid));
-  }, [trips, authUser?.id, currentUserId]);
-
-  // Active Trip resolution
-  const trip = useMemo(() => {
-    if (userTrips.length === 0) return null;
-    const found = userTrips.find((t) => t.id === activeTripId);
-    return found || userTrips[0] || null;
-  }, [userTrips, activeTripId]);
-
-  // Helper to update active trip locally
-  const updateActiveTrip = (updatedTrip: Trip) => {
-    setTrips((prev) => prev.map((t) => (t.id === updatedTrip.id ? updatedTrip : t)));
-  };
-
-  // Current active member representation (NEVER fall back to another user's identity)
-  const currentUser: Member = useMemo(() => {
-    const effectiveUid = authUser?.id || currentUserId || "user_guest";
-    const effectiveName = authUser?.name || "Traveler";
-    const effectiveColor = authUser?.avatarColor || "#0F6B65";
-    const effectivePhone = authUser?.phone || "";
-
-    if (trip && trip.members && trip.members.length > 0) {
-      const match = trip.members.find(
-        (m) =>
-          m.id === effectiveUid ||
-          m.userId === effectiveUid ||
-          (authUser?.id && (m.id === authUser.id || m.userId === authUser.id))
-      );
-      if (match) return match;
-    }
-
-    return {
-      id: effectiveUid,
-      userId: effectiveUid,
-      name: effectiveName,
-      role: trip?.ownerId === effectiveUid ? ("owner" as const) : ("member" as const),
-      avatarColor: effectiveColor,
-      phone: effectivePhone,
-      joinedAt: new Date().toISOString(),
-      status: "active" as const,
-    };
-  }, [trip, currentUserId, authUser]);
-
-  // FINANCIAL ENGINE CALCULATIONS
-  const activeExpenses = useMemo(
-    () => (trip?.expenses || []).filter((e) => !e.deleted),
-    [trip?.expenses]
-  );
-  
-  const totalTripSpent = useMemo(
-    () => activeExpenses.reduce((s, e) => s + e.amount, 0),
-    [activeExpenses]
-  );
-
-  // Compute individual balances (Paid, Share) and final Net
-  const { paidShare, net: netBalances } = useMemo(() => {
-    if (!trip) return { paidShare: {}, net: {} };
-    return computeBalances(trip.members || [], trip.expenses || [], trip.payments || []);
-  }, [trip]);
-
-  // Simplified debts (greedy Min-Cash-Flow)
-  const simplifiedDebts: SimplifiedDebt[] = useMemo(() => {
-    return simplifyDebts(netBalances);
-  }, [netBalances]);
-
-  // User Stats
-  const userStats = useMemo(() => {
-    const ps = paidShare[currentUser.id] || { paid: 0, share: 0 };
-    return {
-      paid: ps.paid,
-      share: ps.share,
-      net: netBalances[currentUser.id] || 0,
-    };
-  }, [paidShare, netBalances, currentUser.id]);
-
-  // Member stats object for PeopleView
-  const memberStatsObj = useMemo(() => {
-    const res: Record<string, { paid: number; share: number; net: number }> = {};
-    (trip?.members || []).forEach((m) => {
-      const ps = paidShare[m.id] || { paid: 0, share: 0 };
-      res[m.id] = {
-        paid: ps.paid,
-        share: ps.share,
-        net: netBalances[m.id] || 0,
-      };
-    });
-    return res;
-  }, [trip?.members, paidShare, netBalances]);
-
-  // Confetti helper
-  const triggerConfetti = () => {
-    confetti({
-      particleCount: 50,
-      spread: 60,
-      origin: { y: 0.6 },
-      colors: ["#2DD4BF", "#E39A2D", "#8B5CF6", "#4ADE80"],
-    });
-  };
-
-  // EXPENSE HANDLERS: FIRESTORE PRIMARY WRITE PATH
-  const handleSaveExpense = async (savedExpense: Expense) => {
-    if (!trip) return;
-    const isEdit = trip.expenses.some((e) => e.id === savedExpense.id);
-
-    try {
-      const expenseToSave: Expense = {
-        ...savedExpense,
-        id: savedExpense.id || uid("exp"),
-        tripId: trip.id,
-        updatedAt: new Date().toISOString(),
-        createdAt: savedExpense.createdAt || new Date().toISOString(),
-      };
-
-      const actionText = isEdit
-        ? `updated "${expenseToSave.title}" — ${money(expenseToSave.amount, trip.currency)}`
-        : `added "${expenseToSave.title}" — ${money(expenseToSave.amount, trip.currency)}`;
-
-      const newActivity = {
-        id: uid("act"),
-        ts: nowStr(),
-        user: currentUser.name,
-        action: isEdit ? "updated" : "added",
-        detail: actionText,
-        actorId: currentUser.id,
-      };
-
-      // Awaited database operations: primary and authoritative write path
-      if (isEdit) {
-        await updateExpenseInDatabase(trip.id, expenseToSave);
-      } else {
-        await addExpenseToDatabase(trip.id, expenseToSave);
-      }
-      await addActivityToDatabase(trip.id, newActivity);
-
-      const updatedExpenses = isEdit
-        ? trip.expenses.map((e) => (e.id === expenseToSave.id ? expenseToSave : e))
-        : [expenseToSave, ...trip.expenses];
-
-      const updatedTripObj: Trip = {
-        ...trip,
-        expenses: updatedExpenses,
-        activities: [newActivity, ...(trip.activities || [])],
-      };
-      updateActiveTrip(updatedTripObj);
-
-      notify({
-        tripId: trip.id,
-        tripTitle: trip.title,
-        type: isEdit ? "expense_updated" : "expense_added",
-        title: isEdit ? "Expense Updated" : "New Expense Logged",
-        body: `${currentUser.name} ${actionText}`,
-        actorName: currentUser.name,
-        actorAvatarColor: currentUser.avatarColor,
-        amount: expenseToSave.amount,
-        currency: trip.currency,
-        targetTab: "expenses",
-      });
-
-      setIsExpenseModalOpen(false);
-      setEditingExpense(null);
-      triggerConfetti();
-    } catch (err: any) {
-      console.error("Failed to save expense to Database:", err);
-      alert(err?.message || "Failed to save expense. Please check your network connection and try again.");
-    }
-  };
-
-  const handleDeleteExpense = async (expenseId: string) => {
-    if (!trip) return;
-    const exp = trip.expenses.find((e) => e.id === expenseId);
-    if (!exp) return;
-
-    try {
-      const newActivity = {
-        id: uid("act"),
-        ts: nowStr(),
-        user: currentUser.name,
-        action: "deleted",
-        detail: `deleted "${exp.title}"`,
-        actorId: currentUser.id,
-      };
-
-      // Awaited database operations
-      await deleteExpenseFromDatabase(trip.id, expenseId);
-      await addActivityToDatabase(trip.id, newActivity);
-
-      const updatedExpenses = trip.expenses.filter((e) => e.id !== expenseId);
-      const updatedTripObj: Trip = {
-        ...trip,
-        expenses: updatedExpenses,
-        activities: [newActivity, ...(trip.activities || [])],
-      };
-      updateActiveTrip(updatedTripObj);
-    } catch (err: any) {
-      console.error("Failed to delete expense from Database:", err);
-      alert(err?.message || "Failed to delete expense. Please try again.");
-    }
-  };
-
-  // SETTLEMENT HANDLERS: DATABASE PRIMARY WRITE PATH
-  const handleRecordPayment = async (payment: Payment) => {
-    if (!trip) return;
-
-    try {
-      const authoritativePayment: Payment = {
-        ...payment,
-        id: payment.id || uid("pay"),
-        tripId: trip.id,
-        from: payment.from || payment.fromUserId || "",
-        to: payment.to || payment.toUserId || "",
-        fromUserId: payment.fromUserId || payment.from || "",
-        toUserId: payment.toUserId || payment.to || "",
-        amount: payment.amount,
-        method: payment.method || "Cash",
-        note: payment.note || "",
-        status: payment.status || "confirmed",
-        ts: payment.ts || nowStr(),
-        createdAt: payment.createdAt || new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-
-      const debtor = trip.members.find((m) => m.id === authoritativePayment.from)?.name || authoritativePayment.from;
-      const creditor = trip.members.find((m) => m.id === authoritativePayment.to)?.name || authoritativePayment.to;
-      const isConfirmed = authoritativePayment.status === "confirmed" || authoritativePayment.status === "PAID";
-
-      const newActivity = {
-        id: uid("act"),
-        ts: nowStr(),
-        user: currentUser.name,
-        action: isConfirmed ? "confirmed manual payment" : "recorded manual payment",
-        detail: isConfirmed
-          ? `${debtor} paid ${creditor} — ${money(authoritativePayment.amount, trip.currency)} (Confirmed)`
-          : `${debtor} recorded manual payment of ${money(authoritativePayment.amount, trip.currency)} to ${creditor} (Waiting for confirmation)`,
-        actorId: currentUser.id,
-      };
-
-      // Awaited database operations
-      await addPaymentToDatabase(trip.id, authoritativePayment);
-      await addActivityToDatabase(trip.id, newActivity);
-
-      const updatedPayments = [authoritativePayment, ...(trip.payments || []).filter(p => p.id !== authoritativePayment.id)];
-      const updatedTripObj: Trip = {
-        ...trip,
-        payments: updatedPayments,
-        activities: [newActivity, ...(trip.activities || [])],
-      };
-      updateActiveTrip(updatedTripObj);
-
-      notify({
-        tripId: trip.id,
-        tripTitle: trip.title,
-        type: "payment_recorded",
-        title: isConfirmed ? "Manual Settlement Confirmed" : "Manual Payment Recorded",
-        body: isConfirmed
-          ? `${creditor} confirmed manual payment of ${money(authoritativePayment.amount, trip.currency)} from ${debtor}.`
-          : `${debtor} recorded a manual payment of ${money(authoritativePayment.amount, trip.currency)} to ${creditor}. Waiting for confirmation.`,
-        actorName: currentUser.name,
-        actorAvatarColor: currentUser.avatarColor,
-        amount: authoritativePayment.amount,
-        currency: trip.currency,
-        targetTab: "settlement",
-      });
-
-      setIsSettleModalOpen(false);
-      triggerConfetti();
-    } catch (err: any) {
-      console.error("Failed to record payment in Database:", err);
-      alert(err?.message || "Failed to record payment. Please try again.");
-    }
-  };
-
-  const handleConfirmPayment = async (paymentId: string) => {
-    if (!trip) return;
-    try {
-      const existing = trip.payments?.find((p) => p.id === paymentId);
-      if (!existing) return;
-
-      const updatedPayment: Payment = {
-        ...existing,
-        id: paymentId,
-        status: "confirmed",
-        confirmedBy: currentUser.id,
-        confirmedAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-
-      // Awaited database operation
-      await updatePaymentInDatabase(trip.id, updatedPayment);
-
-      const updatedPayments = (trip.payments || []).map((p) =>
-        p.id === paymentId ? updatedPayment : p
-      );
-      const updatedTripObj = { ...trip, payments: updatedPayments };
-      updateActiveTrip(updatedTripObj);
-
-      const debtor = trip.members.find((m) => m.id === updatedPayment.from)?.name || "Payer";
-      const creditor = trip.members.find((m) => m.id === updatedPayment.to)?.name || "Receiver";
-
-      notify({
-        tripId: trip.id,
-        tripTitle: trip.title,
-        type: "payment_confirmed",
-        title: "Manual Payment Confirmed",
-        body: `${creditor} confirmed the manual payment of ${money(updatedPayment.amount, trip.currency)} from ${debtor}.`,
-        actorName: currentUser.name,
-        actorAvatarColor: currentUser.avatarColor,
-        amount: updatedPayment.amount,
-        currency: trip.currency,
-        targetTab: "settlement",
-      });
-    } catch (err: any) {
-      console.error("Failed to confirm payment in Database:", err);
-      alert(err?.message || "Failed to confirm payment. Please try again.");
-    }
-  };
-
-  const handleRejectPayment = async (paymentId: string) => {
-    if (!trip) return;
-    try {
-      const existing = trip.payments?.find((p) => p.id === paymentId);
-      if (!existing) return;
-
-      const updatedPayment: Payment = {
-        ...existing,
-        id: paymentId,
-        status: "cancelled",
-        cancelledBy: currentUser.id,
-        cancelledAt: new Date().toISOString(),
-        cancellationReason: "Cancelled by user",
-        updatedAt: new Date().toISOString(),
-      };
-
-      // Awaited database operation
-      await updatePaymentInDatabase(trip.id, updatedPayment);
-
-      const updatedPayments = (trip.payments || []).map((p) =>
-        p.id === paymentId ? updatedPayment : p
-      );
-      const updatedTripObj = { ...trip, payments: updatedPayments };
-      updateActiveTrip(updatedTripObj);
-    } catch (err: any) {
-      console.error("Failed to cancel payment in Database:", err);
-      alert(err?.message || "Failed to cancel payment. Please try again.");
-    }
-  };
-
-  // MEMBER HANDLERS: DATABASE PRIMARY WRITE PATH
-  const handleSaveMember = async (member: Member) => {
-    if (!trip) return;
-    try {
-      const isEdit = trip.members.some((m) => m.id === member.id);
-
-      // Awaited database operation
-      if (isEdit) {
-        await updateMemberInDatabase(trip.id, member);
-      } else {
-        await addMemberToDatabase(trip.id, member);
-      }
-
-      const updatedMembers = isEdit
-        ? trip.members.map((m) => (m.id === member.id ? member : m))
-        : [...trip.members, member];
-
-      const updatedTripObj = { ...trip, members: updatedMembers };
-      updateActiveTrip(updatedTripObj);
-
-      setIsMembersModalOpen(false);
-      setEditingMember(null);
-    } catch (err: any) {
-      console.error("Failed to save member in Database:", err);
-      alert(err?.message || "Failed to save member. Please try again.");
-    }
-  };
-
-  const handleDeleteMember = async (memberId: string) => {
-    if (!trip) return;
-    try {
-      // Awaited database operation
-      await deleteMemberFromDatabase(trip.id, memberId);
-
-      const updatedMembers = trip.members.filter((m) => m.id !== memberId);
-      const updatedTripObj = { ...trip, members: updatedMembers };
-      updateActiveTrip(updatedTripObj);
-
-      setIsMembersModalOpen(false);
-      setEditingMember(null);
-    } catch (err: any) {
-      console.error("Failed to delete member from Database:", err);
-      alert(err?.message || "Failed to delete member. Please try again.");
-    }
-  };
-
-  // CREATE TRIP HANDLER: DATABASE PRIMARY WRITE PATH
-  const handleCreateTrip = async (newTripData: Trip) => {
-    try {
-      const activeUid = authUser?.id || "";
-      const completeTrip: Trip = {
-        ...newTripData,
-        ownerId: newTripData.ownerId || activeUid,
-        ownerName: newTripData.ownerName || authUser?.name || "Traveler",
-        memberUserIds: Array.from(
-          new Set([
-            newTripData.ownerId || activeUid,
-            ...(newTripData.memberUserIds || []),
-            ...(newTripData.members || []).map((m) => m.userId || m.id),
-          ].filter(Boolean))
-        ),
-      };
-
-      // Optimistically update local state & close modal
-      setTrips((prev) => [completeTrip, ...prev.filter((t) => t.id !== completeTrip.id)]);
-      setActiveTripId(completeTrip.id);
-      setIsTripsHubModalOpen(false);
-
-      // Save user local snapshot
-      if (activeUid) {
-        saveUserLocalState(activeUid, {
-          trips: [completeTrip, ...trips.filter((t) => t.id !== completeTrip.id)],
-          activeTripId: completeTrip.id,
-        });
-      }
-
-      // Awaited database operation
-      await saveTripToDatabase(completeTrip);
-    } catch (err: any) {
-      console.error("Failed to create trip in Database:", err);
-    }
-  };
-
-  // DELETE TRIP HANDLER: DATABASE PRIMARY WRITE PATH
-  const handleDeleteTrip = async (id: string) => {
-    try {
-      await deleteTripFromDatabase(id);
-      const filtered = trips.filter((t) => t.id !== id);
-      setTrips(filtered);
-      if (activeTripId === id && filtered.length > 0) {
-        setActiveTripId(filtered[0].id);
-      }
-    } catch (err: any) {
-      console.error("Failed to delete trip from Database:", err);
-      alert(err?.message || "Failed to delete trip. Please try again.");
-    }
-  };
-
-  // RESET TRIP HANDLER
-  const handleConfirmReset = (mode: "clean_scratch") => {
-    const freshState = resetStorageState(mode, authUser || DEFAULT_AUTH_USER);
-    setTrips(freshState.trips);
-    setActiveTripId(freshState.activeTripId || freshState.trips[0]?.id || "");
-    setActiveTab("home");
-  };
-
-  // Open Settle modal with optional preselection
+  // Modal open helper with preselection
   const handleOpenSettleModalWithParams = (debtorId?: string, creditorId?: string, amount?: number) => {
     setSettlePreselect({ debtorId, creditorId, amount });
     setIsSettleModalOpen(true);
@@ -723,34 +144,23 @@ export default function App() {
 
   // WhatsApp statement trigger
   const handleSendWhatsAppStatement = (member: Member) => {
-    if (!trip) return;
-    const ps = paidShare[member.id] || { paid: 0, share: 0 };
-    const net = netBalances[member.id] || 0;
-    const statusText =
-      net > 0.01
-        ? `*You are owed ${money(net, trip.currency)}* by the group.`
-        : net < -0.01
-        ? `*You owe ${money(Math.abs(net), trip.currency)}* to the group.`
-        : `*All Settled Up!* No pending balance.`;
-
-    const message = `🏖️ *${trip.title} Statement for ${member.name}*\n\n` +
-      `• Total Spent by Group: ${money(totalTripSpent, trip.currency)}\n` +
-      `• You Paid Upfront: ${money(ps.paid, trip.currency)}\n` +
-      `• Your Fair Share: ${money(ps.share, trip.currency)}\n` +
-      `• *Net Balance*: ${statusText}\n\n` +
-      `Track full details on SplitTrip!`;
-
-    setWhatsAppPayload({
-      title: `Send Statement to ${member.name}`,
-      messageText: message,
-      targetPhone: member.phone,
-      targetMemberIds: [member.id],
-      eventType: "reminder",
-    });
-    setIsWhatsAppModalOpen(true);
+    const payload = buildWhatsAppStatementPayload(member);
+    if (payload) {
+      setWhatsAppPayload(payload);
+      setIsWhatsAppModalOpen(true);
+    }
   };
 
-  // LOADING STATE
+  // WhatsApp reminder trigger
+  const handleSendWhatsAppReminder = (debtor: Member, amt: number) => {
+    const payload = buildWhatsAppReminderPayload(debtor, amt);
+    if (payload) {
+      setWhatsAppPayload(payload);
+      setIsWhatsAppModalOpen(true);
+    }
+  };
+
+  // 4. Loading State
   if (!isHydrated) {
     return (
       <div className="min-h-screen bg-[var(--c-paper,#0F172A)] text-[var(--c-ink,#F8FAFC)] flex flex-col items-center justify-center p-6">
@@ -763,12 +173,12 @@ export default function App() {
     );
   }
 
-  // AUTH STATE
+  // 5. Auth Gate
   if (!authUser) {
     return <LoginPage />;
   }
 
-  // EMPTY STATE
+  // 6. Empty Trips State
   if (!trip) {
     return (
       <div className="min-h-screen bg-[var(--c-paper,#0F172A)] text-[var(--c-ink,#F8FAFC)]">
@@ -779,15 +189,16 @@ export default function App() {
           onOpenUserProfile={() => setIsUserProfileOpen(true)}
           onLogout={() => logout()}
           onJoinSuccess={(joinedTrip) => {
-            if (!trips.find(t => t.id === joinedTrip.id)) {
-              setTrips(prev => [joinedTrip, ...prev]);
+            if (!trips.find((t) => t.id === joinedTrip.id)) {
+              setTrips((prev) => [joinedTrip, ...prev]);
             } else {
-              setTrips(prev => prev.map(t => t.id === joinedTrip.id ? joinedTrip : t));
+              setTrips((prev) => prev.map((t) => (t.id === joinedTrip.id ? joinedTrip : t)));
             }
             setActiveTripId(joinedTrip.id);
             setIsJoinTripModalOpen(false);
           }}
         />
+
         {isUserProfileOpen && (
           <UserProfileModal
             isOpen={isUserProfileOpen}
@@ -798,22 +209,24 @@ export default function App() {
             }}
           />
         )}
+
         {isJoinTripModalOpen && (
           <JoinTripModal
             currentTrip={null}
             initialCode={initialJoinCode}
             onClose={() => setIsJoinTripModalOpen(false)}
             onJoinTripSuccess={(joinedTrip) => {
-              if (!trips.find(t => t.id === joinedTrip.id)) {
-                setTrips(prev => [joinedTrip, ...prev]);
+              if (!trips.find((t) => t.id === joinedTrip.id)) {
+                setTrips((prev) => [joinedTrip, ...prev]);
               } else {
-                setTrips(prev => prev.map(t => t.id === joinedTrip.id ? joinedTrip : t));
+                setTrips((prev) => prev.map((t) => (t.id === joinedTrip.id ? joinedTrip : t)));
               }
               setActiveTripId(joinedTrip.id);
               setIsJoinTripModalOpen(false);
             }}
           />
         )}
+
         {isTripsHubModalOpen && (
           <TripsHubModal
             trips={userTrips}
@@ -822,7 +235,10 @@ export default function App() {
               setActiveTripId(id);
               setIsTripsHubModalOpen(false);
             }}
-            onCreateTrip={handleCreateTrip}
+            onCreateTrip={async (newTrip) => {
+              await handleCreateTrip(newTrip);
+              setIsTripsHubModalOpen(false);
+            }}
             onDeleteTrip={handleDeleteTrip}
             onOpenJoinModal={() => {
               setIsTripsHubModalOpen(false);
@@ -835,9 +251,10 @@ export default function App() {
     );
   }
 
+  // 7. Main Application Shell
   return (
     <div className="min-h-screen bg-[var(--c-paper,#0F172A)] text-[var(--c-ink,#F8FAFC)] pb-24 md:pb-12">
-      {/* 1. TOP APP BAR */}
+      {/* Top App Bar */}
       <header
         className="sticky top-0 z-30 w-full shrink-0 shadow-xs backdrop-blur-md"
         style={{
@@ -846,9 +263,8 @@ export default function App() {
         }}
       >
         <div className="max-w-4xl mx-auto px-3.5 sm:px-6 h-16 flex items-center justify-between gap-3">
-          {/* Left: Trip Identity (Trip Icon + Title + Location + Currency + Hub trigger) */}
+          {/* Left: Trip Identity & Hub trigger */}
           <div className="flex items-center gap-2.5 min-w-0 flex-1">
-            {/* Trip Icon Button */}
             <button
               id="btn-header-trips-hub-icon"
               type="button"
@@ -877,7 +293,6 @@ export default function App() {
                   {trip.title}
                 </button>
 
-                {/* Currency Badge */}
                 <span
                   className="px-1.5 py-0.5 rounded text-[10px] font-extrabold uppercase shrink-0"
                   style={{
@@ -889,7 +304,6 @@ export default function App() {
                   {trip.currency || "INR"}
                 </span>
 
-                {/* Hub Button */}
                 <button
                   type="button"
                   onClick={() => setIsTripsHubModalOpen(true)}
@@ -906,7 +320,6 @@ export default function App() {
                 </button>
               </div>
 
-              {/* Subtitle with Location Pin */}
               <div className="flex items-center gap-1 text-[11px] font-medium truncate mt-0.5" style={{ color: "var(--c-inkSoft, #94A3B8)" }}>
                 <MapPin size={11} style={{ color: "var(--c-rust, #F87171)" }} className="shrink-0" />
                 <span className="truncate">{trip.location}</span>
@@ -916,7 +329,6 @@ export default function App() {
 
           {/* Right: User Switcher Pill + Notification Bell + More Menu Dots */}
           <div className="flex items-center gap-2 shrink-0">
-            {/* User Pill Button: [A] Ayan ▾ */}
             <button
               id="btn-user-profile-menu"
               type="button"
@@ -926,7 +338,7 @@ export default function App() {
                 backgroundColor: "var(--c-paperDark, #1E293B)",
                 border: "1px solid var(--c-line, #334155)",
               }}
-              title={`Logged in as ${currentUser.name}. Click to switch traveler.`}
+              title={`Logged in as ${currentUser.name}. Click to view profile.`}
             >
               <div
                 className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-extrabold text-white shrink-0"
@@ -943,10 +355,8 @@ export default function App() {
               <ChevronDown size={12} style={{ color: "var(--c-inkSoft, #94A3B8)" }} />
             </button>
 
-            {/* Notification Bell */}
             <NotificationBell onClick={() => setIsNotificationsOpen(true)} />
 
-            {/* More Menu Dots Button [⋮] */}
             <button
               id="btn-open-trip-more-menu"
               type="button"
@@ -963,11 +373,41 @@ export default function App() {
             </button>
           </div>
         </div>
+
+        {/* Desktop Navigation Tabs (md and up) */}
+        <nav className="hidden md:flex items-center gap-1.5 border-t border-[var(--c-line)] px-4 py-2 text-xs font-bold max-w-4xl mx-auto">
+          {[
+            { id: "home", label: "Dashboard" },
+            { id: "expenses", label: `Expenses (${activeExpenses.length})` },
+            { id: "settlement", label: `Settlements ${simplifiedDebts.length > 0 ? `(${simplifiedDebts.length})` : ""}` },
+            { id: "people", label: `People (${trip.members.length})` },
+            { id: "analytics", label: "Analytics" },
+            { id: "activity", label: "Activity" },
+          ].map((tab) => {
+            const isActive =
+              activeTab === tab.id ||
+              (tab.id === "settlement" && (activeTab === "balances" || activeTab === "settlements")) ||
+              (tab.id === "people" && activeTab === "members");
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id as NavTab)}
+                className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
+                  isActive
+                    ? "bg-[var(--c-teal)] text-[var(--c-teal-contrast-text)] shadow-xs"
+                    : "text-[var(--c-inkSoft)] hover:text-[var(--c-ink)] hover:bg-[var(--c-paperDark)]"
+                }`}
+              >
+                {tab.label}
+              </button>
+            );
+          })}
+        </nav>
       </header>
 
-      {/* 2. MAIN APPLICATION CONTENT */}
+      {/* Main Content Area */}
       <main className="max-w-md md:max-w-3xl lg:max-w-4xl mx-auto px-3.5 sm:px-6 pt-4 flex flex-col gap-4">
-        {/* TAB: HOME DASHBOARD (EXACT AS SCREENSHOT) */}
         {activeTab === "home" && (
           <HomeDashboardView
             trip={trip}
@@ -990,7 +430,6 @@ export default function App() {
           />
         )}
 
-        {/* TAB: EXPENSES LIST */}
         {activeTab === "expenses" && (
           <ExpensesListView
             expenses={trip.expenses}
@@ -1009,8 +448,7 @@ export default function App() {
           />
         )}
 
-        {/* TAB: BALANCES & DEBT SIMPLIFICATION */}
-        {activeTab === "settlement" && (
+        {(activeTab === "settlement" || activeTab === "balances" || activeTab === "settlements") && (
           <BalanceView
             trip={trip}
             currentUser={currentUser}
@@ -1020,21 +458,10 @@ export default function App() {
             onOpenSettleModal={handleOpenSettleModalWithParams}
             onConfirmPayment={handleConfirmPayment}
             onRejectPayment={handleRejectPayment}
-            onSendWhatsAppReminder={(debtor, amt) => {
-              const msg = `Hi ${debtor.name}, a friendly reminder regarding our *${trip.title}* trip expenses: you have an outstanding balance of *${money(amt, trip.currency)}*.`;
-              setWhatsAppPayload({
-                title: `Send Reminder to ${debtor.name}`,
-                messageText: msg,
-                targetPhone: debtor.phone,
-                targetMemberIds: [debtor.id],
-                eventType: "reminder",
-              });
-              setIsWhatsAppModalOpen(true);
-            }}
+            onSendWhatsAppReminder={handleSendWhatsAppReminder}
           />
         )}
 
-        {/* TAB: ANALYTICS */}
         {activeTab === "analytics" && (
           <AnalyticsView
             expenses={trip.expenses}
@@ -1044,8 +471,7 @@ export default function App() {
           />
         )}
 
-        {/* TAB: PEOPLE */}
-        {activeTab === "people" && (
+        {(activeTab === "people" || activeTab === "members") && (
           <PeopleView
             trip={trip}
             currentUser={currentUser}
@@ -1060,7 +486,6 @@ export default function App() {
           />
         )}
 
-        {/* TAB: ACTIVITY LOG */}
         {activeTab === "activity" && (
           <ActivityLogView
             activities={trip.activities || []}
@@ -1069,7 +494,7 @@ export default function App() {
         )}
       </main>
 
-      {/* 3. BOTTOM NAVIGATION BAR (MATCHES SCREENSHOT: Home, Expenses, +, Balance, People) */}
+      {/* Bottom Navigation Bar */}
       <BottomNavigation
         activeTab={activeTab}
         onTabChange={(t) => setActiveTab(t)}
@@ -1081,14 +506,34 @@ export default function App() {
         expensesCount={activeExpenses.length}
       />
 
-      {/* 4. MODAL DIALOGS */}
-      {/* Add / Edit Expense Modal */}
+      {/* Floating Action Button for Desktop/Tablet */}
+      <button
+        id="btn-desktop-floating-add-expense"
+        type="button"
+        onClick={() => {
+          setEditingExpense(null);
+          setIsExpenseModalOpen(true);
+        }}
+        className="hidden md:flex fixed bottom-8 right-8 z-40 bg-[var(--c-teal,#0F6B65)] hover:bg-[var(--c-tealDark,#0B4F4B)] text-white px-5 py-3.5 rounded-2xl shadow-xl items-center gap-2.5 font-extrabold text-sm hover:scale-105 active:scale-95 transition-all cursor-pointer border border-white/20"
+        title="Add new expense"
+      >
+        <Plus size={20} strokeWidth={3} />
+        <span>Add Expense</span>
+      </button>
+
+      {/* Modal Dialogs */}
       {isExpenseModalOpen && (
         <ExpenseFormModal
           members={trip.members}
           initialExpense={editingExpense}
           currentUserId={currentUser.id}
-          onSave={handleSaveExpense}
+          onSave={async (exp) => {
+            const success = await handleSaveExpense(exp);
+            if (success) {
+              setIsExpenseModalOpen(false);
+              setEditingExpense(null);
+            }
+          }}
           onClose={() => {
             setIsExpenseModalOpen(false);
             setEditingExpense(null);
@@ -1096,7 +541,6 @@ export default function App() {
         />
       )}
 
-      {/* Settle Up Modal */}
       {isSettleModalOpen && (
         <SettleUpModal
           tripId={trip.id}
@@ -1105,7 +549,13 @@ export default function App() {
           payments={trip.payments || []}
           tripTitle={trip.title}
           currentUserId={currentUser.id}
-          onRecordPayment={handleRecordPayment}
+          onRecordPayment={async (p) => {
+            const success = await handleRecordPayment(p);
+            if (success) {
+              setIsSettleModalOpen(false);
+              setSettlePreselect({});
+            }
+          }}
           onUpdatePaymentStatus={(id, status) => {
             if (status === "confirmed" || status === "PAID") handleConfirmPayment(id);
             else handleRejectPayment(id);
@@ -1118,7 +568,6 @@ export default function App() {
         />
       )}
 
-      {/* Invite Friends Modal */}
       {isInviteModalOpen && (
         <InviteMembersModal
           trip={trip}
@@ -1130,15 +579,32 @@ export default function App() {
         />
       )}
 
-      {/* Manage Members Modal */}
       {isMembersModalOpen && (
         <MemberManagementModal
           members={trip.members}
           currentUserId={currentUser.id}
           balances={paidShare}
-          onAddMember={handleSaveMember}
-          onUpdateMember={handleSaveMember}
-          onRemoveMember={handleDeleteMember}
+          onAddMember={async (m) => {
+            const success = await handleSaveMember(m);
+            if (success) {
+              setIsMembersModalOpen(false);
+              setEditingMember(null);
+            }
+          }}
+          onUpdateMember={async (m) => {
+            const success = await handleSaveMember(m);
+            if (success) {
+              setIsMembersModalOpen(false);
+              setEditingMember(null);
+            }
+          }}
+          onRemoveMember={async (mId) => {
+            const success = await handleDeleteMember(mId);
+            if (success) {
+              setIsMembersModalOpen(false);
+              setEditingMember(null);
+            }
+          }}
           onOpenInvite={() => {
             setIsMembersModalOpen(false);
             setIsInviteModalOpen(true);
@@ -1150,15 +616,17 @@ export default function App() {
         />
       )}
 
-      {/* Reset Trip Modal */}
       {isResetModalOpen && (
         <ResetTripModal
-          onConfirmReset={handleConfirmReset}
+          onConfirmReset={(mode) => {
+            handleConfirmReset(mode);
+            setIsResetModalOpen(false);
+            setActiveTab("home");
+          }}
           onClose={() => setIsResetModalOpen(false)}
         />
       )}
 
-      {/* Trips Hub Modal */}
       {isTripsHubModalOpen && (
         <TripsHubModal
           trips={userTrips}
@@ -1167,7 +635,10 @@ export default function App() {
             setActiveTripId(id);
             setIsTripsHubModalOpen(false);
           }}
-          onCreateTrip={handleCreateTrip}
+          onCreateTrip={async (newTrip) => {
+            await handleCreateTrip(newTrip);
+            setIsTripsHubModalOpen(false);
+          }}
           onDeleteTrip={handleDeleteTrip}
           onOpenJoinModal={() => {
             setIsTripsHubModalOpen(false);
@@ -1177,7 +648,6 @@ export default function App() {
         />
       )}
 
-      {/* Share & Export Modal */}
       {isShareModalOpen && (
         <ShareExportModal
           trip={trip}
@@ -1188,7 +658,6 @@ export default function App() {
         />
       )}
 
-      {/* Trip More Menu Modal */}
       <TripMoreMenuModal
         isOpen={isMoreMenuOpen}
         onClose={() => setIsMoreMenuOpen(false)}
@@ -1234,27 +703,30 @@ export default function App() {
         }}
       />
 
-      {/* User Profile Modal */}
       <UserProfileModal
         isOpen={isUserProfileOpen}
         onClose={() => setIsUserProfileOpen(false)}
         onOpenAuthPage={() => setIsUserProfileOpen(false)}
       />
 
-      {/* Notification Center Modal */}
       <NotificationCenterModal
         isOpen={isNotificationsOpen}
         onClose={() => setIsNotificationsOpen(false)}
         trip={trip}
         currentUserId={currentUser.id}
         onNavigateTab={(t) => {
-          if (t === "expenses" || t === "settlement" || t === "analytics" || t === "people" || t === "home") {
+          if (
+            t === "expenses" ||
+            t === "settlement" ||
+            t === "analytics" ||
+            t === "people" ||
+            t === "home"
+          ) {
             setActiveTab(t);
           }
         }}
       />
 
-      {/* WhatsApp Message Preview Modal */}
       {isWhatsAppModalOpen && whatsAppPayload && (
         <WhatsAppNotificationModal
           payload={whatsAppPayload}
@@ -1266,17 +738,16 @@ export default function App() {
         />
       )}
 
-      {/* Join Trip Modal for Main App */}
       {isJoinTripModalOpen && (
         <JoinTripModal
           currentTrip={null}
           initialCode={initialJoinCode}
           onClose={() => setIsJoinTripModalOpen(false)}
           onJoinTripSuccess={(joinedTrip) => {
-            if (!trips.find(t => t.id === joinedTrip.id)) {
-              setTrips(prev => [joinedTrip, ...prev]);
+            if (!trips.find((t) => t.id === joinedTrip.id)) {
+              setTrips((prev) => [joinedTrip, ...prev]);
             } else {
-              setTrips(prev => prev.map(t => t.id === joinedTrip.id ? joinedTrip : t));
+              setTrips((prev) => prev.map((t) => (t.id === joinedTrip.id ? joinedTrip : t)));
             }
             setActiveTripId(joinedTrip.id);
             setIsJoinTripModalOpen(false);
@@ -1284,10 +755,7 @@ export default function App() {
         />
       )}
 
-      {/* In-App Notification Toasts */}
       <NotificationToastContainer />
-
-      {/* Global Password Reset / Recovery Modal */}
       <ResetPasswordModal />
     </div>
   );

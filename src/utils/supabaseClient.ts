@@ -5,10 +5,12 @@ const metaEnv = (import.meta as any).env || {};
 
 const supabaseUrl =
   metaEnv.VITE_SUPABASE_URL ||
+  metaEnv.NEXT_PUBLIC_SUPABASE_URL ||
   "https://ryamchjjwoaimwrmurry.supabase.co";
 
 const supabaseAnonKey =
   metaEnv.VITE_SUPABASE_ANON_KEY ||
+  metaEnv.SUPABASE_ANON_KEY ||
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ5YW1jaGpqd29haW13cm11cnJ5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAwMTIwOTYsImV4cCI6MjEwNTU4ODA5Nn0.6r-qcinkytxEzCxb4jhRjXNZ0-g4_YTKdsnhUG3De6A";
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {

@@ -13,29 +13,17 @@ import {
   Sparkles,
   ArrowRight,
 } from "lucide-react";
-import { Expense, Member, Trip } from "../types";
+import { Expense, Member, Trip, WhatsAppNotificationPayload } from "../types";
 import { C } from "../utils/constants";
-import { Avatar, ModalShell, Pill } from "./Atoms";
+import { Avatar, ModalShell } from "./Atoms";
 import {
   getWhatsAppDirectLink,
   getWhatsAppShareLink,
   isValidWhatsAppPhone,
-  normalizeWhatsAppPhone,
   generateIndividualExpenseWhatsAppMsg,
 } from "../utils/whatsappNotifications";
-import { money } from "../utils/calculations";
 
-export interface WhatsAppNotificationPayload {
-  title: string;
-  subtitle?: string;
-  messageText: string;
-  eventType: "add" | "edit" | "delete" | "settle" | "invite" | "manual" | "debt_reminder" | "balance_summary";
-  targetMemberIds?: string[];
-  individualMessages?: Record<string, string>;
-  expense?: Expense;
-  trip?: Trip;
-  creatorName?: string;
-}
+export type { WhatsAppNotificationPayload };
 
 interface WhatsAppNotificationModalProps {
   payload: WhatsAppNotificationPayload;

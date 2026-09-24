@@ -19,10 +19,14 @@ import {
   CheckCircle2,
   FileText,
   UserPlus,
+  Train,
+  Plane,
+  Fuel,
 } from "lucide-react";
 import { Expense, Member, SplitMethod } from "../types";
 import { equalSplit, percentageSplit, sharesSplit, money, round2, toCents, fromCents, uid } from "../utils/calculations";
 import { Avatar, ModalShell } from "./Atoms";
+import { getCategoryMeta } from "../utils/constants";
 
 interface ExpenseFormModalProps {
   members: Member[];
@@ -34,10 +38,14 @@ interface ExpenseFormModalProps {
 
 const CATEGORY_OPTIONS = [
   { id: "Food", name: "Food & Dining", icon: Utensils, bg: "#FEF3C7", text: "#92400E" },
-  { id: "Transport", name: "Transport & Fuel", icon: Car, bg: "#DBEAFE", text: "#1E40AF" },
-  { id: "Accommodation", name: "Accommodation", icon: Hotel, bg: "#E0E7FF", text: "#3730A3" },
+  { id: "Transport", name: "Transport & Cabs", icon: Car, bg: "#DBEAFE", text: "#1E40AF" },
+  { id: "Travel", name: "Travel & Flights", icon: Plane, bg: "#E0F2FE", text: "#0369A1" },
+  { id: "Train", name: "Train & Rail", icon: Train, bg: "#E6F4F2", text: "#0B4F4B" },
+  { id: "Accommodation", name: "Accommodation & Hotel", icon: Hotel, bg: "#E0E7FF", text: "#3730A3" },
+  { id: "Tickets", name: "Tickets & Passes", icon: Ticket, bg: "#FCE7F3", text: "#9D174D" },
   { id: "Activities", name: "Activities & Sightseeing", icon: Ticket, bg: "#FCE7F3", text: "#9D174D" },
   { id: "Shopping", name: "Shopping", icon: ShoppingBag, bg: "#F3E8FF", text: "#6B21A8" },
+  { id: "Fuel", name: "Fuel & Petrol", icon: Fuel, bg: "#FEF3C7", text: "#B45309" },
   { id: "Groceries", name: "Groceries & Supplies", icon: Receipt, bg: "#DCFCE7", text: "#166534" },
   { id: "Others", name: "Others", icon: MoreHorizontal, bg: "#F1F5F9", text: "#334155" },
 ];
@@ -50,8 +58,18 @@ export function ExpenseFormModal({
   onClose,
 }: ExpenseFormModalProps) {
   const [title, setTitle] = useState(initialExpense?.title || "");
-  const [amount, setAmount] = useState(initialExpense?.amount ? initialExpense.amount.toString() : "");
   const [category, setCategory] = useState(initialExpense?.category || "Food");
+
+  const handleTitleChange = (val: string) => {
+    setTitle(val);
+    if (!initialExpense && (category === "Food" || category === "Others")) {
+      const meta = getCategoryMeta(category, val);
+      if (meta.resolvedCategory !== "Food" && meta.resolvedCategory !== "Other") {
+        setCategory(meta.resolvedCategory);
+      }
+    }
+  };
+  const [amount, setAmount] = useState(initialExpense?.amount ? initialExpense.amount.toString() : "");
   const [date, setDate] = useState(
     initialExpense?.date || new Date().toISOString().split("T")[0]
   );
@@ -264,12 +282,14 @@ export function ExpenseFormModal({
       }
     }
 
+    const resolvedCat = getCategoryMeta(category, title).resolvedCategory;
+
     const payload: Expense = {
       id: initialExpense?.id || uid("exp"),
       tripId: initialExpense?.tripId,
       title: title.trim(),
       amount: numAmount,
-      category,
+      category: resolvedCat,
       date,
       paidBy: finalPaidBy,
       payers: finalPayers,
@@ -314,7 +334,7 @@ export function ExpenseFormModal({
               required
               placeholder="e.g. Seafood Dinner, Konark Taxi, Hotel Stay"
               value={title}
-              onChange={(e) => setTitle(e.target.value)}
+              onChange={(e) => handleTitleChange(e.target.value)}
               className="px-3.5 py-2.5 bg-[var(--c-paperDark)] border border-[var(--c-line)] rounded-xl text-[var(--c-ink)] text-sm font-medium focus:bg-[var(--c-input-bg)] focus:border-[var(--c-teal)] focus:outline-none transition-all"
             />
           </div>

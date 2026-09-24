@@ -25,6 +25,7 @@ import {
 import { Expense, Member, SplitMethod } from "../types";
 import { money, formatDate } from "../utils/calculations";
 import { Avatar } from "./Atoms";
+import { CATEGORY_META, getCategoryMeta, PRIMARY_CATEGORIES } from "../utils/constants";
 
 interface ExpensesListViewProps {
   expenses: Expense[];
@@ -78,7 +79,9 @@ export function ExpensesListView({
   const categoryCounts = useMemo(() => {
     const counts: Record<string, number> = { all: activeExpenses.length };
     activeExpenses.forEach((e) => {
-      counts[e.category] = (counts[e.category] || 0) + 1;
+      const meta = getCategoryMeta(e.category, e.title);
+      const cat = meta.resolvedCategory;
+      counts[cat] = (counts[cat] || 0) + 1;
     });
     return counts;
   }, [activeExpenses]);
@@ -87,27 +90,42 @@ export function ExpensesListView({
   const filteredExpenses = useMemo(() => {
     return activeExpenses
       .filter((e) => {
+        const meta = getCategoryMeta(e.category, e.title);
+
         // Search query
         if (searchQuery.trim()) {
           const q = searchQuery.toLowerCase();
           const matchTitle = e.title.toLowerCase().includes(q);
           const matchNotes = (e.notes || "").toLowerCase().includes(q);
-          const payerName = memberMap.get(e.paidBy)?.name.toLowerCase() || "";
+          const payerMember =
+            memberMap.get(e.paidBy) ||
+            members.find((m) => m.userId === e.paidBy || (m.name && m.name.toLowerCase() === (e.paidBy || "").toLowerCase()));
+          const payerName = payerMember?.name.toLowerCase() || "";
           const matchPayer = payerName.includes(q);
-          if (!matchTitle && !matchNotes && !matchPayer) return false;
+          const matchCat =
+            meta.resolvedCategory.toLowerCase().includes(q) || (e.category || "").toLowerCase().includes(q);
+          if (!matchTitle && !matchNotes && !matchPayer && !matchCat) return false;
         }
 
         // Category filter
-        if (selectedCategory !== "all" && e.category !== selectedCategory) {
-          return false;
+        if (selectedCategory !== "all") {
+          if (meta.resolvedCategory !== selectedCategory && e.category !== selectedCategory) {
+            return false;
+          }
         }
 
         // Payer filter
         if (selectedPayer !== "all") {
           if (e.payers) {
             if (!e.payers[selectedPayer]) return false;
-          } else if (e.paidBy !== selectedPayer) {
-            return false;
+          } else {
+            const payerMember =
+              memberMap.get(e.paidBy) ||
+              members.find((m) => m.userId === e.paidBy || (m.name && m.name.toLowerCase() === (e.paidBy || "").toLowerCase()));
+            const isMatch =
+              e.paidBy === selectedPayer ||
+              (payerMember && (payerMember.id === selectedPayer || payerMember.userId === selectedPayer));
+            if (!isMatch) return false;
           }
         }
 
@@ -125,7 +143,7 @@ export function ExpensesListView({
         }
         return 0;
       });
-  }, [activeExpenses, searchQuery, selectedCategory, selectedPayer, sortBy, memberMap]);
+  }, [activeExpenses, searchQuery, selectedCategory, selectedPayer, sortBy, memberMap, members]);
 
   const totalFilteredAmount = useMemo(
     () => filteredExpenses.reduce((s, e) => s + e.amount, 0),
@@ -202,10 +220,12 @@ export function ExpensesListView({
             All ({activeExpenses.length})
           </button>
 
-          {Object.entries(CATEGORY_ICONS).map(([cat, Icon]) => {
+          {PRIMARY_CATEGORIES.map((cat) => {
             const count = categoryCounts[cat] || 0;
             if (count === 0 && selectedCategory !== cat) return null;
             const isSelected = selectedCategory === cat;
+            const meta = CATEGORY_META[cat] || CATEGORY_META["Other"];
+            const Icon = meta.icon;
             return (
               <button
                 key={cat}
@@ -253,24 +273,37 @@ export function ExpensesListView({
         <div className="flex flex-col gap-2.5">
           {filteredExpenses.map((expense) => {
             const isExpanded = expandedId === expense.id;
-            const Icon = CATEGORY_ICONS[expense.category] || Receipt;
-            const colors = CATEGORY_COLORS[expense.category] || { bg: "#F1F5F9", text: "#334155" };
+            const meta = getCategoryMeta(expense.category, expense.title);
+            const Icon = meta.icon;
+            const colors = { bg: meta.bg || "#F1F5F9", text: meta.text || meta.color };
 
             // Payer resolution
             let payerLabel = "";
             let payerAvatar: Member | undefined = undefined;
 
+            const currentUserMember = members.find((m) => m.id === currentUserId || m.userId === currentUserId);
+
             if (expense.payers && Object.keys(expense.payers).length > 1) {
               payerLabel = `Multi-Payer (${Object.keys(expense.payers).length})`;
             } else {
               const pId = expense.payers ? Object.keys(expense.payers)[0] : expense.paidBy;
-              const payerMember = memberMap.get(pId);
+              const payerMember =
+                memberMap.get(pId) ||
+                members.find((m) => m.userId === pId || (m.name && m.name.toLowerCase() === (pId || "").toLowerCase()));
               payerAvatar = payerMember;
-              payerLabel = payerMember ? `${payerMember.name}` : pId;
+              const isPaidByMe =
+                pId === currentUserId ||
+                (currentUserMember && (pId === currentUserMember.id || pId === currentUserMember.userId)) ||
+                (payerMember && currentUserMember && (payerMember.id === currentUserMember.id || (payerMember.name && currentUserMember.name && payerMember.name.trim().toLowerCase() === currentUserMember.name.trim().toLowerCase())));
+              payerLabel = isPaidByMe ? "You" : payerMember ? `${payerMember.name}` : pId;
             }
 
             // User's own share in this expense
-            const myShare = expense.splits[currentUserId] || 0;
+            const myShare =
+              expense.splits[currentUserId] ||
+              (currentUserMember ? expense.splits[currentUserMember.id] : 0) ||
+              (currentUserMember?.userId ? expense.splits[currentUserMember.userId] : 0) ||
+              0;
 
             return (
               <div
@@ -295,7 +328,7 @@ export function ExpensesListView({
                           <span>{formatDate(expense.date)}</span>
                         </span>
                         <span>•</span>
-                        <span className="font-semibold text-[var(--c-inkSoft)]">{expense.category}</span>
+                        <span className="font-semibold text-[var(--c-inkSoft)]">{meta.resolvedCategory}</span>
                       </div>
                     </div>
                   </div>

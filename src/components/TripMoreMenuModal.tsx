@@ -15,6 +15,7 @@ import { Trip, Member, UserAccount } from "../types";
 import { Avatar } from "./Atoms";
 import { ThemeToggle } from "./ThemeToggle";
 import { useAuth } from "../context/AuthContext";
+import { PWAInstallButton } from "./PWAInstallButton";
 
 interface TripMoreMenuModalProps {
   isOpen: boolean;
@@ -884,6 +885,15 @@ export function TripMoreMenuModal({
                 </div>
 
                 <ThemeToggle />
+              </div>
+
+              {/* Row 2: Offline & Home Screen Install */}
+              <div
+                style={{
+                  padding: "12px 16px",
+                }}
+              >
+                <PWAInstallButton variant="menu-item" />
               </div>
             </div>
           </div>

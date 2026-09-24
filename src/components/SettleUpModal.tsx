@@ -65,21 +65,36 @@ export function SettleUpModal({
     });
   };
 
+  const resolveMember = (id?: string) => {
+    if (!id) return undefined;
+    return (
+      memberMap.get(id) ||
+      members.find(
+        (m) =>
+          m.id === id ||
+          m.userId === id ||
+          (m.name && m.name.trim().toLowerCase() === id.trim().toLowerCase())
+      )
+    );
+  };
+
   const handleQuickSettle = (debt: SimplifiedDebt) => {
-    const fromMember = memberMap.get(debt.from);
-    const toMember = memberMap.get(debt.to);
+    const fromMember = resolveMember(debt.from);
+    const toMember = resolveMember(debt.to);
     const now = new Date().toISOString();
-    const isReceiver = debt.to === currentUserId;
+    const isReceiver =
+      debt.to === currentUserId ||
+      (toMember && (toMember.id === currentUserId || toMember.userId === currentUserId));
     const initialStatus = isReceiver ? "confirmed" : "pending_confirmation";
 
     const newPayment: Payment = {
       id: uid("pay"),
       settlementId: uid("pay"),
       tripId: tripId || "active_trip",
-      from: debt.from,
-      to: debt.to,
-      fromUserId: debt.from,
-      toUserId: debt.to,
+      from: fromMember?.id || debt.from,
+      to: toMember?.id || debt.to,
+      fromUserId: fromMember?.userId || fromMember?.id || debt.from,
+      toUserId: toMember?.userId || toMember?.id || debt.to,
       amount: debt.amount,
       status: initialStatus,
       method: "Cash",
@@ -87,7 +102,7 @@ export function SettleUpModal({
       confirmedBy: isReceiver ? currentUserId : undefined,
       paidAt: isReceiver ? now : undefined,
       ts: nowStr(),
-      note: `Settlement: ${fromMember?.name} → ${toMember?.name}`,
+      note: `Settlement: ${fromMember?.name || debt.from} → ${toMember?.name || debt.to}`,
       createdAt: now,
       updatedAt: now,
     };
@@ -100,20 +115,22 @@ export function SettleUpModal({
     const numAmt = parseFloat(amount);
     if (!numAmt || numAmt <= 0 || fromId === toId) return;
 
-    const fromMember = memberMap.get(fromId);
-    const toMember = memberMap.get(toId);
+    const fromMember = resolveMember(fromId);
+    const toMember = resolveMember(toId);
     const now = new Date().toISOString();
-    const isReceiver = toId === currentUserId;
+    const isReceiver =
+      toId === currentUserId ||
+      (toMember && (toMember.id === currentUserId || toMember.userId === currentUserId));
     const initialStatus = isReceiver ? "confirmed" : "pending_confirmation";
 
     const newPayment: Payment = {
       id: uid("pay"),
       settlementId: uid("pay"),
       tripId: tripId || "active_trip",
-      from: fromId,
-      to: toId,
-      fromUserId: fromId,
-      toUserId: toId,
+      from: fromMember?.id || fromId,
+      to: toMember?.id || toId,
+      fromUserId: fromMember?.userId || fromMember?.id || fromId,
+      toUserId: toMember?.userId || toMember?.id || toId,
       amount: numAmt,
       status: initialStatus,
       method: method || "Cash",
@@ -121,7 +138,7 @@ export function SettleUpModal({
       confirmedBy: isReceiver ? currentUserId : undefined,
       paidAt: isReceiver ? now : undefined,
       ts: nowStr(),
-      note: note.trim() || `Manual settlement: ${fromMember?.name} → ${toMember?.name}`,
+      note: note.trim() || `Manual settlement: ${fromMember?.name || fromId} → ${toMember?.name || toId}`,
       createdAt: now,
       updatedAt: now,
     };

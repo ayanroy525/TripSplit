@@ -66,8 +66,12 @@ export function PeopleView({
       {/* Member Cards List */}
       <div className="flex flex-col gap-3">
         {trip.members.map((m) => {
-          const stats = memberStats[m.id] || { paid: 0, share: 0, net: 0 };
-          const isMe = m.id === currentUserId;
+          const stats = memberStats[m.id] || (m.userId ? memberStats[m.userId] : undefined) || { paid: 0, share: 0, net: 0 };
+          const isMe =
+            m.id === currentUserId ||
+            m.id === currentUser.id ||
+            (currentUser.userId && m.userId === currentUser.userId) ||
+            (currentUser.name && m.name && m.name.trim().toLowerCase() === currentUser.name.trim().toLowerCase());
 
           return (
             <div

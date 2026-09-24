@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="pwaBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0F6B65"/>
+      <stop offset="100%" stop-color="#07403D"/>
+    </linearGradient>
+    <linearGradient id="goldAcc" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FBBF24"/>
+      <stop offset="100%" stop-color="#D97706"/>
+    </linearGradient>
+    <filter id="dropShadow" x="-10%" y="-10%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+
+  <!-- Background rounded rect with safe padding -->
+  <rect width="512" height="512" rx="112" fill="url(#pwaBg)"/>
+
+  <!-- Compass / Globe travel ring subtle background -->
+  <circle cx="256" cy="256" r="170" fill="none" stroke="#2DD4BF" stroke-opacity="0.2" stroke-width="6" stroke-dasharray="12 10"/>
+
+  <!-- Main Card Graphic: Wallet / Ticket / Split Emblem -->
+  <g filter="url(#dropShadow)" transform="translate(0, -6)">
+    <!-- Trip Destination Card / Receipt -->
+    <rect x="136" y="140" width="240" height="250" rx="32" fill="#FFFFFF" fill-opacity="0.96"/>
+    
+    <!-- Top Header bar in card -->
+    <path d="M 136 172 C 136 154.3 150.3 140 168 140 L 344 140 C 361.7 140 376 154.3 376 172 L 376 195 L 136 195 Z" fill="#0F6B65"/>
+    <circle cx="166" cy="167" r="6" fill="#2DD4BF"/>
+    <rect x="184" y="163" width="70" height="8" rx="4" fill="#FFFFFF" fill-opacity="0.85"/>
+
+    <!-- Split Balance Scales / Currency symbol -->
+    <!-- Central Icon: Smart Splitter Symbol -->
+    <circle cx="256" cy="275" r="46" fill="url(#goldAcc)"/>
+    
+    <!-- Currency / Split Glyphs -->
+    <path d="M 238 260 L 274 260 M 238 270 L 274 270 M 248 260 L 248 288 C 248 296 264 296 264 288 L 264 260" stroke="#FFFFFF" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+
+    <!-- Traveler Dots at Bottom -->
+    <circle cx="190" cy="355" r="14" fill="#E39A2D"/>
+    <circle cx="256" cy="355" r="14" fill="#2DD4BF"/>
+    <circle cx="322" cy="355" r="14" fill="#F87171"/>
+    
+    <!-- Connecting sync line -->
+    <line x1="204" y1="355" x2="242" y2="355" stroke="#CBD5E1" stroke-width="3" stroke-linecap="round"/>
+    <line x1="270" y1="355" x2="308" y2="355" stroke="#CBD5E1" stroke-width="3" stroke-linecap="round"/>
+  </g>
+
+  <!-- Offline Sync Badge in top right corner of icon -->
+  <circle cx="380" cy="132" r="32" fill="#2DD4BF" filter="url(#dropShadow)"/>
+  <path d="M 370 132 L 377 139 L 392 124" stroke="#042F2E" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>

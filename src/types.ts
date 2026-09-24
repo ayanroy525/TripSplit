@@ -263,5 +263,20 @@ export interface WhatsAppNotificationPayload {
   messageText: string;
   targetPhone?: string;
   targetMemberIds?: string[];
-  eventType: "expense" | "settlement" | "reminder" | "invite" | "manual";
+  eventType:
+    | "add"
+    | "edit"
+    | "delete"
+    | "settle"
+    | "invite"
+    | "manual"
+    | "debt_reminder"
+    | "balance_summary"
+    | "reminder"
+    | "expense"
+    | "settlement";
+  individualMessages?: Record<string, string>;
+  expense?: Expense;
+  trip?: Trip;
+  creatorName?: string;
 }

@@ -167,72 +167,149 @@ export function sharesSplit(
 
 /**
  * Computes paid vs share balances and final net for each member.
- * Supports both single-payer (expense.paidBy) and multi-payer (expense.payers).
- * Settlements adjust the outstanding net balance.
+ * Supports single-payer (expense.paidBy) and multi-payer (expense.payers).
+ * Robustly matches identifiers across member.id, member.userId, and member.name.
+ * Populates alias keys so lookups by either member.id or userId work seamlessly.
  */
 export function computeBalances(
   members: Member[],
   expenses: Expense[],
   payments: Payment[]
 ) {
-  const bal: Record<string, { paid: number; share: number }> = {};
-  members.forEach((m) => (bal[m.id] = { paid: 0, share: 0 }));
+  // Helper to resolve any member identifier (m.id, m.userId, m.name, m.email) to the canonical member
+  const resolveMember = (rawId?: string | null): Member | undefined => {
+    if (!rawId) return undefined;
+    const trimmed = String(rawId).trim();
+    if (!trimmed) return undefined;
 
-  expenses
+    // 1. Direct match by member.id
+    let found = members.find((m) => m.id === trimmed);
+    if (found) return found;
+
+    // 2. Match by member.userId
+    found = members.find((m) => m.userId && m.userId === trimmed);
+    if (found) return found;
+
+    // 3. Match by name (case-insensitive)
+    found = members.find(
+      (m) => m.name && m.name.trim().toLowerCase() === trimmed.toLowerCase()
+    );
+    if (found) return found;
+
+    // 4. Match by email (case-insensitive)
+    found = members.find(
+      (m) => m.email && m.email.trim().toLowerCase() === trimmed.toLowerCase()
+    );
+    return found;
+  };
+
+  const bal: Record<string, { paid: number; share: number }> = {};
+  // Initialize canonical member IDs
+  members.forEach((m) => {
+    bal[m.id] = { paid: 0, share: 0 };
+  });
+
+  (expenses || [])
     .filter((e) => !e.deleted)
     .forEach((e) => {
+      const expAmount = Number(e.amount) || 0;
+
       // 1. Credit Payer(s)
       if (e.payers && Object.keys(e.payers).length > 0) {
-        Object.entries(e.payers).forEach(([pid, paidAmt]) => {
-          if (bal[pid]) {
-            bal[pid].paid = round2(bal[pid].paid + (Number(paidAmt) || 0));
+        Object.entries(e.payers).forEach(([rawPid, rawPaidAmt]) => {
+          const payerMember = resolveMember(rawPid);
+          const paidAmt = Number(rawPaidAmt) || 0;
+          if (payerMember && bal[payerMember.id]) {
+            bal[payerMember.id].paid = round2(bal[payerMember.id].paid + paidAmt);
+          } else if (bal[rawPid]) {
+            bal[rawPid].paid = round2(bal[rawPid].paid + paidAmt);
           }
         });
-      } else if (bal[e.paidBy]) {
-        bal[e.paidBy].paid = round2(bal[e.paidBy].paid + e.amount);
+      } else {
+        const payerMember = resolveMember(e.paidBy);
+        if (payerMember && bal[payerMember.id]) {
+          bal[payerMember.id].paid = round2(bal[payerMember.id].paid + expAmount);
+        } else if (bal[e.paidBy]) {
+          bal[e.paidBy].paid = round2(bal[e.paidBy].paid + expAmount);
+        }
       }
 
       // 2. Debit Participants (their fair share)
-      Object.entries(e.splits || {}).forEach(([id, amt]) => {
-        if (bal[id]) {
-          bal[id].share = round2(bal[id].share + (Number(amt) || 0));
+      Object.entries(e.splits || {}).forEach(([rawId, rawAmt]) => {
+        const splitAmt = Number(rawAmt) || 0;
+        const splitMember = resolveMember(rawId);
+        if (splitMember && bal[splitMember.id]) {
+          bal[splitMember.id].share = round2(bal[splitMember.id].share + splitAmt);
+        } else if (bal[rawId]) {
+          bal[rawId].share = round2(bal[rawId].share + splitAmt);
         }
       });
     });
 
-  // 3. Compute Base Net Balance: Paid - Share
-  const net: Record<string, number> = {};
+  // 3. Compute Base Net Balance: Paid - Share (by canonical member.id)
+  const canonicalNet: Record<string, number> = {};
   members.forEach((m) => {
-    net[m.id] = round2((bal[m.id]?.paid || 0) - (bal[m.id]?.share || 0));
+    canonicalNet[m.id] = round2((bal[m.id]?.paid || 0) - (bal[m.id]?.share || 0));
   });
 
   // 4. Apply confirmed/paid settlements
   (payments || [])
     .filter((p) => p.status === "PAID" || p.status === "confirmed")
     .forEach((p) => {
-      if (net[p.from] !== undefined) {
-        // Debtor paid money -> net increases toward 0
-        net[p.from] = round2(net[p.from] + p.amount);
+      const pAmount = Number(p.amount) || 0;
+      const fromMember = resolveMember(p.from || (p as any).fromUserId);
+      const toMember = resolveMember(p.to || (p as any).toUserId);
+
+      if (fromMember && canonicalNet[fromMember.id] !== undefined) {
+        canonicalNet[fromMember.id] = round2(canonicalNet[fromMember.id] + pAmount);
       }
-      if (net[p.to] !== undefined) {
-        // Creditor received money -> net decreases toward 0
-        net[p.to] = round2(net[p.to] - p.amount);
+      if (toMember && canonicalNet[toMember.id] !== undefined) {
+        canonicalNet[toMember.id] = round2(canonicalNet[toMember.id] - pAmount);
       }
     });
 
-  return { paidShare: bal, net };
+  // 5. Expand bal and net with alias keys (userId, etc.) so any lookup works!
+  const finalBal: Record<string, { paid: number; share: number }> = { ...bal };
+  const finalNet: Record<string, number> = { ...canonicalNet };
+
+  members.forEach((m) => {
+    if (m.userId && m.userId !== m.id) {
+      finalBal[m.userId] = bal[m.id];
+      finalNet[m.userId] = canonicalNet[m.id];
+    }
+  });
+
+  return { paidShare: finalBal, net: finalNet, canonicalNet };
 }
 
 /**
  * Greedy Min-Cash-Flow debt simplification algorithm to minimize total number of settlement transactions.
+ * Operates on unique canonical member balances to prevent duplicate transactions.
  */
-export function simplifyDebts(net: Record<string, number>): SimplifiedDebt[] {
-  const creditors = Object.entries(net)
+export function simplifyDebts(
+  net: Record<string, number>,
+  members?: Member[]
+): SimplifiedDebt[] {
+  let uniqueNet: Record<string, number> = {};
+  if (members && members.length > 0) {
+    const seen = new Set<string>();
+    members.forEach((m) => {
+      if (!seen.has(m.id)) {
+        seen.add(m.id);
+        const val = net[m.id] !== undefined ? net[m.id] : (m.userId && net[m.userId] !== undefined ? net[m.userId] : 0);
+        uniqueNet[m.id] = round2(val);
+      }
+    });
+  } else {
+    uniqueNet = { ...net };
+  }
+
+  const creditors = Object.entries(uniqueNet)
     .filter(([, v]) => v > 0.01)
     .map(([id, v]) => ({ id, amt: round2(v) }))
     .sort((a, b) => b.amt - a.amt);
 
-  const debtors = Object.entries(net)
+  const debtors = Object.entries(uniqueNet)
     .filter(([, v]) => v < -0.01)
     .map(([id, v]) => ({ id, amt: round2(-v) }))
     .sort((a, b) => b.amt - a.amt);

@@ -43,9 +43,28 @@ export function BalanceView({
 }: BalanceViewProps) {
   const [activeTab, setActiveTab] = useState<"smart" | "history">("smart");
 
+  // Helper to check if an identifier matches current logged-in user
+  const isMe = (id?: string) => {
+    if (!id) return false;
+    if (id === currentUserId || id === currentUser.id) return true;
+    if (currentUser.userId && id === currentUser.userId) return true;
+    if (currentUser.name && id.trim().toLowerCase() === currentUser.name.trim().toLowerCase()) return true;
+    return false;
+  };
+
+  const resolveMember = (id?: string) => {
+    if (!id) return undefined;
+    return trip.members.find(
+      (m) =>
+        m.id === id ||
+        (m.userId && m.userId === id) ||
+        (m.name && m.name.trim().toLowerCase() === id.trim().toLowerCase())
+    );
+  };
+
   // User debts
-  const userOwes = simplifiedDebts.filter((d) => d.from === currentUserId);
-  const userReceives = simplifiedDebts.filter((d) => d.to === currentUserId);
+  const userOwes = simplifiedDebts.filter((d) => isMe(d.from));
+  const userReceives = simplifiedDebts.filter((d) => isMe(d.to));
 
   // Payments list
   const payments = trip.payments || [];
@@ -63,6 +82,8 @@ export function BalanceView({
                 ? "text-emerald-700"
                 : userStats.net < -0.01
                 ? "text-[var(--c-rust)]"
+                : simplifiedDebts.length > 0
+                ? "text-amber-500"
                 : "text-[var(--c-teal)]"
             }`}
           >
@@ -70,7 +91,9 @@ export function BalanceView({
               ? "You are owed money"
               : userStats.net < -0.01
               ? "You owe money"
-              : "Net Balance"}
+              : simplifiedDebts.length > 0
+              ? "Your dues cleared • Group has pending settlements"
+              : "All Settled Up"}
           </div>
 
           <div
@@ -86,6 +109,8 @@ export function BalanceView({
               ? `+${money(userStats.net)}`
               : userStats.net < -0.01
               ? `-${money(Math.abs(userStats.net))}`
+              : simplifiedDebts.length > 0
+              ? "₹0.00 (You're Settled)"
               : "All Settled Up"}
           </div>
 
@@ -94,6 +119,8 @@ export function BalanceView({
               ? `You paid ${money(userStats.paid)} upfront for group expenses`
               : userStats.net < -0.01
               ? `Your total consumption share is ${money(userStats.share)}`
+              : simplifiedDebts.length > 0
+              ? `${simplifiedDebts.length} pending settlement transaction(s) among members`
               : "No pending dues in this trip"}
           </div>
         </div>
@@ -105,17 +132,17 @@ export function BalanceView({
               Members who owe you:
             </div>
             {userReceives.map((d, idx) => {
-              const debtor = trip.members.find((m) => m.id === d.from);
+              const debtor = resolveMember(d.from);
               return (
                 <div
                   key={idx}
                   className="flex items-center justify-between gap-3 bg-[var(--c-card)] p-2.5 sm:p-3 rounded-lg border border-[var(--c-line)]"
                 >
                   <div className="flex items-center gap-2.5">
-                    <Avatar member={debtor} size={32} />
+                    <Avatar member={debtor} name={debtor?.name || d.from} size={32} />
                     <div>
                       <div className="text-sm font-semibold text-[var(--c-ink)]">
-                        {debtor?.name}
+                        {debtor?.name || d.from}
                       </div>
                       <div className="text-xs text-[var(--c-inkSoft)]">
                         owes you <b className="text-emerald-700">{money(d.amount)}</b>
@@ -125,7 +152,7 @@ export function BalanceView({
 
                   <button
                     type="button"
-                    onClick={() => onOpenSettleModal(debtor?.id, currentUserId, d.amount)}
+                    onClick={() => onOpenSettleModal(debtor?.id || d.from, currentUser.id, d.amount)}
                     className="px-3 py-1.5 text-xs font-semibold text-[var(--c-teal-contrast-text)] bg-teal-700 hover:bg-teal-800 rounded-lg shadow-sm transition-colors cursor-pointer"
                   >
                     Record Received
@@ -142,17 +169,17 @@ export function BalanceView({
               You owe:
             </div>
             {userOwes.map((d, idx) => {
-              const creditor = trip.members.find((m) => m.id === d.to);
+              const creditor = resolveMember(d.to);
               return (
                 <div
                   key={idx}
                   className="flex items-center justify-between gap-3 bg-[var(--c-card)] p-2.5 sm:p-3 rounded-lg border border-[var(--c-line)]"
                 >
                   <div className="flex items-center gap-2.5">
-                    <Avatar member={creditor} size={32} />
+                    <Avatar member={creditor} name={creditor?.name || d.to} size={32} />
                     <div>
                       <div className="text-sm font-semibold text-[var(--c-ink)]">
-                        {creditor?.name}
+                        {creditor?.name || d.to}
                       </div>
                       <div className="text-xs text-[var(--c-inkSoft)]">
                         Amount: <b className="text-[var(--c-rust)]">{money(d.amount)}</b>
@@ -162,7 +189,7 @@ export function BalanceView({
 
                   <button
                     type="button"
-                    onClick={() => onOpenSettleModal(currentUserId, creditor?.id, d.amount)}
+                    onClick={() => onOpenSettleModal(currentUser.id, creditor?.id || d.to, d.amount)}
                     className="px-3.5 py-1.5 text-xs font-semibold text-[var(--c-teal-contrast-text)] bg-[var(--c-ink)] hover:bg-[var(--c-inkSoft)] rounded-lg shadow-sm transition-colors cursor-pointer flex items-center gap-1.5"
                   >
                     <Check className="w-3.5 h-3.5" />
@@ -241,10 +268,10 @@ export function BalanceView({
           ) : (
             <div className="flex flex-col gap-2.5">
               {simplifiedDebts.map((debt, idx) => {
-                const debtor = trip.members.find((m) => m.id === debt.from);
-                const creditor = trip.members.find((m) => m.id === debt.to);
-                const isUserDebtor = debt.from === currentUserId;
-                const isUserCreditor = debt.to === currentUserId;
+                const debtor = resolveMember(debt.from);
+                const creditor = resolveMember(debt.to);
+                const isUserDebtor = isMe(debt.from);
+                const isUserCreditor = isMe(debt.to);
 
                 return (
                   <div
@@ -258,12 +285,12 @@ export function BalanceView({
                     }`}
                   >
                     <div className="flex items-center gap-3">
-                      <Avatar member={debtor} size={36} />
+                      <Avatar member={debtor} name={debtor?.name || debt.from} size={36} />
                       <div>
                         <div className="text-sm font-semibold text-[var(--c-ink)] flex items-center gap-1.5">
-                          <span>{debtor?.name} {isUserDebtor && "(You)"}</span>
+                          <span>{debtor?.name || debt.from} {isUserDebtor && "(You)"}</span>
                           <ArrowRight className="w-3.5 h-3.5 text-[var(--c-inkSoft)]" />
-                          <span>{creditor?.name} {isUserCreditor && "(You)"}</span>
+                          <span>{creditor?.name || debt.to} {isUserCreditor && "(You)"}</span>
                         </div>
                         <div className="text-xs text-[var(--c-inkSoft)] mt-0.5">
                           {isUserDebtor

@@ -280,6 +280,8 @@ export function HomeDashboardView({
                     ? C.positive
                     : userStats.net < -0.01
                     ? C.rust
+                    : simplifiedDebts.length > 0
+                    ? C.marigold
                     : C.inkSoft,
               }}
             >
@@ -287,6 +289,8 @@ export function HomeDashboardView({
                 ? "You receive"
                 : userStats.net < -0.01
                 ? "You owe"
+                : simplifiedDebts.length > 0
+                ? "Pending Group Settlements"
                 : "All Settled Up"}
             </div>
             <div
@@ -308,9 +312,14 @@ export function HomeDashboardView({
                 ? `-${money(Math.abs(userStats.net))}`
                 : "₹0.00"}
             </div>
+            {Math.abs(userStats.net) <= 0.01 && simplifiedDebts.length > 0 && (
+              <div style={{ fontSize: 11.5, color: C.inkSoft, marginTop: 2 }}>
+                {simplifiedDebts.length} pending settlement(s) in group
+              </div>
+            )}
           </div>
 
-          {Math.abs(userStats.net) > 0.01 ? (
+          {Math.abs(userStats.net) > 0.01 || simplifiedDebts.length > 0 ? (
             <button
               id="btn-home-settle-up-cta"
               type="button"
@@ -560,9 +569,26 @@ export function HomeDashboardView({
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {recentExpenses.map((exp) => {
-              const payer = trip.members.find((m) => m.id === exp.paidBy);
-              const isPaidByMe = exp.paidBy === currentUserId;
-              const myShare = exp.splits[currentUserId] || 0;
+              const payer = trip.members.find(
+                (m) =>
+                  m.id === exp.paidBy ||
+                  (m.userId && m.userId === exp.paidBy) ||
+                  (m.name && exp.paidBy && m.name.trim().toLowerCase() === exp.paidBy.trim().toLowerCase())
+              );
+              const isPaidByMe =
+                exp.paidBy === currentUserId ||
+                exp.paidBy === currentUser.id ||
+                (currentUser.userId && exp.paidBy === currentUser.userId) ||
+                (payer && (
+                  payer.id === currentUser.id ||
+                  (currentUser.userId && payer.userId === currentUser.userId) ||
+                  (payer.name && currentUser.name && payer.name.trim().toLowerCase() === currentUser.name.trim().toLowerCase())
+                ));
+              const myShare =
+                exp.splits[currentUser.id] ||
+                (currentUser.userId ? exp.splits[currentUser.userId] : 0) ||
+                exp.splits[currentUserId] ||
+                0;
 
               return (
                 <div
@@ -583,7 +609,7 @@ export function HomeDashboardView({
                   }}
                 >
                   <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
-                    <CategoryBadge category={exp.category} size="sm" />
+                    <CategoryBadge category={exp.category} title={exp.title} size="sm" />
                     <div style={{ minWidth: 0 }}>
                       <div
                         style={{
@@ -664,10 +690,28 @@ export function HomeDashboardView({
 
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {simplifiedDebts.slice(0, 3).map((debt, idx) => {
-              const debtor = trip.members.find((m) => m.id === debt.from);
-              const creditor = trip.members.find((m) => m.id === debt.to);
-              const isUserDebtor = debt.from === currentUserId;
-              const isUserCreditor = debt.to === currentUserId;
+              const debtor = trip.members.find(
+                (m) =>
+                  m.id === debt.from ||
+                  (m.userId && m.userId === debt.from) ||
+                  (m.name && m.name.trim().toLowerCase() === debt.from.trim().toLowerCase())
+              );
+              const creditor = trip.members.find(
+                (m) =>
+                  m.id === debt.to ||
+                  (m.userId && m.userId === debt.to) ||
+                  (m.name && m.name.trim().toLowerCase() === debt.to.trim().toLowerCase())
+              );
+              const isUserDebtor =
+                debt.from === currentUserId ||
+                debt.from === currentUser.id ||
+                (currentUser.userId && debt.from === currentUser.userId) ||
+                (debtor && (debtor.id === currentUser.id || (currentUser.userId && debtor.userId === currentUser.userId) || (debtor.name && currentUser.name && debtor.name.trim().toLowerCase() === currentUser.name.trim().toLowerCase())));
+              const isUserCreditor =
+                debt.to === currentUserId ||
+                debt.to === currentUser.id ||
+                (currentUser.userId && debt.to === currentUser.userId) ||
+                (creditor && (creditor.id === currentUser.id || (currentUser.userId && creditor.userId === currentUser.userId) || (creditor.name && currentUser.name && creditor.name.trim().toLowerCase() === currentUser.name.trim().toLowerCase())));
 
               return (
                 <div
@@ -695,14 +739,14 @@ export function HomeDashboardView({
                   }}
                 >
                   <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
-                    <Avatar member={debtor} size={24} />
+                    <Avatar member={debtor} name={debtor?.name || debt.from} size={24} />
                     <span style={{ fontWeight: 700, color: C.ink }}>
-                      {debtor?.name} {isUserDebtor && "(You)"}
+                      {debtor?.name || debt.from} {isUserDebtor && "(You)"}
                     </span>
                     <span style={{ color: C.inkSoft }}>→</span>
-                    <Avatar member={creditor} size={24} />
+                    <Avatar member={creditor} name={creditor?.name || debt.to} size={24} />
                     <span style={{ fontWeight: 700, color: C.ink }}>
-                      {creditor?.name} {isUserCreditor && "(You)"}
+                      {creditor?.name || debt.to} {isUserCreditor && "(You)"}
                     </span>
                   </div>
 
