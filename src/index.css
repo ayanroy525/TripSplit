@@ -1,0 +1,169 @@
+@import "tailwindcss";
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body {
+  overflow-x: hidden;
+  max-width: 100vw;
+  width: 100%;
+}
+
+:root {
+  --c-ink: #0F172A;
+  --c-inkSoft: #64748B;
+  --c-paper: #F8F9FA;
+  --c-paperDark: #F1F3F5;
+  --c-card: #FFFFFF;
+  --c-marigold: #D97706;
+  --c-marigoldDark: #B45309;
+  --c-teal: #0F6B65;
+  --c-tealSoft: #E6F4F2;
+  --c-tealDark: #0B4F4B;
+  --c-rust: #DC2626;
+  --c-rustSoft: #FEE2E2;
+  --c-positive: #16A34A;
+  --c-positiveSoft: #DCFCE7;
+  --c-line: #E2E8F0;
+  --c-lineSoft: #F1F5F9;
+  --c-wa-bg: #E7F8EE;
+  --c-wa-text: #125C2B;
+  --c-wa-border: #25D366;
+  --c-badge-yellow-bg: #FEF3C7;
+  --c-badge-yellow-text: #92400E;
+  --c-modal-overlay: rgba(15, 23, 42, 0.6);
+  --c-input-bg: #FFFFFF;
+  --c-card-unread: rgba(15, 107, 101, 0.06);
+  --c-btn-settle-bg: #0F6B65;
+  --c-btn-settle-text: #FFFFFF;
+  --c-teal-contrast-text: #FFFFFF;
+  --c-badge-brand-bg: #0F6B65;
+  --c-badge-brand-text: #FFFFFF;
+}
+
+[data-theme="dark"], .dark {
+  --c-ink: #F8FAFC;
+  --c-inkSoft: #94A3B8;
+  --c-paper: #0F172A;
+  --c-paperDark: #1E293B;
+  --c-card: #1E293B;
+  --c-marigold: #FBBF24;
+  --c-marigoldDark: #F59E0B;
+  --c-teal: #2DD4BF;
+  --c-tealSoft: #134E4A;
+  --c-tealDark: #14B8A6;
+  --c-rust: #F87171;
+  --c-rustSoft: #450A0A;
+  --c-positive: #4ADE80;
+  --c-positiveSoft: #052E16;
+  --c-line: #334155;
+  --c-lineSoft: #1E293B;
+  --c-wa-bg: #0E331E;
+  --c-wa-text: #4ADE80;
+  --c-wa-border: #25D366;
+  --c-badge-yellow-bg: #352610;
+  --c-badge-yellow-text: #FBBF24;
+  --c-modal-overlay: rgba(0, 0, 0, 0.78);
+  --c-input-bg: #1E293B;
+  --c-card-unread: rgba(45, 212, 191, 0.12);
+  --c-btn-settle-bg: #2DD4BF;
+  --c-btn-settle-text: #0F172A;
+  --c-teal-contrast-text: #0F172A;
+  --c-badge-brand-bg: #042F2E;
+  --c-badge-brand-text: #5EEAD4;
+}
+
+body {
+  background-color: var(--c-paper);
+  color: var(--c-ink);
+  transition: background-color 0.2s ease, color 0.2s ease;
+  min-height: 100vh;
+  margin: 0;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Mobile viewport bottom padding for bottom navigation */
+.has-bottom-nav {
+  padding-bottom: 84px;
+}
+
+@media (min-width: 768px) {
+  .has-bottom-nav {
+    padding-bottom: 32px;
+  }
+}
+
+@keyframes modalSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes bottomSheetSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes toastSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(20px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes pulse {
+  0%, 100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.08);
+  }
+}
+
+/* Subtle scrollbar */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--c-line, #E2E8F0);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--c-teal, #0F6B65);
+}
+
+/* Print styling */
+@media print {
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+  header, #btn-add-expense-main, button, #btn-open-members-modal, #btn-open-share-modal, #btn-reset-sample, .no-print, nav {
+    display: none !important;
+  }
+}
+

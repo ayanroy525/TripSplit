@@ -1,0 +1,6 @@
+{
+  "name": "Trip Expense Splitter",
+  "description": "Private group travel expense management application with precise expense splitting, automated balance calculation, and manual settlement tracking.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
