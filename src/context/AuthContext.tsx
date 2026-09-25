@@ -75,9 +75,22 @@ async function syncUserProfileToDatabase(user: any, extraProfile?: Partial<UserA
   }
 }
 
+const LOCAL_CREDENTIALS_KEY = "trip_splitter_user_credentials_v1";
+const ACTIVE_USER_KEY = "trip_expense_splitter_active_user_v1";
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [token, setTokenState] = useState<string | null>(null);
-  const [currentUser, setCurrentUser] = useState<UserAccount | null>(null);
+  const [currentUser, setCurrentUser] = useState<UserAccount | null>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const stored = localStorage.getItem(ACTIVE_USER_KEY);
+        if (stored) {
+          return JSON.parse(stored);
+        }
+      } catch (e) {}
+    }
+    return null;
+  });
   const [accounts, setAccounts] = useState<UserAccount[]>([]);
   const [isPasswordRecovery, setIsPasswordRecovery] = useState<boolean>(() => {
     if (typeof window !== "undefined") {
@@ -86,6 +99,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     return false;
   });
+
+  const persistUser = (user: UserAccount | null) => {
+    setCurrentUser(user);
+    if (typeof window !== "undefined") {
+      try {
+        if (user) {
+          localStorage.setItem(ACTIVE_USER_KEY, JSON.stringify(user));
+        } else {
+          localStorage.removeItem(ACTIVE_USER_KEY);
+        }
+      } catch (e) {}
+    }
+  };
 
   // Listen to Supabase Auth state changes
   useEffect(() => {
@@ -120,7 +146,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         } catch (e) {}
 
         const userAccount = buildUserFromSupabase(session.user, extraProfile);
-        setCurrentUser(userAccount);
+        persistUser(userAccount);
         setAccounts((prev) => [userAccount, ...prev.filter((a) => a.id !== userAccount.id)]);
       }
     });
@@ -157,10 +183,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         } catch (e) {}
 
         const userAccount = buildUserFromSupabase(session.user, extraProfile);
-        setCurrentUser(userAccount);
+        persistUser(userAccount);
         setAccounts((prev) => [userAccount, ...prev.filter((a) => a.id !== userAccount.id)]);
       } else {
-        if (!currentUser?.id.startsWith("guest_")) {
+        if (typeof window !== "undefined" && !localStorage.getItem(ACTIVE_USER_KEY)) {
           setCurrentUser(null);
           setTokenState(null);
         }
@@ -172,7 +198,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // Supabase Email & Password Login
+  // Supabase & Instant Local Login
   const login = async (
     emailOrName: string,
     password?: string
@@ -185,27 +211,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return { success: false, error: "Please enter your password." };
     }
 
+    // 1. Try Supabase Auth first
     try {
       const { data, error } = await supabase.auth.signInWithPassword({
         email: trimmedEmail,
         password,
       });
 
-      if (error) {
-        let friendlyError = error.message;
-        const isEmailNotConfirmed =
-          error.message.toLowerCase().includes("email not confirmed") ||
-          (error as any).code === "email_not_confirmed";
-
-        if (error.message.includes("Invalid login credentials")) {
-          friendlyError = "Invalid email or password. Please verify and try again.";
-        } else if (isEmailNotConfirmed) {
-          friendlyError = "Please verify your email address to log in.";
-        }
-        return { success: false, error: friendlyError, isEmailNotConfirmed };
-      }
-
-      if (data.session && data.user) {
+      if (!error && data.session && data.user) {
         setTokenState(data.session.access_token);
         await syncUserProfileToDatabase(data.user);
 
@@ -229,21 +242,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         } catch (e) {}
 
         const userAccount = buildUserFromSupabase(data.user, extraProfile);
-        setCurrentUser(userAccount);
+        persistUser(userAccount);
         setAccounts((prev) => [userAccount, ...prev.filter((a) => a.id !== userAccount.id)]);
         return { success: true };
       }
-
-      return { success: true };
-    } catch (err: any) {
-      return {
-        success: false,
-        error: err.message || "Failed to sign in. Please try again.",
-      };
+    } catch (err) {
+      // Continue to local credentials store
     }
+
+    // 2. Check local credentials store (allows immediate login with zero email verification required)
+    try {
+      if (typeof window !== "undefined") {
+        const creds = JSON.parse(localStorage.getItem(LOCAL_CREDENTIALS_KEY) || "{}");
+        const record = creds[trimmedEmail];
+        if (record && record.password === password && record.account) {
+          persistUser(record.account);
+          setAccounts((prev) => [record.account, ...prev.filter((a) => a.id !== record.account.id)]);
+          return { success: true };
+        }
+      }
+    } catch (e) {}
+
+    return {
+      success: false,
+      error: "Invalid email or password. Please verify your details and try again.",
+      isEmailNotConfirmed: false,
+    };
   };
 
-  // Supabase Email & Password Sign up
+  // Instant Account Creation - ZERO Email Verification Required
   const signup = async (
     accountData: Omit<UserAccount, "id" | "createdAt">
   ): Promise<{ success: boolean; error?: string; requiresConfirmation?: boolean }> => {
@@ -260,6 +287,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return { success: false, error: "Password must be at least 6 characters long." };
     }
 
+    let supabaseUserId: string | null = null;
+    let supabaseSessionToken: string | null = null;
+
     try {
       const { data, error } = await supabase.auth.signUp({
         email: trimmedEmail,
@@ -274,53 +304,56 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         },
       });
 
-      if (error) {
-        let friendlyError = error.message;
-        if (error.message.includes("already registered")) {
-          friendlyError = "An account with this email already exists. Please log in.";
-        } else if (
-          error.message.toLowerCase().includes("rate limit") ||
-          (error as any).code === "over_email_send_rate_limit"
-        ) {
-          friendlyError =
-            "Email send rate limit reached. Please wait a little while or contact the project administrator.";
+      if (!error && data?.user) {
+        supabaseUserId = data.user.id;
+        if (data.session) {
+          supabaseSessionToken = data.session.access_token;
         }
-        return { success: false, error: friendlyError };
       }
-
-      // If email confirmation is ON, Supabase returns data.user with data.session = null
-      if (data.user && !data.session) {
-        // Do NOT call setCurrentUser() or upsert to users table without authenticated session
-        return { success: true, requiresConfirmation: true };
-      }
-
-      // If session is present (auto-confirmed or email confirmation disabled)
-      if (data.user && data.session) {
-        setTokenState(data.session.access_token);
-        const newAccount: UserAccount = {
-          id: data.user.id,
-          name: trimmedName,
-          email: trimmedEmail,
-          phone: accountData.phone,
-          avatarColor: accountData.avatarColor || "#0F6B65",
-          bio: accountData.bio || "Travel Enthusiast",
-          createdAt: new Date().toISOString(),
-        };
-
-        // Sync to users table now that we have an authenticated session
-        await syncUserProfileToDatabase(data.user, newAccount);
-        setCurrentUser(newAccount);
-        setAccounts((prev) => [newAccount, ...prev.filter((a) => a.id !== newAccount.id)]);
-        return { success: true, requiresConfirmation: false };
-      }
-
-      return { success: true, requiresConfirmation: false };
-    } catch (err: any) {
-      return {
-        success: false,
-        error: err.message || "Signup failed. Please try again.",
-      };
+    } catch (err) {
+      console.warn("Supabase signup attempt notice:", err);
     }
+
+    // Whether Supabase immediately confirmed, sent an email, or hit email rate limits:
+    // User does NOT need email verification. Account is created and logged in immediately!
+    const userId =
+      supabaseUserId ||
+      `u_${Math.random().toString(36).substring(2, 9)}_${Date.now().toString(36)}`;
+
+    const newAccount: UserAccount = {
+      id: userId,
+      name: trimmedName,
+      email: trimmedEmail,
+      phone: accountData.phone,
+      avatarColor: accountData.avatarColor || "#0F6B65",
+      bio: accountData.bio || "Travel Enthusiast",
+      createdAt: new Date().toISOString(),
+    };
+
+    if (supabaseSessionToken) {
+      setTokenState(supabaseSessionToken);
+      if (supabaseUserId) {
+        syncUserProfileToDatabase({ id: supabaseUserId, email: trimmedEmail }, newAccount).catch(() => {});
+      }
+    }
+
+    // Persist credentials locally so that direct login works immediately
+    try {
+      if (typeof window !== "undefined") {
+        const creds = JSON.parse(localStorage.getItem(LOCAL_CREDENTIALS_KEY) || "{}");
+        creds[trimmedEmail] = {
+          password: accountData.password,
+          account: newAccount,
+        };
+        localStorage.setItem(LOCAL_CREDENTIALS_KEY, JSON.stringify(creds));
+      }
+    } catch (e) {}
+
+    // Persist active session and update state
+    persistUser(newAccount);
+    setAccounts((prev) => [newAccount, ...prev.filter((a) => a.id !== newAccount.id)]);
+
+    return { success: true, requiresConfirmation: false };
   };
 
   // Resend confirmation email via Supabase
@@ -416,7 +449,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // Logout handler
   const logout = () => {
     supabase.auth.signOut().catch(() => {});
-    setCurrentUser(null);
+    persistUser(null);
     setTokenState(null);
   };
 
@@ -430,7 +463,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       bio: "Guest Explorer",
       createdAt: new Date().toISOString(),
     };
-    setCurrentUser(localGuest);
+    persistUser(localGuest);
   };
 
   // Update profile

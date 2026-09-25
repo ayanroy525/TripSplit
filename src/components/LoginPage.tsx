@@ -31,9 +31,9 @@ interface LoginPageProps {
 }
 
 export function LoginPage({ onSuccess }: LoginPageProps) {
-  const { login, signup, continueAsGuest, sendPasswordReset, resendConfirmationEmail } = useAuth();
+  const { login, signup, continueAsGuest, sendPasswordReset } = useAuth();
 
-  const [activeTab, setActiveTab] = useState<"login" | "signup" | "reset" | "confirm_notice">("login");
+  const [activeTab, setActiveTab] = useState<"login" | "signup" | "reset">("login");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -41,13 +41,6 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [rememberMe, setRememberMe] = useState(true);
-  const [isLoginEmailNotConfirmed, setIsLoginEmailNotConfirmed] = useState(false);
-
-  // Email confirmation state
-  const [confirmationPendingEmail, setConfirmationPendingEmail] = useState<string | null>(null);
-  const [isResendingConfirmation, setIsResendingConfirmation] = useState(false);
-  const [resendConfirmationSuccess, setResendConfirmationSuccess] = useState<string | null>(null);
-  const [resendConfirmationError, setResendConfirmationError] = useState<string | null>(null);
 
   // Reset password state
   const [resetEmail, setResetEmail] = useState("");
@@ -74,45 +67,12 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    setIsLoginEmailNotConfirmed(false);
-    setResendConfirmationSuccess(null);
-    setResendConfirmationError(null);
 
     const result = await login(loginEmail, loginPassword);
     if (!result.success) {
       setError(result.error || "Failed to log in");
-      if (result.isEmailNotConfirmed) {
-        setIsLoginEmailNotConfirmed(true);
-      }
     } else if (onSuccess) {
       onSuccess();
-    }
-  };
-
-  const handleResendConfirmation = async (targetEmail: string) => {
-    const emailToSend = targetEmail.trim();
-    if (!emailToSend || !emailToSend.includes("@")) {
-      setResendConfirmationError("Please enter a valid email address.");
-      return;
-    }
-
-    setIsResendingConfirmation(true);
-    setResendConfirmationSuccess(null);
-    setResendConfirmationError(null);
-
-    try {
-      const res = await resendConfirmationEmail(emailToSend);
-      if (res.success) {
-        setResendConfirmationSuccess(
-          `Confirmation email sent to ${emailToSend}! Please check your inbox and spam folder.`
-        );
-      } else {
-        setResendConfirmationError(res.error || "Failed to resend confirmation email.");
-      }
-    } catch (err: any) {
-      setResendConfirmationError(err?.message || "An unexpected error occurred while resending.");
-    } finally {
-      setIsResendingConfirmation(false);
     }
   };
 
@@ -158,8 +118,6 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
   const handleSignupSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    setResendConfirmationSuccess(null);
-    setResendConfirmationError(null);
 
     if (!fullName.trim()) {
       setError("Please provide your full name");
@@ -197,11 +155,6 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
 
       if (!result.success) {
         setError(result.error || "Failed to create account");
-      } else if (result.requiresConfirmation) {
-        // Show the check your inbox state
-        setConfirmationPendingEmail(email.trim());
-        setLoginEmail(email.trim());
-        setActiveTab("confirm_notice");
       } else if (onSuccess) {
         onSuccess();
       }
@@ -479,80 +432,76 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
             }}
           >
             {/* Segmented Switcher Tabs */}
-            {activeTab !== "confirm_notice" && (
-              <div
+            <div
+              style={{
+                display: "flex",
+                background: C.paperDark,
+                borderRadius: 12,
+                padding: 4,
+                marginBottom: 22,
+                border: `1px solid ${C.line}`,
+              }}
+            >
+              <button
+                id="tab-btn-login"
+                type="button"
+                onClick={() => {
+                  setActiveTab("login");
+                  setError(null);
+                  setResetSuccessMsg(null);
+                }}
                 style={{
+                  flex: 1,
+                  padding: "9px 0",
+                  borderRadius: 9,
+                  border: "none",
+                  background: activeTab === "login" ? C.card : "transparent",
+                  color: activeTab === "login" ? C.ink : C.inkSoft,
+                  fontWeight: activeTab === "login" ? 800 : 600,
+                  fontSize: 13.5,
+                  cursor: "pointer",
                   display: "flex",
-                  background: C.paperDark,
-                  borderRadius: 12,
-                  padding: 4,
-                  marginBottom: 22,
-                  border: `1px solid ${C.line}`,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 6,
+                  boxShadow: activeTab === "login" ? "0 2px 6px rgba(0,0,0,0.06)" : "none",
+                  transition: "all 0.15s ease",
                 }}
               >
-                <button
-                  id="tab-btn-login"
-                  type="button"
-                  onClick={() => {
-                    setActiveTab("login");
-                    setError(null);
-                    setResetSuccessMsg(null);
-                    setIsLoginEmailNotConfirmed(false);
-                  }}
-                  style={{
-                    flex: 1,
-                    padding: "9px 0",
-                    borderRadius: 9,
-                    border: "none",
-                    background: activeTab === "login" ? C.card : "transparent",
-                    color: activeTab === "login" ? C.ink : C.inkSoft,
-                    fontWeight: activeTab === "login" ? 800 : 600,
-                    fontSize: 13.5,
-                    cursor: "pointer",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    gap: 6,
-                    boxShadow: activeTab === "login" ? "0 2px 6px rgba(0,0,0,0.06)" : "none",
-                    transition: "all 0.15s ease",
-                  }}
-                >
-                  <LogIn size={15} color={activeTab === "login" ? C.marigoldDark : C.inkSoft} />
-                  <span>Log In</span>
-                </button>
+                <LogIn size={15} color={activeTab === "login" ? C.marigoldDark : C.inkSoft} />
+                <span>Log In</span>
+              </button>
 
-                <button
-                  id="tab-btn-signup"
-                  type="button"
-                  onClick={() => {
-                    setActiveTab("signup");
-                    setError(null);
-                    setResetSuccessMsg(null);
-                    setIsLoginEmailNotConfirmed(false);
-                  }}
-                  style={{
-                    flex: 1,
-                    padding: "9px 0",
-                    borderRadius: 9,
-                    border: "none",
-                    background: activeTab === "signup" ? C.card : "transparent",
-                    color: activeTab === "signup" ? C.ink : C.inkSoft,
-                    fontWeight: activeTab === "signup" ? 800 : 600,
-                    fontSize: 13.5,
-                    cursor: "pointer",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    gap: 6,
-                    boxShadow: activeTab === "signup" ? "0 2px 6px rgba(0,0,0,0.06)" : "none",
-                    transition: "all 0.15s ease",
-                  }}
-                >
-                  <UserPlus size={15} color={activeTab === "signup" ? C.teal : C.inkSoft} />
-                  <span>Create Account</span>
-                </button>
-              </div>
-            )}
+              <button
+                id="tab-btn-signup"
+                type="button"
+                onClick={() => {
+                  setActiveTab("signup");
+                  setError(null);
+                  setResetSuccessMsg(null);
+                }}
+                style={{
+                  flex: 1,
+                  padding: "9px 0",
+                  borderRadius: 9,
+                  border: "none",
+                  background: activeTab === "signup" ? C.card : "transparent",
+                  color: activeTab === "signup" ? C.ink : C.inkSoft,
+                  fontWeight: activeTab === "signup" ? 800 : 600,
+                  fontSize: 13.5,
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 6,
+                  boxShadow: activeTab === "signup" ? "0 2px 6px rgba(0,0,0,0.06)" : "none",
+                  transition: "all 0.15s ease",
+                }}
+              >
+                <UserPlus size={15} color={activeTab === "signup" ? C.teal : C.inkSoft} />
+                <span>Create Account</span>
+              </button>
+            </div>
 
             {/* Error Banner Alert */}
             {error && (
@@ -573,240 +522,6 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
               >
                 <AlertCircle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
                 <div style={{ flex: 1 }}>{error}</div>
-              </div>
-            )}
-
-            {/* In-tab Resend Confirmation Notice for Unconfirmed Email on Login */}
-            {activeTab === "login" && isLoginEmailNotConfirmed && (
-              <div
-                style={{
-                  background: "rgba(227, 154, 45, 0.1)",
-                  border: `1.5px solid ${C.marigold}`,
-                  borderRadius: 10,
-                  padding: "12px 14px",
-                  marginBottom: 16,
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 8,
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: 8, color: C.marigoldDark, fontWeight: 800, fontSize: 13 }}>
-                  <Mail size={16} />
-                  <span>Email Confirmation Required</span>
-                </div>
-                <p style={{ margin: 0, fontSize: 12, color: C.inkSoft, lineHeight: 1.45 }}>
-                  Your account requires email verification. Check your inbox (or spam) for the confirmation link.
-                </p>
-
-                {resendConfirmationSuccess && (
-                  <div style={{ color: C.teal, fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
-                    <CheckCircle2 size={14} />
-                    <span>{resendConfirmationSuccess}</span>
-                  </div>
-                )}
-                {resendConfirmationError && (
-                  <div style={{ color: C.rust, fontSize: 12, fontWeight: 700 }}>
-                    {resendConfirmationError}
-                  </div>
-                )}
-
-                <button
-                  id="btn-resend-confirmation-login"
-                  type="button"
-                  onClick={() => handleResendConfirmation(loginEmail)}
-                  disabled={isResendingConfirmation || !loginEmail}
-                  style={{
-                    alignSelf: "flex-start",
-                    background: C.marigoldDark,
-                    color: "#ffffff",
-                    border: "none",
-                    borderRadius: 8,
-                    padding: "6px 12px",
-                    fontSize: 12,
-                    fontWeight: 700,
-                    cursor: isResendingConfirmation ? "not-allowed" : "pointer",
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 6,
-                    opacity: isResendingConfirmation ? 0.7 : 1,
-                  }}
-                >
-                  {isResendingConfirmation ? (
-                    <Loader2 size={13} className="animate-spin" />
-                  ) : (
-                    <RefreshCw size={13} />
-                  )}
-                  <span>Resend Confirmation Email</span>
-                </button>
-              </div>
-            )}
-
-            {/* CHECK YOUR INBOX SCREEN (CONFIRM NOTICE) */}
-            {activeTab === "confirm_notice" && (
-              <div
-                id="view-confirm-email-notice"
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  textAlign: "center",
-                  padding: "16px 8px",
-                  gap: 16,
-                }}
-              >
-                <div
-                  style={{
-                    width: 64,
-                    height: 64,
-                    borderRadius: 20,
-                    background: "rgba(15, 107, 101, 0.12)",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    color: C.teal,
-                  }}
-                >
-                  <Mail size={32} />
-                </div>
-
-                <div>
-                  <h3
-                    style={{
-                      fontSize: 20,
-                      fontWeight: 900,
-                      color: C.ink,
-                      margin: "0 0 8px 0",
-                    }}
-                  >
-                    Check your email to confirm your account
-                  </h3>
-                  <p
-                    style={{
-                      fontSize: 13.5,
-                      color: C.inkSoft,
-                      margin: 0,
-                      lineHeight: 1.5,
-                      maxWidth: 380,
-                    }}
-                  >
-                    We've sent a verification link to{" "}
-                    <strong style={{ color: C.ink, wordBreak: "break-all" }}>
-                      {confirmationPendingEmail || "your email address"}
-                    </strong>
-                    . Click the link to activate your account, then return here to log in.
-                  </p>
-                </div>
-
-                {resendConfirmationSuccess && (
-                  <div
-                    style={{
-                      background: "rgba(15, 107, 101, 0.1)",
-                      border: `1.5px solid ${C.teal}`,
-                      borderRadius: 10,
-                      padding: "10px 14px",
-                      color: C.teal,
-                      fontSize: 12.5,
-                      fontWeight: 700,
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 8,
-                      width: "100%",
-                      boxSizing: "border-box",
-                      textAlign: "left",
-                    }}
-                  >
-                    <CheckCircle2 size={16} style={{ flexShrink: 0 }} />
-                    <span>{resendConfirmationSuccess}</span>
-                  </div>
-                )}
-
-                {resendConfirmationError && (
-                  <div
-                    style={{
-                      background: "rgba(194, 84, 58, 0.1)",
-                      border: `1.5px solid ${C.rust}`,
-                      borderRadius: 10,
-                      padding: "10px 14px",
-                      color: C.rust,
-                      fontSize: 12.5,
-                      fontWeight: 700,
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 8,
-                      width: "100%",
-                      boxSizing: "border-box",
-                      textAlign: "left",
-                    }}
-                  >
-                    <AlertCircle size={16} style={{ flexShrink: 0 }} />
-                    <span>{resendConfirmationError}</span>
-                  </div>
-                )}
-
-                <div style={{ display: "flex", flexDirection: "column", gap: 10, width: "100%", marginTop: 8 }}>
-                  <button
-                    id="btn-resend-confirmation-screen"
-                    type="button"
-                    onClick={() => {
-                      if (confirmationPendingEmail) {
-                        handleResendConfirmation(confirmationPendingEmail);
-                      }
-                    }}
-                    disabled={isResendingConfirmation}
-                    style={{
-                      background: C.teal,
-                      color: "#ffffff",
-                      border: "none",
-                      borderRadius: 12,
-                      padding: "12px",
-                      fontSize: 13.5,
-                      fontWeight: 800,
-                      cursor: isResendingConfirmation ? "not-allowed" : "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      gap: 8,
-                      boxShadow: "0 4px 12px rgba(15, 107, 101, 0.25)",
-                      opacity: isResendingConfirmation ? 0.7 : 1,
-                    }}
-                  >
-                    {isResendingConfirmation ? (
-                      <Loader2 size={16} className="animate-spin" />
-                    ) : (
-                      <Send size={16} />
-                    )}
-                    <span>Resend Confirmation Email</span>
-                  </button>
-
-                  <button
-                    id="btn-confirmed-go-to-login"
-                    type="button"
-                    onClick={() => {
-                      setActiveTab("login");
-                      setError(null);
-                      setIsLoginEmailNotConfirmed(false);
-                      setResendConfirmationSuccess(null);
-                      setResendConfirmationError(null);
-                    }}
-                    style={{
-                      background: "transparent",
-                      border: `1.5px solid ${C.line}`,
-                      borderRadius: 12,
-                      padding: "11px",
-                      fontSize: 13,
-                      fontWeight: 700,
-                      color: C.ink,
-                      cursor: "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      gap: 6,
-                    }}
-                  >
-                    <LogIn size={15} />
-                    <span>Back to Log In</span>
-                  </button>
-                </div>
               </div>
             )}
 
@@ -838,7 +553,6 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                       value={loginEmail}
                       onChange={(e) => {
                         setLoginEmail(e.target.value);
-                        setIsLoginEmailNotConfirmed(false);
                       }}
                       placeholder="e.g. you@example.com"
                       style={{
