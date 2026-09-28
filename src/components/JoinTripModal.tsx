@@ -14,8 +14,7 @@ import { C } from "../utils/constants";
 import { ModalShell } from "./Atoms";
 import { formatDate } from "../utils/calculations";
 import { useAuth } from "../context/AuthContext";
-import { supabase } from "../utils/supabaseClient";
-import { addMemberToDatabase, getTripFromDatabase } from "../utils/storage";
+import { getTripByInviteCode, joinTripByInviteCode } from "../utils/storage";
 
 interface JoinTripModalProps {
   currentTrip?: Trip | null;
@@ -53,68 +52,30 @@ export function JoinTripModal({ currentTrip, initialCode = "", onJoinTripSuccess
     setIsValidating(true);
 
     try {
-      // 1. Direct Supabase query for matching inviteCode
-      const { data: tripRows, error: tripErr } = await supabase
-        .from("trips")
-        .select("*")
-        .ilike("invite_code", code)
-        .limit(1);
+      const res = await getTripByInviteCode(code);
 
-      if (tripErr || !tripRows || tripRows.length === 0) {
-        setErrorMsg(`Invite code '${code}' is invalid or expired. Check with the trip organizer.`);
+      if (!res.success || !res.trip) {
+        setErrorMsg(res.error || `Invite code '${code}' is invalid or expired. Check with the trip organizer.`);
         return;
       }
 
-      const tripData = tripRows[0];
-      const tripId = tripData.id;
-
-      // 2. Fetch trip members to check if user is already a member
-      const { data: membersRows } = await supabase
-        .from("trip_members")
-        .select("*")
-        .eq("trip_id", tripId);
-
+      const trip = res.trip;
       const currentUserId = authUser?.id;
-
-      const existingMembers: Member[] = (membersRows || []).map((d: any) => ({
-        id: d.id,
-        userId: d.user_id || d.id,
-        name: d.name || "Traveler",
-        role: (d.role || "member") as any,
-        avatarColor: d.avatar_color || "#0F6B65",
-        phone: d.phone,
-        email: d.email,
-        joinedAt: d.joined_at,
-      }));
 
       const isAlreadyMember =
         currentUserId &&
-        existingMembers.some(
+        (trip.members || []).some(
           (m) => m.id === currentUserId || m.userId === currentUserId
         );
 
       if (isAlreadyMember) {
-        setErrorMsg(`You are already a member of "${tripData.title || "this trip"}".`);
+        setErrorMsg(`You are already a member of "${trip.title}".`);
         return;
       }
 
-      // 3. Construct preview trip object
-      setValidatedTrip({
-        id: tripId,
-        title: tripData.title || "Trip",
-        location: tripData.location || tripData.destination || "Destination",
-        destination: tripData.destination || tripData.location || "Destination",
-        startDate: tripData.start_date || new Date().toISOString().split("T")[0],
-        endDate: tripData.end_date || new Date().toISOString().split("T")[0],
-        currency: tripData.currency || "INR",
-        status: tripData.status || "ACTIVE",
-        ownerId: tripData.owner_id || "",
-        ownerName: tripData.owner_name || "Organizer",
-        inviteCode: tripData.invite_code || code,
-        members: existingMembers,
-      });
+      setValidatedTrip(trip);
     } catch (err: any) {
-      console.error("Direct Supabase invite validation failed:", err);
+      console.error("Direct invite validation failed:", err);
       setErrorMsg(`Invite code '${code}' is invalid or could not be reached. Please check your network.`);
     } finally {
       setIsValidating(false);
@@ -140,44 +101,21 @@ export function JoinTripModal({ currentTrip, initialCode = "", onJoinTripSuccess
     setErrorMsg("");
 
     try {
-      const tripId = validatedTrip.id;
+      const result = await joinTripByInviteCode(code, authUser);
 
-      // 1. Create the new member object using current user
-      const newMember: Member = {
-        id: currentUserId,
-        userId: currentUserId,
-        name: authUser.name || "New Traveler",
-        role: "member",
-        avatarColor: authUser.avatarColor || "#0F6B65",
-        phone: authUser.phone || "",
-        email: authUser.email || "",
-        joinedAt: new Date().toISOString(),
-      };
+      if (!result.success || !result.trip) {
+        setErrorMsg(result.error || "Failed to join trip. Please try again.");
+        return;
+      }
 
-      // 2. Add member to trip_members in Supabase
-      await addMemberToDatabase(tripId, newMember);
-
-      // 3. Keep root doc member_user_ids synchronized
-      const currentMemberIds = validatedTrip.members?.map((m) => m.id || m.userId) || [];
-      const updatedMemberIds = Array.from(new Set([...currentMemberIds, currentUserId]));
-
-      await supabase.from("trips").update({
-        member_user_ids: updatedMemberIds,
-      }).eq("id", tripId);
-
-      // 4. Fetch the complete joined trip
-      const fullJoinedTrip = await getTripFromDatabase(tripId);
-
-      setSuccessMsg(`Welcome aboard! You have joined "${validatedTrip.title}".`);
+      setSuccessMsg(`Welcome aboard! You have joined "${result.trip.title}".`);
       setTimeout(() => {
-        if (fullJoinedTrip) {
-          onJoinTripSuccess(fullJoinedTrip);
-        }
+        onJoinTripSuccess(result.trip!);
         onClose();
       }, 600);
     } catch (err: any) {
-      console.error("Failed to join trip via Supabase:", err);
-      setErrorMsg(err.message || "Failed to join trip in Supabase. Please try again.");
+      console.error("Failed to join trip:", err);
+      setErrorMsg(err.message || "Failed to join trip. Please try again.");
     } finally {
       setIsJoining(false);
     }

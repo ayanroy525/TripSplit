@@ -1138,3 +1138,202 @@ export function createNewTripObject(
     createdAt: new Date().toISOString(),
   };
 }
+
+/**
+ * Validates and retrieves trip preview by its invite code.
+ * Uses secure Postgres SECURITY DEFINER stored procedure (RPC) so non-members
+ * can preview the trip without violating Row Level Security.
+ */
+export async function getTripByInviteCode(
+  inviteCode: string
+): Promise<{ success: boolean; trip?: Trip; error?: string }> {
+  const code = (inviteCode || "").trim().toUpperCase();
+  if (!code) {
+    return { success: false, error: "Please enter an invite code." };
+  }
+
+  try {
+    const { data, error } = await supabase.rpc("get_trip_by_invite_code", {
+      p_invite_code: code,
+    });
+
+    if (error) {
+      console.warn("Notice in get_trip_by_invite_code RPC:", error.message);
+    } else if (data) {
+      if (data.success && data.trip) {
+        const tripData = data.trip;
+        const trip: Trip = {
+          id: tripData.id,
+          title: tripData.title || "Trip",
+          location: tripData.location || tripData.destination || "",
+          destination: tripData.destination || tripData.location || "",
+          startDate: tripData.startDate || "",
+          endDate: tripData.endDate || "",
+          currency: tripData.currency || "INR",
+          status: tripData.status || "ACTIVE",
+          ownerId: tripData.ownerId || "",
+          ownerName: tripData.ownerName || "Organizer",
+          inviteCode: tripData.inviteCode || code,
+          inviteExpiresAt: tripData.inviteExpiresAt || undefined,
+          memberUserIds: Array.isArray(tripData.memberUserIds) ? tripData.memberUserIds : [],
+          createdAt: tripData.createdAt || new Date().toISOString(),
+          members: (tripData.members || []).map((m: any) => ({
+            id: m.id,
+            userId: m.userId || m.id,
+            name: m.name || "Traveler",
+            role: m.role || "participant",
+            avatarColor: m.avatarColor || "#0F6B65",
+            phone: m.phone || "",
+            email: m.email || "",
+            joinedAt: m.joinedAt || new Date().toISOString(),
+            status: "active",
+          })),
+          expenses: [],
+          payments: [],
+          activities: [],
+        };
+        return { success: true, trip };
+      }
+
+      if (data.success === false) {
+        return {
+          success: false,
+          error:
+            data.message ||
+            `Invite code '${code}' is invalid or expired. Please check with your trip organizer.`,
+        };
+      }
+    }
+  } catch (err: any) {
+    console.warn("Exception calling get_trip_by_invite_code RPC:", err);
+  }
+
+  // Fallback: direct query in case RPC is unavailable
+  try {
+    const { data: tripRows } = await supabase
+      .from("trips")
+      .select("*")
+      .ilike("invite_code", code)
+      .limit(1);
+
+    if (tripRows && tripRows.length > 0) {
+      const full = await getTripFromDatabase(tripRows[0].id);
+      if (full) return { success: true, trip: full };
+    }
+  } catch (e) {}
+
+  return {
+    success: false,
+    error: `Invite code '${code}' is invalid or expired. Please check with your trip organizer.`,
+  };
+}
+
+/**
+ * Atomically joins a trip using an invite code and the user's account.
+ * Updates trip_members, trips.member_user_ids, and activities in a single atomic transaction.
+ */
+export async function joinTripByInviteCode(
+  inviteCode: string,
+  user: UserAccount
+): Promise<{ success: boolean; trip?: Trip; alreadyMember?: boolean; error?: string }> {
+  const code = (inviteCode || "").trim().toUpperCase();
+  if (!code) {
+    return { success: false, error: "Please enter an invite code." };
+  }
+  if (!user || !user.id) {
+    return { success: false, error: "Please log in before joining a trip." };
+  }
+
+  try {
+    const { data, error } = await supabase.rpc("join_trip_by_invite_code", {
+      p_invite_code: code,
+      p_user: {
+        id: user.id,
+        userId: user.id,
+        name: user.name || "Traveler",
+        email: user.email || "",
+        phone: user.phone || "",
+        avatarColor: user.avatarColor || "#0F6B65",
+      },
+    });
+
+    if (error) {
+      console.warn("Notice calling join_trip_by_invite_code RPC:", error.message);
+    } else if (data) {
+      if (data.success && data.trip_id) {
+        const tripId = data.trip_id;
+        const fullTrip = await getTripFromDatabase(tripId);
+        if (fullTrip) {
+          return {
+            success: true,
+            trip: fullTrip,
+            alreadyMember: Boolean(data.already_member),
+          };
+        }
+        if (data.trip) {
+          return {
+            success: true,
+            trip: {
+              ...data.trip,
+              expenses: [],
+              payments: [],
+              activities: [],
+            },
+            alreadyMember: Boolean(data.already_member),
+          };
+        }
+      }
+
+      if (data.success === false) {
+        return {
+          success: false,
+          error:
+            data.message ||
+            `Invite code '${code}' is invalid or expired. Please check with your trip organizer.`,
+        };
+      }
+    }
+  } catch (err: any) {
+    console.warn("Exception in joinTripByInviteCode:", err);
+  }
+
+  // Fallback: If RPC encountered a transient issue, try loading preview and member upsert
+  try {
+    const preview = await getTripByInviteCode(code);
+    if (preview.success && preview.trip) {
+      const tripId = preview.trip.id;
+      const isAlready = (preview.trip.members || []).some(
+        (m) => m.id === user.id || m.userId === user.id
+      );
+
+      if (isAlready) {
+        const full = await getTripFromDatabase(tripId);
+        return { success: true, trip: full || preview.trip, alreadyMember: true };
+      }
+
+      const newMember: Member = {
+        id: user.id,
+        userId: user.id,
+        name: user.name || "Traveler",
+        role: "participant",
+        avatarColor: user.avatarColor || "#0F6B65",
+        phone: user.phone || "",
+        email: user.email || "",
+        joinedAt: new Date().toISOString(),
+        status: "active",
+      };
+
+      await addMemberToDatabase(tripId, newMember);
+      const full = await getTripFromDatabase(tripId);
+      return { success: true, trip: full || preview.trip, alreadyMember: false };
+    }
+  } catch (fallbackErr) {
+    console.warn("Fallback join error:", fallbackErr);
+  }
+
+  return {
+    success: false,
+    error: `Invite code '${code}' is invalid or expired. Please check with your trip organizer.`,
+  };
+}
+

@@ -19,8 +19,7 @@ import {
 } from "lucide-react";
 import { C } from "../utils/constants";
 import { UserAccount, Trip, Member } from "../types";
-import { supabase } from "../utils/supabaseClient";
-import { addMemberToDatabase, getTripFromDatabase } from "../utils/storage";
+import { joinTripByInviteCode } from "../utils/storage";
 
 interface EmptyTripStateViewProps {
   authUser: UserAccount | null;
@@ -63,87 +62,26 @@ export function EmptyTripStateView({
     setIsSubmitting(true);
 
     try {
-      // 1. Direct Supabase query for matching inviteCode
-      const { data: tripRows, error: tripErr } = await supabase
-        .from("trips")
-        .select("*")
-        .ilike("invite_code", code)
-        .limit(1);
+      const result = await joinTripByInviteCode(code, authUser);
 
-      if (tripErr || !tripRows || tripRows.length === 0) {
-        setErrorMsg(`Invite code '${code}' is invalid or expired. Please check with your trip organizer.`);
+      if (!result.success || !result.trip) {
+        setErrorMsg(
+          result.error ||
+            `Invite code '${code}' is invalid or expired. Please check with your trip organizer.`
+        );
         return;
       }
 
-      const tripData = tripRows[0];
-      const tripId = tripData.id;
-
-      // 2. Check if already a member
-      const { data: membersRows } = await supabase
-        .from("trip_members")
-        .select("*")
-        .eq("trip_id", tripId);
-
-      const existingMembers: Member[] = (membersRows || []).map((d: any) => ({
-        id: d.id,
-        userId: d.user_id || d.id,
-        name: d.name || "Traveler",
-        role: d.role || "MEMBER",
-        avatarColor: d.avatar_color || "#0F6B65",
-        phone: d.phone,
-        email: d.email,
-        joinedAt: d.joined_at,
-      }));
-
-      const isAlreadyMember = existingMembers.some(
-        (m) => m.id === currentUserId || m.userId === currentUserId
-      );
-
-      if (isAlreadyMember) {
-        setErrorMsg(`You are already a member of "${tripData.title || "this trip"}".`);
-        // Load existing trip directly
-        const existingTrip = await getTripFromDatabase(tripId);
-        if (existingTrip) {
-          setTimeout(() => {
-            onJoinSuccess(existingTrip);
-          }, 400);
-        }
-        return;
-      }
-
-      // 3. Add new member directly in Supabase
-      const newMember: Member = {
-        id: currentUserId,
-        userId: currentUserId,
-        name: authUser.name || "New Traveler",
-        role: "member",
-        avatarColor: authUser.avatarColor || "#0F6B65",
-        phone: authUser.phone || "",
-        email: authUser.email || "",
-        joinedAt: new Date().toISOString(),
-      };
-
-      await addMemberToDatabase(tripId, newMember);
-
-      // 4. Update member_user_ids in parent trip document
-      const currentMemberIds = existingMembers.map((m) => m.id || m.userId);
-      const updatedMemberIds = Array.from(new Set([...currentMemberIds, currentUserId]));
-
-      await supabase.from("trips").update({
-        member_user_ids: updatedMemberIds,
-      }).eq("id", tripId);
-
-      // 5. Fetch the complete trip
-      const fullJoinedTrip = await getTripFromDatabase(tripId);
-
-      if (fullJoinedTrip) {
-        setSuccessMsg(`Joined "${fullJoinedTrip.title}"! Loading your trip dashboard...`);
-        setTimeout(() => {
-          onJoinSuccess(fullJoinedTrip);
-        }, 500);
+      const joinedTrip = result.trip;
+      if (result.alreadyMember) {
+        setSuccessMsg(`You are already a member of "${joinedTrip.title}". Opening trip...`);
       } else {
-        setErrorMsg("Joined trip, but could not load details. Please refresh.");
+        setSuccessMsg(`Joined "${joinedTrip.title}"! Loading your trip dashboard...`);
       }
+
+      setTimeout(() => {
+        onJoinSuccess(joinedTrip);
+      }, 500);
     } catch (err: any) {
       console.error("Direct Supabase quick-join failed:", err);
       setErrorMsg(
