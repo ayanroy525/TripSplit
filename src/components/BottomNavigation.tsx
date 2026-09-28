@@ -8,6 +8,7 @@ interface BottomNavigationProps {
   onOpenAddExpense: () => void;
   pendingSettlementsCount?: number;
   expensesCount?: number;
+  canAddExpense?: boolean;
 }
 
 export function BottomNavigation({
@@ -16,6 +17,7 @@ export function BottomNavigation({
   onOpenAddExpense,
   pendingSettlementsCount = 0,
   expensesCount = 0,
+  canAddExpense = true,
 }: BottomNavigationProps) {
   return (
     <nav
@@ -53,22 +55,24 @@ export function BottomNavigation({
           <span className="text-[10px] tracking-tight">Expenses</span>
         </button>
 
-        {/* 3. ADD EXPENSE (Center Prominent) */}
-        <div className="flex-1 flex items-center justify-center h-full relative">
-          <button
-            id="nav-btn-add-expense-center"
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onOpenAddExpense();
-            }}
-            aria-label="Add new expense"
-            className="w-12 h-12 rounded-full bg-[var(--c-teal,#2DD4BF)] text-[var(--c-teal-contrast-text,#0F172A)] border-4 border-[var(--c-paper,#0F172A)] shadow-lg flex items-center justify-center -translate-y-3 hover:brightness-110 active:scale-95 transition-all cursor-pointer z-10"
-            title="Add Expense"
-          >
-            <Plus size={22} strokeWidth={3} />
-          </button>
-        </div>
+        {/* 3. ADD EXPENSE (Center Prominent) - Hidden for Viewers */}
+        {canAddExpense ? (
+          <div className="flex-1 flex items-center justify-center h-full relative">
+            <button
+              id="nav-btn-add-expense-center"
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenAddExpense();
+              }}
+              aria-label="Add new expense"
+              className="w-12 h-12 rounded-full bg-[var(--c-teal,#2DD4BF)] text-[var(--c-teal-contrast-text,#0F172A)] border-4 border-[var(--c-paper,#0F172A)] shadow-lg flex items-center justify-center -translate-y-3 hover:brightness-110 active:scale-95 transition-all cursor-pointer z-10"
+              title="Add Expense"
+            >
+              <Plus size={22} strokeWidth={3} />
+            </button>
+          </div>
+        ) : null}
 
         {/* 4. BALANCES */}
         <button

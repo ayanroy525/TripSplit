@@ -34,6 +34,7 @@ const LAST_SYNC_KEY = "tripsplit_last_sync_timestamp";
  * Returns current pending mutations in queue.
  */
 export function getOfflineQueue(): OfflineMutation[] {
+  if (typeof window === "undefined" || typeof localStorage === "undefined") return [];
   try {
     const raw = localStorage.getItem(OFFLINE_QUEUE_KEY);
     if (!raw) return [];
@@ -49,10 +50,13 @@ export function getOfflineQueue(): OfflineMutation[] {
  * Saves mutations to localStorage queue.
  */
 export function saveOfflineQueue(queue: OfflineMutation[]): void {
+  if (typeof window === "undefined" || typeof localStorage === "undefined") return;
   try {
     localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(queue));
     // Trigger custom event for UI reactivity
-    window.dispatchEvent(new CustomEvent("tripsplit:offline-queue-changed", { detail: queue }));
+    if (typeof window.dispatchEvent === "function") {
+      window.dispatchEvent(new CustomEvent("tripsplit:offline-queue-changed", { detail: queue }));
+    }
   } catch (err) {
     console.warn("Failed to save offline queue:", err);
   }

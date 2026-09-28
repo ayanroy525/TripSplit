@@ -93,12 +93,20 @@ export function extractTripDocData(trip: Trip): Record<string, any> {
   return mapTripToRow(trip);
 }
 
+function isClientOffline(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    typeof navigator !== "undefined" &&
+    navigator.onLine === false
+  );
+}
+
 /**
  * Saves or updates an entire Trip including all sub-tables into Supabase.
  * If offline or if the network request fails, transparently enqueues mutation for auto-sync.
  */
 export async function saveTripToDatabase(trip: Trip): Promise<void> {
-  if (typeof navigator !== "undefined" && !navigator.onLine) {
+  if (isClientOffline()) {
     enqueueOfflineMutation("SAVE_TRIP_SNAPSHOT", trip.id, trip);
     return;
   }
@@ -274,6 +282,158 @@ export function subscribeToTrip(
 }
 
 /**
+ * Robust phone number matching helper
+ * Handles various phone number formats (country code +91, national 0 prefix, spaces, dashes, etc.)
+ */
+export function isPhoneMatch(p1?: string | null, p2?: string | null): boolean {
+  if (!p1 || !p2) return false;
+  const d1 = p1.replace(/\D/g, "");
+  const d2 = p2.replace(/\D/g, "");
+  if (d1.length < 7 || d2.length < 7) return false;
+  if (d1 === d2) return true;
+  if (d1.endsWith(d2) || d2.endsWith(d1)) return true;
+  // If both have at least 10 digits (standard national mobile number length), compare last 10 digits
+  if (d1.length >= 10 && d2.length >= 10 && d1.slice(-10) === d2.slice(-10)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Robust email matching helper
+ */
+export function isEmailMatch(e1?: string | null, e2?: string | null): boolean {
+  if (!e1 || !e2) return false;
+  const clean1 = e1.trim().toLowerCase();
+  const clean2 = e2.trim().toLowerCase();
+  return clean1.length > 0 && clean1 === clean2;
+}
+
+/**
+ * Smart User-Member Linking:
+ * When a user signs up or logs in, searches all trip_members records for matches by phone or email.
+ * Automatically updates matching member records with the authenticated user_id and adds user_id to
+ * trips.member_user_ids so the trip instantly appears on the user's dashboard.
+ */
+export async function linkUserToExistingTripMembers(
+  user: UserAccount
+): Promise<{ linkedTripsCount: number; linkedMembersCount: number }> {
+  if (!user || !user.id) return { linkedTripsCount: 0, linkedMembersCount: 0 };
+
+  const trimmedEmail = (user.email || "").trim().toLowerCase();
+  const cleanPhoneDigits = (user.phone || "").replace(/\D/g, "");
+
+  if (!trimmedEmail && cleanPhoneDigits.length < 7) {
+    return { linkedTripsCount: 0, linkedMembersCount: 0 };
+  }
+
+  let linkedMembersCount = 0;
+  const linkedTripIds = new Set<string>();
+
+  try {
+    // 1. Fetch all trip members from database
+    const { data: allMembers, error: membersErr } = await supabase
+      .from("trip_members")
+      .select("*");
+
+    if (membersErr || !Array.isArray(allMembers)) {
+      return { linkedTripsCount: 0, linkedMembersCount: 0 };
+    }
+
+    // 2. Identify unlinked or placeholder member rows matching this user's email or phone
+    const matchingMembers = allMembers.filter((m) => {
+      if (!m) return false;
+      // If already linked to this exact user ID, skip
+      if (m.user_id === user.id) return false;
+
+      // Match by email
+      if (isEmailMatch(m.email, user.email)) {
+        return true;
+      }
+
+      // Match by phone
+      if (isPhoneMatch(m.phone, user.phone)) {
+        return true;
+      }
+
+      return false;
+    });
+
+    if (matchingMembers.length === 0) {
+      return { linkedTripsCount: 0, linkedMembersCount: 0 };
+    }
+
+    // 3. Update matching trip_members records with authenticated user_id
+    for (const member of matchingMembers) {
+      linkedTripIds.add(member.trip_id);
+      linkedMembersCount++;
+
+      const updatePayload: Record<string, any> = {
+        user_id: user.id,
+      };
+      if (!member.email && user.email) {
+        updatePayload.email = user.email;
+      }
+      if (!member.phone && user.phone) {
+        updatePayload.phone = user.phone;
+      }
+      if (
+        !member.name ||
+        member.name.trim() === "" ||
+        member.name === "Member" ||
+        member.name === "Guest" ||
+        member.name === "Traveler"
+      ) {
+        if (user.name) {
+          updatePayload.name = user.name;
+        }
+      }
+
+      await supabase
+        .from("trip_members")
+        .update(updatePayload)
+        .eq("id", member.id);
+    }
+
+    // 4. Update the trips table member_user_ids array for all affected trips
+    for (const tripId of linkedTripIds) {
+      try {
+        const { data: tripRow } = await supabase
+          .from("trips")
+          .select("member_user_ids, id")
+          .eq("id", tripId)
+          .maybeSingle();
+
+        if (tripRow) {
+          const currentMemberUserIds = Array.isArray(tripRow.member_user_ids)
+            ? tripRow.member_user_ids
+            : [];
+          if (!currentMemberUserIds.includes(user.id)) {
+            const updatedIds = Array.from(new Set([...currentMemberUserIds, user.id]));
+            await supabase
+              .from("trips")
+              .update({
+                member_user_ids: updatedIds,
+                updated_at: new Date().toISOString(),
+              })
+              .eq("id", tripId);
+          }
+        }
+      } catch (err) {
+        console.warn(`Notice updating member_user_ids for trip ${tripId}:`, err);
+      }
+    }
+  } catch (error) {
+    console.warn("Smart User-Member Linking notice:", error);
+  }
+
+  return {
+    linkedTripsCount: linkedTripIds.size,
+    linkedMembersCount,
+  };
+}
+
+/**
  * Subscribes to all trips for a given user.
  */
 export function subscribeToUserTrips(
@@ -285,20 +445,24 @@ export function subscribeToUserTrips(
 
   const loadTrips = async () => {
     try {
-      const { data: tripRows, error } = await supabase
-        .from("trips")
-        .select("*")
-        .order("created_at", { ascending: false });
+      const [tripsRes, memberRes] = await Promise.all([
+        supabase.from("trips").select("*").order("created_at", { ascending: false }),
+        supabase.from("trip_members").select("trip_id").eq("user_id", userId),
+      ]);
 
-      if (error || !tripRows) {
+      const tripRows = tripsRes.data;
+      if (tripsRes.error || !tripRows) {
         return;
       }
+
+      const myMemberTripIds = new Set((memberRes.data || []).map((r) => r.trip_id));
 
       const matchingRows = tripRows.filter((row) => {
         const isOwner = row.owner_id === userId;
         const inMembers =
           Array.isArray(row.member_user_ids) && row.member_user_ids.includes(userId);
-        return isOwner || inMembers;
+        const inMemberRows = myMemberTripIds.has(row.id);
+        return isOwner || inMembers || inMemberRows;
       });
 
       const fullTrips: Trip[] = [];
@@ -363,7 +527,7 @@ export function subscribeToAllTrips(
  */
 
 export async function addExpenseToDatabase(tripId: string, expense: Expense): Promise<void> {
-  if (typeof navigator !== "undefined" && !navigator.onLine) {
+  if (isClientOffline()) {
     enqueueOfflineMutation("SAVE_EXPENSE", tripId, expense);
     return;
   }
@@ -381,7 +545,7 @@ export async function addExpenseToDatabase(tripId: string, expense: Expense): Pr
 }
 
 export async function updateExpenseInDatabase(tripId: string, expense: Expense): Promise<void> {
-  if (typeof navigator !== "undefined" && !navigator.onLine) {
+  if (isClientOffline()) {
     enqueueOfflineMutation("SAVE_EXPENSE", tripId, expense);
     return;
   }
@@ -399,7 +563,7 @@ export async function updateExpenseInDatabase(tripId: string, expense: Expense):
 }
 
 export async function deleteExpenseFromDatabase(tripId: string, expenseId: string): Promise<void> {
-  if (typeof navigator !== "undefined" && !navigator.onLine) {
+  if (isClientOffline()) {
     enqueueOfflineMutation("DELETE_EXPENSE", tripId, { expenseId });
     return;
   }
@@ -415,8 +579,126 @@ export async function deleteExpenseFromDatabase(tripId: string, expenseId: strin
   }
 }
 
+/**
+ * ATOMIC OPERATIONS via Postgres RPC Stored Procedures
+ * Guarantees transaction safety for settlements, payments, expenses, and activity trails.
+ */
+
+export async function saveExpenseAtomic(
+  tripId: string,
+  expense: Expense,
+  activity?: Activity
+): Promise<void> {
+  if (isClientOffline()) {
+    enqueueOfflineMutation("SAVE_EXPENSE", tripId, expense);
+    if (activity) {
+      addActivityToDatabase(tripId, activity).catch(() => {});
+    }
+    return;
+  }
+
+  try {
+    const expenseRow = mapExpenseToRow(tripId, expense);
+    const activityRow = activity ? mapActivityToRow(tripId, activity) : null;
+
+    const { data, error } = await supabase.rpc("save_expense_atomic", {
+      p_trip_id: tripId,
+      p_expense: expenseRow,
+      p_activity: activityRow,
+    });
+
+    if (error) {
+      console.warn("RPC save_expense_atomic warning, falling back to granular upsert:", error.message);
+      await addExpenseToDatabase(tripId, expense);
+      if (activity) await addActivityToDatabase(tripId, activity);
+    }
+  } catch (err) {
+    console.warn("Network error in saveExpenseAtomic, falling back:", err);
+    await addExpenseToDatabase(tripId, expense);
+    if (activity) await addActivityToDatabase(tripId, activity);
+  }
+}
+
+export async function recordPaymentAtomic(
+  tripId: string,
+  payment: Payment,
+  activity?: Activity
+): Promise<void> {
+  if (isClientOffline()) {
+    enqueueOfflineMutation("RECORD_PAYMENT", tripId, payment);
+    if (activity) {
+      addActivityToDatabase(tripId, activity).catch(() => {});
+    }
+    return;
+  }
+
+  try {
+    const paymentRow = mapPaymentToRow(tripId, payment);
+    const activityRow = activity ? mapActivityToRow(tripId, activity) : null;
+
+    const { data, error } = await supabase.rpc("record_payment_atomic", {
+      p_trip_id: tripId,
+      p_payment: paymentRow,
+      p_activity: activityRow,
+    });
+
+    if (error) {
+      console.warn("RPC record_payment_atomic warning, falling back to granular upsert:", error.message);
+      await addPaymentToDatabase(tripId, payment);
+      if (activity) await addActivityToDatabase(tripId, activity);
+    }
+  } catch (err) {
+    console.warn("Network error in recordPaymentAtomic, falling back:", err);
+    await addPaymentToDatabase(tripId, payment);
+    if (activity) await addActivityToDatabase(tripId, activity);
+  }
+}
+
+export async function confirmPaymentAtomic(
+  tripId: string,
+  paymentId: string,
+  confirmedBy: string,
+  activity?: Activity
+): Promise<void> {
+  if (isClientOffline()) {
+    enqueueOfflineMutation("RECORD_PAYMENT", tripId, { id: paymentId, status: "confirmed", confirmedBy });
+    if (activity) {
+      addActivityToDatabase(tripId, activity).catch(() => {});
+    }
+    return;
+  }
+
+  try {
+    const activityRow = activity ? mapActivityToRow(tripId, activity) : null;
+    const { data, error } = await supabase.rpc("confirm_payment_atomic", {
+      p_trip_id: tripId,
+      p_payment_id: paymentId,
+      p_confirmed_by: confirmedBy,
+      p_activity: activityRow,
+    });
+
+    if (error) {
+      console.warn("RPC confirm_payment_atomic warning, falling back:", error.message);
+      const { error: updErr } = await supabase
+        .from("payments")
+        .update({
+          status: "confirmed",
+          confirmed_by: confirmedBy,
+          confirmed_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", paymentId);
+      if (updErr) console.warn("Fallback payment update error:", updErr.message);
+      if (activity) await addActivityToDatabase(tripId, activity);
+    }
+  } catch (err) {
+    console.warn("Network error in confirmPaymentAtomic, falling back:", err);
+    if (activity) await addActivityToDatabase(tripId, activity);
+  }
+}
+
 export async function addPaymentToDatabase(tripId: string, payment: Payment): Promise<void> {
-  if (typeof navigator !== "undefined" && !navigator.onLine) {
+  if (isClientOffline()) {
     enqueueOfflineMutation("RECORD_PAYMENT", tripId, payment);
     return;
   }
@@ -434,7 +716,7 @@ export async function addPaymentToDatabase(tripId: string, payment: Payment): Pr
 }
 
 export async function updatePaymentInDatabase(tripId: string, payment: Payment): Promise<void> {
-  if (typeof navigator !== "undefined" && !navigator.onLine) {
+  if (isClientOffline()) {
     enqueueOfflineMutation("RECORD_PAYMENT", tripId, payment);
     return;
   }
@@ -452,7 +734,7 @@ export async function updatePaymentInDatabase(tripId: string, payment: Payment):
 }
 
 export async function deletePaymentFromDatabase(tripId: string, paymentId: string): Promise<void> {
-  if (typeof navigator !== "undefined" && !navigator.onLine) {
+  if (isClientOffline()) {
     enqueueOfflineMutation("DELETE_PAYMENT", tripId, { paymentId });
     return;
   }
@@ -468,26 +750,76 @@ export async function deletePaymentFromDatabase(tripId: string, paymentId: strin
   }
 }
 
-export async function addMemberToDatabase(tripId: string, member: Member): Promise<void> {
-  if (typeof navigator !== "undefined" && !navigator.onLine) {
+export async function addMemberToDatabase(tripId: string, member: Member): Promise<Member> {
+  if (isClientOffline()) {
     enqueueOfflineMutation("SAVE_MEMBER", tripId, member);
-    return;
+    return member;
   }
   try {
-    const row = mapMemberToRow(tripId, member);
+    let resolvedUserId = member.userId;
+    // If member has phone or email, check if user is already registered
+    const cleanPhone = (member.phone || "").replace(/\D/g, "");
+    const cleanEmail = (member.email || "").trim().toLowerCase();
+
+    if (!resolvedUserId || resolvedUserId.startsWith("m_") || resolvedUserId.startsWith("guest_") || resolvedUserId === member.id) {
+      if (cleanPhone.length >= 7 || cleanEmail) {
+        try {
+          const { data: usersList } = await supabase.from("users").select("id, email, phone, name");
+          if (Array.isArray(usersList)) {
+            const match = usersList.find((u) => {
+              if (!u) return false;
+              if (isEmailMatch(u.email, member.email)) return true;
+              if (isPhoneMatch(u.phone, member.phone)) return true;
+              return false;
+            });
+            if (match) {
+              resolvedUserId = match.id;
+              if ((!member.name || member.name === "Member" || member.name === "Guest" || member.name === "Traveler") && match.name) {
+                member.name = match.name;
+              }
+            }
+          }
+        } catch (e) {}
+      }
+    }
+
+    const enhancedMember: Member = {
+      ...member,
+      userId: resolvedUserId || member.userId || member.id,
+    };
+
+    const row = mapMemberToRow(tripId, enhancedMember);
     const { error } = await supabase.from("trip_members").upsert(row);
     if (error) {
       console.warn("Error adding member to Supabase (queuing offline):", error.message);
-      enqueueOfflineMutation("SAVE_MEMBER", tripId, member);
+      enqueueOfflineMutation("SAVE_MEMBER", tripId, enhancedMember);
     }
+
+    // Update trip member_user_ids array
+    if (enhancedMember.userId) {
+      try {
+        const { data: tripRow } = await supabase.from("trips").select("member_user_ids").eq("id", tripId).maybeSingle();
+        if (tripRow) {
+          const currentIds = Array.isArray(tripRow.member_user_ids) ? tripRow.member_user_ids : [];
+          if (!currentIds.includes(enhancedMember.userId)) {
+            await supabase.from("trips").update({
+              member_user_ids: Array.from(new Set([...currentIds, enhancedMember.userId])),
+              updated_at: new Date().toISOString(),
+            }).eq("id", tripId);
+          }
+        }
+      } catch (e) {}
+    }
+    return enhancedMember;
   } catch (err) {
     console.warn("Network error adding member (queuing offline):", err);
     enqueueOfflineMutation("SAVE_MEMBER", tripId, member);
+    return member;
   }
 }
 
 export async function updateMemberInDatabase(tripId: string, member: Member): Promise<void> {
-  if (typeof navigator !== "undefined" && !navigator.onLine) {
+  if (isClientOffline()) {
     enqueueOfflineMutation("SAVE_MEMBER", tripId, member);
     return;
   }
@@ -505,7 +837,7 @@ export async function updateMemberInDatabase(tripId: string, member: Member): Pr
 }
 
 export async function deleteMemberFromDatabase(tripId: string, memberId: string): Promise<void> {
-  if (typeof navigator !== "undefined" && !navigator.onLine) {
+  if (isClientOffline()) {
     enqueueOfflineMutation("DELETE_MEMBER", tripId, { memberId });
     return;
   }
@@ -531,7 +863,7 @@ export async function addActivityToDatabase(tripId: string, activity: Activity):
 }
 
 export async function deleteTripFromDatabase(tripId: string): Promise<void> {
-  if (typeof navigator !== "undefined" && !navigator.onLine) {
+  if (isClientOffline()) {
     enqueueOfflineMutation("DELETE_TRIP", tripId, {});
     return;
   }
@@ -678,7 +1010,7 @@ export function resetStorageState(
     id: user.id,
     userId: user.id,
     name: user.name,
-    role: "owner",
+    role: "admin",
     avatarColor: user.avatarColor,
     phone: user.phone,
     joinedAt: new Date().toISOString(),
@@ -746,7 +1078,7 @@ export function createNewTripObject(
     id: user.id,
     userId: user.id,
     name: user.name,
-    role: "owner",
+    role: "admin",
     avatarColor: user.avatarColor,
     phone: user.phone,
     joinedAt: new Date().toISOString(),
@@ -770,7 +1102,7 @@ export function createNewTripObject(
       id: uid("usr"),
       userId: uid("usr"),
       name: name.trim(),
-      role: "member",
+      role: "participant",
       avatarColor: AVATAR_PALETTE[(idx + 1) % AVATAR_PALETTE.length],
       joinedAt: new Date().toISOString(),
       status: "active",

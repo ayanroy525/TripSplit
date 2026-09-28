@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
 import { UserAccount } from "../types";
 import { supabase } from "../utils/supabaseClient";
+import { linkUserToExistingTripMembers, isPhoneMatch, isEmailMatch } from "../utils/storage";
 
 interface AuthContextType {
   currentUser: UserAccount | null;
@@ -10,9 +11,9 @@ interface AuthContextType {
   isPasswordRecovery: boolean;
   setIsPasswordRecovery: (val: boolean) => void;
   login: (
-    email: string,
+    emailOrName: string,
     password?: string
-  ) => Promise<{ success: boolean; error?: string; isEmailNotConfirmed?: boolean }>;
+  ) => Promise<{ success: boolean; error?: string; isEmailNotConfirmed?: boolean; user?: UserAccount }>;
   signup: (
     accountData: Omit<UserAccount, "id" | "createdAt">
   ) => Promise<{ success: boolean; error?: string; requiresConfirmation?: boolean }>;
@@ -20,6 +21,10 @@ interface AuthContextType {
   sendPasswordReset: (
     email: string
   ) => Promise<{ success: boolean; error?: string; errorCode?: string; rawError?: any }>;
+  directResetPassword: (
+    emailOrName: string,
+    newPassword: string
+  ) => Promise<{ success: boolean; error?: string; user?: UserAccount }>;
   updatePassword: (newPassword: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
   updateProfile: (updatedData: Partial<UserAccount>) => Promise<void>;
@@ -75,6 +80,22 @@ async function syncUserProfileToDatabase(user: any, extraProfile?: Partial<UserA
   }
 }
 
+async function hashPassword(password: string): Promise<string> {
+  try {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(password + "_tripsplit_salt_v1");
+    const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+  } catch (e) {
+    let hash = 0;
+    for (let i = 0; i < password.length; i++) {
+      hash = ((hash << 5) - hash + password.charCodeAt(i)) | 0;
+    }
+    return `fb_${Math.abs(hash)}`;
+  }
+}
+
 const LOCAL_CREDENTIALS_KEY = "trip_splitter_user_credentials_v1";
 const ACTIVE_USER_KEY = "trip_expense_splitter_active_user_v1";
 
@@ -106,6 +127,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         if (user) {
           localStorage.setItem(ACTIVE_USER_KEY, JSON.stringify(user));
+          linkUserToExistingTripMembers(user).catch(() => {});
         } else {
           localStorage.removeItem(ACTIVE_USER_KEY);
         }
@@ -198,84 +220,197 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // Supabase & Instant Local Login
+  // Login supporting Email and Phone with Database & Supabase verification
   const login = async (
-    emailOrName: string,
+    emailOrPhone: string,
     password?: string
-  ): Promise<{ success: boolean; error?: string; isEmailNotConfirmed?: boolean }> => {
-    const trimmedEmail = emailOrName.trim().toLowerCase();
-    if (!trimmedEmail) {
-      return { success: false, error: "Please enter your email address." };
+  ): Promise<{ success: boolean; error?: string; isEmailNotConfirmed?: boolean; user?: UserAccount }> => {
+    const rawInput = emailOrPhone.trim();
+    if (!rawInput) {
+      return { success: false, error: "Please enter your email address or phone number." };
     }
     if (!password) {
       return { success: false, error: "Please enter your password." };
     }
 
-    // 1. Try Supabase Auth first
+    const trimmedInput = rawInput.toLowerCase();
+    const cleanDigits = rawInput.replace(/\D/g, "");
+
+    // 1. Query users from database (public.users)
+    let foundDbUser: any = null;
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: trimmedEmail,
-        password,
-      });
+      const { data: usersList, error: queryErr } = await supabase
+        .from("users")
+        .select("*");
 
-      if (!error && data.session && data.user) {
-        setTokenState(data.session.access_token);
-        await syncUserProfileToDatabase(data.user);
-
-        let extraProfile: Partial<UserAccount> | undefined;
-        try {
-          const { data: profileRow } = await supabase
-            .from("users")
-            .select("*")
-            .eq("id", data.user.id)
-            .maybeSingle();
-
-          if (profileRow) {
-            extraProfile = {
-              name: profileRow.name,
-              phone: profileRow.phone,
-              avatarColor: profileRow.avatar_color,
-              avatarUrl: profileRow.avatar_url,
-              bio: profileRow.bio,
-            };
+      if (!queryErr && Array.isArray(usersList)) {
+        foundDbUser = usersList.find((u) => {
+          if (!u) return false;
+          if (u.email && u.email.trim().toLowerCase() === trimmedInput) return true;
+          if (cleanDigits.length >= 7 && u.phone) {
+            const userPhoneDigits = u.phone.replace(/\D/g, "");
+            if (
+              userPhoneDigits.endsWith(cleanDigits) ||
+              cleanDigits.endsWith(userPhoneDigits)
+            ) {
+              return true;
+            }
           }
-        } catch (e) {}
-
-        const userAccount = buildUserFromSupabase(data.user, extraProfile);
-        persistUser(userAccount);
-        setAccounts((prev) => [userAccount, ...prev.filter((a) => a.id !== userAccount.id)]);
-        return { success: true };
+          return false;
+        });
       }
-    } catch (err) {
-      // Continue to local credentials store
+    } catch (e) {
+      console.warn("Notice querying users table:", e);
     }
 
-    // 2. Check local credentials store (allows immediate login with zero email verification required)
+    const hashedPassword = await hashPassword(password);
+
+    // If user was found in database
+    if (foundDbUser) {
+      const targetEmail = (foundDbUser.email || trimmedInput).trim().toLowerCase();
+
+      // 1A. Attempt Supabase Auth signInWithPassword
+      try {
+        const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+          email: targetEmail,
+          password,
+        });
+
+        if (!authError && authData.session && authData.user) {
+          setTokenState(authData.session.access_token);
+          // Update password_hash in DB if not set
+          if (!foundDbUser.password_hash) {
+            supabase
+              .from("users")
+              .update({ password_hash: hashedPassword, updated_at: new Date().toISOString() })
+              .eq("id", foundDbUser.id)
+              .then(() => {});
+          }
+
+          const userAccount: UserAccount = {
+            id: foundDbUser.id,
+            name: foundDbUser.name || authData.user.email?.split("@")[0] || "Traveler",
+            email: foundDbUser.email || authData.user.email || targetEmail,
+            phone: foundDbUser.phone || undefined,
+            avatarColor: foundDbUser.avatar_color || "#E39A2D",
+            avatarUrl: foundDbUser.avatar_url || undefined,
+            bio: foundDbUser.bio || "Travel Enthusiast",
+            createdAt: foundDbUser.created_at || new Date().toISOString(),
+          };
+
+          persistUser(userAccount);
+          setAccounts((prev) => [userAccount, ...prev.filter((a) => a.id !== userAccount.id)]);
+          return { success: true, user: userAccount };
+        }
+      } catch (err) {
+        // Fall through to database password verification
+      }
+
+      // 1B. Verify against database password_hash
+      if (foundDbUser.password_hash) {
+        if (foundDbUser.password_hash === hashedPassword) {
+          const userAccount: UserAccount = {
+            id: foundDbUser.id,
+            name: foundDbUser.name || "Traveler",
+            email: foundDbUser.email || targetEmail,
+            phone: foundDbUser.phone || undefined,
+            avatarColor: foundDbUser.avatar_color || "#E39A2D",
+            avatarUrl: foundDbUser.avatar_url || undefined,
+            bio: foundDbUser.bio || "Travel Enthusiast",
+            createdAt: foundDbUser.created_at || new Date().toISOString(),
+          };
+
+          persistUser(userAccount);
+          setAccounts((prev) => [userAccount, ...prev.filter((a) => a.id !== userAccount.id)]);
+          return { success: true, user: userAccount };
+        } else {
+          return {
+            success: false,
+            error: "Incorrect password for this account. If you forgot your password, click 'Forgot Password?' to set a new one instantly (no email verification required).",
+          };
+        }
+      } else {
+        // First login since password hashing was enabled: adopt the provided password
+        try {
+          await supabase
+            .from("users")
+            .update({ password_hash: hashedPassword, updated_at: new Date().toISOString() })
+            .eq("id", foundDbUser.id);
+        } catch (e) {}
+
+        const userAccount: UserAccount = {
+          id: foundDbUser.id,
+          name: foundDbUser.name || "Traveler",
+          email: foundDbUser.email || targetEmail,
+          phone: foundDbUser.phone || undefined,
+          avatarColor: foundDbUser.avatar_color || "#E39A2D",
+          avatarUrl: foundDbUser.avatar_url || undefined,
+          bio: foundDbUser.bio || "Travel Enthusiast",
+          createdAt: foundDbUser.created_at || new Date().toISOString(),
+        };
+
+        persistUser(userAccount);
+        setAccounts((prev) => [userAccount, ...prev.filter((a) => a.id !== userAccount.id)]);
+        return { success: true, user: userAccount };
+      }
+    }
+
+    // 2. If user not yet in public.users table, attempt direct Supabase auth if it looks like an email
+    if (trimmedInput.includes("@")) {
+      try {
+        const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+          email: trimmedInput,
+          password,
+        });
+
+        if (!authError && authData.session && authData.user) {
+          setTokenState(authData.session.access_token);
+          const userAccount = buildUserFromSupabase(authData.user);
+          // Upsert into users table
+          await supabase.from("users").upsert({
+            id: authData.user.id,
+            email: trimmedInput,
+            name: userAccount.name,
+            phone: userAccount.phone || null,
+            avatar_color: userAccount.avatarColor,
+            bio: userAccount.bio,
+            password_hash: hashedPassword,
+            updated_at: new Date().toISOString(),
+          });
+
+          persistUser(userAccount);
+          setAccounts((prev) => [userAccount, ...prev.filter((a) => a.id !== userAccount.id)]);
+          return { success: true, user: userAccount };
+        }
+      } catch (err) {}
+    }
+
+    // 3. Check local credentials store
     try {
       if (typeof window !== "undefined") {
         const creds = JSON.parse(localStorage.getItem(LOCAL_CREDENTIALS_KEY) || "{}");
-        const record = creds[trimmedEmail];
+        const record = creds[trimmedInput];
         if (record && record.password === password && record.account) {
           persistUser(record.account);
           setAccounts((prev) => [record.account, ...prev.filter((a) => a.id !== record.account.id)]);
-          return { success: true };
+          return { success: true, user: record.account };
         }
       }
     } catch (e) {}
 
     return {
       success: false,
-      error: "Invalid email or password. Please verify your details and try again.",
-      isEmailNotConfirmed: false,
+      error: "No account found matching this email or phone number. Please check your credentials or click 'Create Account' to register in seconds.",
     };
   };
 
-  // Instant Account Creation - ZERO Email Verification Required
+  // Instant Account Creation - Check for Duplicate Email & Phone (Duplication Not Permitted)
   const signup = async (
     accountData: Omit<UserAccount, "id" | "createdAt">
   ): Promise<{ success: boolean; error?: string; requiresConfirmation?: boolean }> => {
     const trimmedEmail = accountData.email.trim().toLowerCase();
     const trimmedName = accountData.name.trim();
+    const cleanPhoneDigits = accountData.phone ? accountData.phone.replace(/\D/g, "") : "";
 
     if (!trimmedName) {
       return { success: false, error: "Please enter your full name." };
@@ -287,6 +422,56 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return { success: false, error: "Password must be at least 6 characters long." };
     }
 
+    // 1. DUPLICATION CHECK: Prevent creating an account if email or phone already exists
+    try {
+      const { data: usersList, error: queryErr } = await supabase
+        .from("users")
+        .select("*");
+
+      if (!queryErr && Array.isArray(usersList)) {
+        // A. Check for existing account with the same email
+        const existingEmailUser = usersList.find(
+          (u) => u && isEmailMatch(u.email, trimmedEmail)
+        );
+        if (existingEmailUser) {
+          return {
+            success: false,
+            error: "An account with this email already exists. Please log in with your password.",
+          };
+        }
+
+        // B. Check for existing account with the same phone number
+        if (cleanPhoneDigits.length >= 7) {
+          const existingPhoneUser = usersList.find((u) => {
+            if (!u || !u.phone) return false;
+            return isPhoneMatch(u.phone, accountData.phone);
+          });
+          if (existingPhoneUser) {
+            return {
+              success: false,
+              error: "An account with this phone number already exists. Please log in with your password.",
+            };
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Notice checking existing users during signup:", e);
+    }
+
+    // Check local credentials store for existing email
+    try {
+      if (typeof window !== "undefined") {
+        const creds = JSON.parse(localStorage.getItem(LOCAL_CREDENTIALS_KEY) || "{}");
+        if (creds[trimmedEmail]) {
+          return {
+            success: false,
+            error: "An account with this email already exists. Please log in with your password.",
+          };
+        }
+      }
+    } catch (e) {}
+
+    const hashedPassword = await hashPassword(accountData.password);
     let supabaseUserId: string | null = null;
     let supabaseSessionToken: string | null = null;
 
@@ -298,11 +483,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           data: {
             name: trimmedName,
             phone: accountData.phone || "",
-            avatarColor: accountData.avatarColor || "#0F6B65",
+            avatarColor: accountData.avatarColor || "#E39A2D",
             bio: accountData.bio || "Travel Enthusiast",
           },
         },
       });
+
+      if (error) {
+        if (
+          error.message?.toLowerCase().includes("already registered") ||
+          error.message?.toLowerCase().includes("user already exists")
+        ) {
+          return {
+            success: false,
+            error: "An account with this email already exists. Please log in with your password.",
+          };
+        }
+      }
 
       if (!error && data?.user) {
         supabaseUserId = data.user.id;
@@ -314,8 +511,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       console.warn("Supabase signup attempt notice:", err);
     }
 
-    // Whether Supabase immediately confirmed, sent an email, or hit email rate limits:
-    // User does NOT need email verification. Account is created and logged in immediately!
     const userId =
       supabaseUserId ||
       `u_${Math.random().toString(36).substring(2, 9)}_${Date.now().toString(36)}`;
@@ -325,19 +520,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       name: trimmedName,
       email: trimmedEmail,
       phone: accountData.phone,
-      avatarColor: accountData.avatarColor || "#0F6B65",
+      avatarColor: accountData.avatarColor || "#E39A2D",
       bio: accountData.bio || "Travel Enthusiast",
       createdAt: new Date().toISOString(),
     };
 
-    if (supabaseSessionToken) {
-      setTokenState(supabaseSessionToken);
-      if (supabaseUserId) {
-        syncUserProfileToDatabase({ id: supabaseUserId, email: trimmedEmail }, newAccount).catch(() => {});
-      }
+    // Save directly to Supabase public.users table with password_hash!
+    try {
+      await supabase.from("users").insert({
+        id: userId,
+        email: trimmedEmail,
+        name: trimmedName,
+        phone: accountData.phone || null,
+        avatar_color: accountData.avatarColor || "#E39A2D",
+        bio: accountData.bio || "Travel Enthusiast",
+        password_hash: hashedPassword,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+    } catch (e) {
+      console.warn("Notice inserting user to users table:", e);
     }
 
-    // Persist credentials locally so that direct login works immediately
+    if (supabaseSessionToken) {
+      setTokenState(supabaseSessionToken);
+    }
+
+    // Persist credentials locally
     try {
       if (typeof window !== "undefined") {
         const creds = JSON.parse(localStorage.getItem(LOCAL_CREDENTIALS_KEY) || "{}");
@@ -353,7 +562,110 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     persistUser(newAccount);
     setAccounts((prev) => [newAccount, ...prev.filter((a) => a.id !== newAccount.id)]);
 
+    // Smart User-Member Linking: Connect any existing trips where organizer added this phone or email
+    try {
+      await linkUserToExistingTripMembers(newAccount);
+    } catch (e) {
+      console.warn("Smart User-Member Linking notice during signup:", e);
+    }
+
     return { success: true, requiresConfirmation: false };
+  };
+
+  // Instant Password Reset (Zero email verification required!)
+  const directResetPassword = async (
+    emailOrPhone: string,
+    newPassword: string
+  ): Promise<{ success: boolean; error?: string; user?: UserAccount }> => {
+    const rawInput = emailOrPhone.trim();
+    if (!rawInput) {
+      return { success: false, error: "Please enter your registered email address or phone number." };
+    }
+    if (!newPassword || newPassword.length < 6) {
+      return { success: false, error: "New password must be at least 6 characters long." };
+    }
+
+    const trimmedInput = rawInput.toLowerCase();
+    const cleanDigits = rawInput.replace(/\D/g, "");
+    const hashedPassword = await hashPassword(newPassword);
+
+    try {
+      // Find user in users table
+      const { data: usersList, error: queryErr } = await supabase
+        .from("users")
+        .select("*");
+
+      let targetUser = usersList?.find((u) => {
+        if (!u) return false;
+        if (u.email && u.email.trim().toLowerCase() === trimmedInput) return true;
+        if (cleanDigits.length >= 7 && u.phone) {
+          const digits = u.phone.replace(/\D/g, "");
+          return digits.endsWith(cleanDigits) || cleanDigits.endsWith(digits);
+        }
+        return false;
+      });
+
+      // If user not found yet, but input is email, register them now
+      if (!targetUser && trimmedInput.includes("@")) {
+        const newId = `u_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        const newRow = {
+          id: newId,
+          email: trimmedInput,
+          name: trimmedInput.split("@")[0],
+          phone: null,
+          avatar_color: "#E39A2D",
+          bio: "Travel Enthusiast",
+          password_hash: hashedPassword,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+        const { data: inserted } = await supabase.from("users").upsert(newRow, { onConflict: "id" }).select().single();
+        targetUser = inserted || newRow;
+      }
+
+      if (!targetUser) {
+        return {
+          success: false,
+          error: `No registered account found for "${rawInput}". Please check the spelling or create an account.`,
+        };
+      }
+
+      // Update password hash in users table
+      await supabase
+        .from("users")
+        .update({
+          password_hash: hashedPassword,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", targetUser.id);
+
+      // Attempt to also update in Supabase Auth if session exists or if possible
+      try {
+        await supabase.auth.updateUser({ password: newPassword });
+      } catch (e) {}
+
+      // Log user in immediately!
+      const userAccount: UserAccount = {
+        id: targetUser.id,
+        name: targetUser.name || targetUser.email?.split("@")[0] || "Traveler",
+        email: targetUser.email || trimmedInput,
+        phone: targetUser.phone || undefined,
+        avatarColor: targetUser.avatar_color || "#E39A2D",
+        avatarUrl: targetUser.avatar_url || undefined,
+        bio: targetUser.bio || "Travel Enthusiast",
+        createdAt: targetUser.created_at || new Date().toISOString(),
+      };
+
+      persistUser(userAccount);
+      setAccounts((prev) => [userAccount, ...prev.filter((a) => a.id !== userAccount.id)]);
+
+      return { success: true, user: userAccount };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err.message || "Failed to update password. Please try again.",
+      };
+    }
   };
 
   // Resend confirmation email via Supabase
@@ -524,6 +836,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         signup,
         resendConfirmationEmail,
         sendPasswordReset,
+        directResetPassword,
         updatePassword,
         logout,
         updateProfile,

@@ -1,4 +1,4 @@
-export type Role = "owner" | "member" | "viewer";
+export type Role = "admin" | "participant" | "viewer" | "owner" | "member";
 
 export interface TripMember {
   id: string;
@@ -27,7 +27,14 @@ export interface UserAccount {
   createdAt: string;
 }
 
-export type SplitMethod = "equal" | "custom" | "percentage" | "shares" | "selected";
+export type SplitMethod = "equal" | "custom" | "percentage" | "shares" | "itemized" | "selected";
+
+export interface ReceiptItem {
+  id: string;
+  title: string;
+  amount: number;
+  participants: string[]; // member IDs sharing this item
+}
 
 export interface ExpenseAuditLog {
   id: string;
@@ -44,6 +51,9 @@ export interface Expense {
   tripId?: string;
   title: string;
   amount: number;
+  currency?: string; // Bill currency if foreign (e.g. THB, EUR)
+  originalAmount?: number; // Original entered amount before conversion
+  exchangeRate?: number; // 1 unit of foreign currency in trip base currency
   category: string;
   date: string;
   paidBy: string; // single payer member ID, or "multiple"
@@ -55,6 +65,7 @@ export interface Expense {
   splits: Record<string, number>; // memberId -> exact share in currency
   splitPercentages?: Record<string, number>; // memberId -> %
   splitShares?: Record<string, number>; // memberId -> integer share weight
+  items?: ReceiptItem[]; // itemized line items if method === "itemized"
   notes?: string;
   receiptUrl?: string;
   createdAt?: string;
@@ -98,6 +109,9 @@ export interface Settlement {
   fromUserId?: string;
   toUserId?: string;
   amount: number;
+  currency?: string;
+  originalAmount?: number;
+  exchangeRate?: number;
   status: SettlementStatus;
   method?: "Cash" | "Bank Transfer" | "UPI" | "Other" | string;
   ts?: string;

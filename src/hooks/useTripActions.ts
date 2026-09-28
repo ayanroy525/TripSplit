@@ -8,6 +8,7 @@ import {
   WhatsAppNotificationPayload,
 } from "../types";
 import { money, nowStr, uid } from "../utils/calculations";
+import { getTripPermissions } from "../utils/permissions";
 import {
   saveTripToDatabase,
   deleteTripFromDatabase,
@@ -20,6 +21,9 @@ import {
   updateMemberInDatabase,
   deleteMemberFromDatabase,
   addActivityToDatabase,
+  saveExpenseAtomic,
+  recordPaymentAtomic,
+  confirmPaymentAtomic,
   saveUserLocalState,
   resetStorageState,
   DEFAULT_AUTH_USER,
@@ -67,6 +71,16 @@ export function useTripActions({
   const handleSaveExpense = async (savedExpense: Expense) => {
     if (!trip) return;
     const isEdit = trip.expenses.some((e) => e.id === savedExpense.id);
+    const perms = getTripPermissions(trip, currentUser, authUser?.id);
+
+    if (isEdit && !perms.canEditExpense(savedExpense)) {
+      alert("Permission Denied: Participants can only edit their own expenses.");
+      return false;
+    }
+    if (!isEdit && !perms.canAddExpense) {
+      alert("Permission Denied: Viewers cannot add expenses.");
+      return false;
+    }
 
     try {
       const expenseToSave: Expense = {
@@ -90,12 +104,8 @@ export function useTripActions({
         actorId: currentUser.id,
       };
 
-      if (isEdit) {
-        await updateExpenseInDatabase(trip.id, expenseToSave);
-      } else {
-        await addExpenseToDatabase(trip.id, expenseToSave);
-      }
-      await addActivityToDatabase(trip.id, newActivity);
+      // Atomic write: saves expense and activity log simultaneously in 1 Postgres transaction
+      await saveExpenseAtomic(trip.id, expenseToSave, newActivity);
 
       const updatedExpenses = isEdit
         ? trip.expenses.map((e) => (e.id === expenseToSave.id ? expenseToSave : e))
@@ -134,6 +144,12 @@ export function useTripActions({
     if (!trip) return;
     const exp = trip.expenses.find((e) => e.id === expenseId);
     if (!exp) return;
+
+    const perms = getTripPermissions(trip, currentUser, authUser?.id);
+    if (!perms.canDeleteExpense(exp)) {
+      alert("Permission Denied: Participants can only delete their own expenses.");
+      return;
+    }
 
     try {
       const newActivity = {
@@ -198,8 +214,8 @@ export function useTripActions({
         actorId: currentUser.id,
       };
 
-      await addPaymentToDatabase(trip.id, authoritativePayment);
-      await addActivityToDatabase(trip.id, newActivity);
+      // Atomic write: records settlement and activity log simultaneously in 1 Postgres transaction
+      await recordPaymentAtomic(trip.id, authoritativePayment, newActivity);
 
       const updatedPayments = [authoritativePayment, ...(trip.payments || []).filter(p => p.id !== authoritativePayment.id)];
       const updatedTripObj: Trip = {
@@ -248,16 +264,29 @@ export function useTripActions({
         updatedAt: new Date().toISOString(),
       };
 
-      await updatePaymentInDatabase(trip.id, updatedPayment);
+      const debtor = trip.members.find((m) => m.id === updatedPayment.from)?.name || "Payer";
+      const creditor = trip.members.find((m) => m.id === updatedPayment.to)?.name || "Receiver";
+
+      const confirmActivity = {
+        id: uid("act"),
+        ts: nowStr(),
+        user: currentUser.name,
+        action: "confirmed settlement",
+        detail: `${creditor} confirmed payment of ${money(updatedPayment.amount, trip.currency)} from ${debtor}`,
+        actorId: currentUser.id,
+      };
+
+      await confirmPaymentAtomic(trip.id, paymentId, currentUser.id, confirmActivity);
 
       const updatedPayments = (trip.payments || []).map((p) =>
         p.id === paymentId ? updatedPayment : p
       );
-      const updatedTripObj = { ...trip, payments: updatedPayments };
+      const updatedTripObj = {
+        ...trip,
+        payments: updatedPayments,
+        activities: [confirmActivity, ...(trip.activities || [])],
+      };
       updateActiveTrip(updatedTripObj);
-
-      const debtor = trip.members.find((m) => m.id === updatedPayment.from)?.name || "Payer";
-      const creditor = trip.members.find((m) => m.id === updatedPayment.to)?.name || "Receiver";
 
       notify({
         tripId: trip.id,
@@ -309,18 +338,34 @@ export function useTripActions({
   // 3. MEMBER HANDLERS
   const handleSaveMember = async (member: Member) => {
     if (!trip) return;
-    try {
-      const isEdit = trip.members.some((m) => m.id === member.id);
+    const perms = getTripPermissions(trip, currentUser, authUser?.id);
+    const isEdit = trip.members.some((m) => m.id === member.id);
 
+    if (!isEdit && !perms.canInviteMember) {
+      alert("Permission Denied: Viewers cannot invite members.");
+      return false;
+    }
+
+    if (isEdit) {
+      const existing = trip.members.find((m) => m.id === member.id);
+      if (existing && existing.role !== member.role && !perms.canChangeRole) {
+        alert("Permission Denied: Only a Trip Admin can change member roles.");
+        return false;
+      }
+    }
+
+    try {
+
+      let savedMember = member;
       if (isEdit) {
         await updateMemberInDatabase(trip.id, member);
       } else {
-        await addMemberToDatabase(trip.id, member);
+        savedMember = await addMemberToDatabase(trip.id, member);
       }
 
       const updatedMembers = isEdit
         ? trip.members.map((m) => (m.id === member.id ? member : m))
-        : [...trip.members, member];
+        : [...trip.members, savedMember || member];
 
       const updatedTripObj = { ...trip, members: updatedMembers };
       updateActiveTrip(updatedTripObj);
@@ -334,6 +379,12 @@ export function useTripActions({
 
   const handleDeleteMember = async (memberId: string) => {
     if (!trip) return;
+    const perms = getTripPermissions(trip, currentUser, authUser?.id);
+    if (!perms.canRemoveMember(memberId)) {
+      alert("Permission Denied: Only a Trip Admin can remove members.");
+      return false;
+    }
+
     try {
       await deleteMemberFromDatabase(trip.id, memberId);
 

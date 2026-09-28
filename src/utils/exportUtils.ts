@@ -1,6 +1,3 @@
-import { jsPDF } from "jspdf";
-import autoTable from "jspdf-autotable";
-import * as XLSX from "xlsx";
 import { Trip, Member, Expense, Payment, SimplifiedDebt } from "../types";
 import { formatDate } from "./calculations";
 
@@ -16,13 +13,14 @@ function pdfMoney(n: number | undefined | null, prefix = "Rs. "): string {
 /**
  * Generates and downloads a rich, multi-sheet Excel (.xlsx) workbook for the trip.
  */
-export function exportTripToExcel(
+export async function exportTripToExcel(
   trip: Trip,
   members: Member[],
   paidShare: Record<string, { paid: number; share: number }>,
   netBalances: Record<string, number>,
   simplifiedDebts: SimplifiedDebt[]
 ) {
+  const XLSX = await import("xlsx");
   const memberMap = new Map(members.map((m) => [m.id, m.name]));
   const activeExpenses = (trip.expenses || []).filter((e) => !e.deleted);
   const totalSpend = activeExpenses.reduce((s, e) => s + e.amount, 0);
@@ -144,13 +142,16 @@ export function exportTripToExcel(
 /**
  * Generates and downloads a clean, beautifully formatted PDF audit report.
  */
-export function exportTripToPDF(
+export async function exportTripToPDF(
   trip: Trip,
   members: Member[],
   paidShare: Record<string, { paid: number; share: number }>,
   netBalances: Record<string, number>,
   simplifiedDebts: SimplifiedDebt[]
 ) {
+  const { jsPDF } = await import("jspdf");
+  const autoTable = (await import("jspdf-autotable")).default;
+
   const memberMap = new Map(members.map((m) => [m.id, m.name]));
   const activeExpenses = (trip.expenses || []).filter((e) => !e.deleted);
   const totalSpend = activeExpenses.reduce((s, e) => s + e.amount, 0);

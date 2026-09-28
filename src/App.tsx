@@ -17,14 +17,12 @@ import { useAuth } from "./context/AuthContext";
 import { useNotifications } from "./context/NotificationContext";
 import { useTripData } from "./hooks/useTripData";
 import { useTripActions } from "./hooks/useTripActions";
+import { getTripPermissions } from "./utils/permissions";
 
-// Views
+// Views (Initial & Core)
 import { HomeDashboardView } from "./components/HomeDashboardView";
 import { ExpensesListView } from "./components/ExpensesListView";
 import { BalanceView } from "./components/BalanceView";
-import { AnalyticsView } from "./components/AnalyticsView";
-import { PeopleView } from "./components/PeopleView";
-import { ActivityLogView } from "./components/ActivityLogView";
 import { EmptyTripStateView } from "./components/EmptyTripStateView";
 import { LoginPage } from "./components/LoginPage";
 
@@ -33,20 +31,57 @@ import { BottomNavigation } from "./components/BottomNavigation";
 import { NotificationBell } from "./components/NotificationBell";
 import { NotificationToastContainer } from "./components/NotificationToastContainer";
 
-// Modals
-import { ExpenseFormModal } from "./components/ExpenseFormModal";
-import { SettleUpModal } from "./components/SettleUpModal";
-import { MemberManagementModal } from "./components/MemberManagementModal";
-import { InviteMembersModal } from "./components/InviteMembersModal";
-import { ResetTripModal } from "./components/ResetTripModal";
-import { TripsHubModal } from "./components/TripsHubModal";
-import { ShareExportModal } from "./components/ShareExportModal";
-import { TripMoreMenuModal } from "./components/TripMoreMenuModal";
-import { UserProfileModal } from "./components/UserProfileModal";
-import { NotificationCenterModal } from "./components/NotificationCenterModal";
-import { WhatsAppNotificationModal } from "./components/WhatsAppNotificationModal";
-import { JoinTripModal } from "./components/JoinTripModal";
-import { ResetPasswordModal } from "./components/ResetPasswordModal";
+// Lazy-loaded Views (Heavy chart and auxiliary tabs)
+const AnalyticsView = React.lazy(() =>
+  import("./components/AnalyticsView").then((m) => ({ default: m.AnalyticsView }))
+);
+const PeopleView = React.lazy(() =>
+  import("./components/PeopleView").then((m) => ({ default: m.PeopleView }))
+);
+const ActivityLogView = React.lazy(() =>
+  import("./components/ActivityLogView").then((m) => ({ default: m.ActivityLogView }))
+);
+
+// Lazy-loaded Modals (Loaded strictly on-demand)
+const ExpenseFormModal = React.lazy(() =>
+  import("./components/ExpenseFormModal").then((m) => ({ default: m.ExpenseFormModal }))
+);
+const SettleUpModal = React.lazy(() =>
+  import("./components/SettleUpModal").then((m) => ({ default: m.SettleUpModal }))
+);
+const MemberManagementModal = React.lazy(() =>
+  import("./components/MemberManagementModal").then((m) => ({ default: m.MemberManagementModal }))
+);
+const InviteMembersModal = React.lazy(() =>
+  import("./components/InviteMembersModal").then((m) => ({ default: m.InviteMembersModal }))
+);
+const ResetTripModal = React.lazy(() =>
+  import("./components/ResetTripModal").then((m) => ({ default: m.ResetTripModal }))
+);
+const TripsHubModal = React.lazy(() =>
+  import("./components/TripsHubModal").then((m) => ({ default: m.TripsHubModal }))
+);
+const ShareExportModal = React.lazy(() =>
+  import("./components/ShareExportModal").then((m) => ({ default: m.ShareExportModal }))
+);
+const TripMoreMenuModal = React.lazy(() =>
+  import("./components/TripMoreMenuModal").then((m) => ({ default: m.TripMoreMenuModal }))
+);
+const UserProfileModal = React.lazy(() =>
+  import("./components/UserProfileModal").then((m) => ({ default: m.UserProfileModal }))
+);
+const NotificationCenterModal = React.lazy(() =>
+  import("./components/NotificationCenterModal").then((m) => ({ default: m.NotificationCenterModal }))
+);
+const WhatsAppNotificationModal = React.lazy(() =>
+  import("./components/WhatsAppNotificationModal").then((m) => ({ default: m.WhatsAppNotificationModal }))
+);
+const JoinTripModal = React.lazy(() =>
+  import("./components/JoinTripModal").then((m) => ({ default: m.JoinTripModal }))
+);
+const ResetPasswordModal = React.lazy(() =>
+  import("./components/ResetPasswordModal").then((m) => ({ default: m.ResetPasswordModal }))
+);
 
 export default function App() {
   const {
@@ -111,6 +146,10 @@ export default function App() {
 
   // 3. UI Presentation States
   const [activeTab, setActiveTab] = useState<NavTab>("home");
+  const permissions = React.useMemo(
+    () => getTripPermissions(trip, currentUser, authUser?.id),
+    [trip, currentUser, authUser?.id]
+  );
   const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
   const [isSettleModalOpen, setIsSettleModalOpen] = useState(false);
@@ -199,54 +238,56 @@ export default function App() {
           }}
         />
 
-        {isUserProfileOpen && (
-          <UserProfileModal
-            isOpen={isUserProfileOpen}
-            onClose={() => setIsUserProfileOpen(false)}
-            onOpenAuthPage={() => {
-              logout();
-              setIsUserProfileOpen(false);
-            }}
-          />
-        )}
+        <React.Suspense fallback={null}>
+          {isUserProfileOpen && (
+            <UserProfileModal
+              isOpen={isUserProfileOpen}
+              onClose={() => setIsUserProfileOpen(false)}
+              onOpenAuthPage={() => {
+                logout();
+                setIsUserProfileOpen(false);
+              }}
+            />
+          )}
 
-        {isJoinTripModalOpen && (
-          <JoinTripModal
-            currentTrip={null}
-            initialCode={initialJoinCode}
-            onClose={() => setIsJoinTripModalOpen(false)}
-            onJoinTripSuccess={(joinedTrip) => {
-              if (!trips.find((t) => t.id === joinedTrip.id)) {
-                setTrips((prev) => [joinedTrip, ...prev]);
-              } else {
-                setTrips((prev) => prev.map((t) => (t.id === joinedTrip.id ? joinedTrip : t)));
-              }
-              setActiveTripId(joinedTrip.id);
-              setIsJoinTripModalOpen(false);
-            }}
-          />
-        )}
+          {isJoinTripModalOpen && (
+            <JoinTripModal
+              currentTrip={null}
+              initialCode={initialJoinCode}
+              onClose={() => setIsJoinTripModalOpen(false)}
+              onJoinTripSuccess={(joinedTrip) => {
+                if (!trips.find((t) => t.id === joinedTrip.id)) {
+                  setTrips((prev) => [joinedTrip, ...prev]);
+                } else {
+                  setTrips((prev) => prev.map((t) => (t.id === joinedTrip.id ? joinedTrip : t)));
+                }
+                setActiveTripId(joinedTrip.id);
+                setIsJoinTripModalOpen(false);
+              }}
+            />
+          )}
 
-        {isTripsHubModalOpen && (
-          <TripsHubModal
-            trips={userTrips}
-            activeTripId={activeTripId}
-            onSelectTrip={(id) => {
-              setActiveTripId(id);
-              setIsTripsHubModalOpen(false);
-            }}
-            onCreateTrip={async (newTrip) => {
-              await handleCreateTrip(newTrip);
-              setIsTripsHubModalOpen(false);
-            }}
-            onDeleteTrip={handleDeleteTrip}
-            onOpenJoinModal={() => {
-              setIsTripsHubModalOpen(false);
-              setIsJoinTripModalOpen(true);
-            }}
-            onClose={() => setIsTripsHubModalOpen(false)}
-          />
-        )}
+          {isTripsHubModalOpen && (
+            <TripsHubModal
+              trips={userTrips}
+              activeTripId={activeTripId}
+              onSelectTrip={(id) => {
+                setActiveTripId(id);
+                setIsTripsHubModalOpen(false);
+              }}
+              onCreateTrip={async (newTrip) => {
+                await handleCreateTrip(newTrip);
+                setIsTripsHubModalOpen(false);
+              }}
+              onDeleteTrip={handleDeleteTrip}
+              onOpenJoinModal={() => {
+                setIsTripsHubModalOpen(false);
+                setIsJoinTripModalOpen(true);
+              }}
+              onClose={() => setIsTripsHubModalOpen(false)}
+            />
+          )}
+        </React.Suspense>
       </div>
     );
   }
@@ -436,6 +477,8 @@ export default function App() {
             members={trip.members}
             currentUserId={currentUser.id}
             currency={trip.currency}
+            trip={trip}
+            currentUser={currentUser}
             onOpenAddExpense={() => {
               setEditingExpense(null);
               setIsExpenseModalOpen(true);
@@ -462,36 +505,45 @@ export default function App() {
           />
         )}
 
-        {activeTab === "analytics" && (
-          <AnalyticsView
-            expenses={trip.expenses}
-            members={trip.members}
-            payments={trip.payments || []}
-            paidShare={paidShare}
-          />
-        )}
+        <React.Suspense
+          fallback={
+            <div className="py-16 flex flex-col items-center justify-center text-[var(--c-inkSoft,#94A3B8)]">
+              <div className="w-8 h-8 rounded-full border-2 border-teal-500 border-t-transparent animate-spin mb-3" />
+              <span className="text-xs font-semibold">Loading section...</span>
+            </div>
+          }
+        >
+          {activeTab === "analytics" && (
+            <AnalyticsView
+              expenses={trip.expenses}
+              members={trip.members}
+              payments={trip.payments || []}
+              paidShare={paidShare}
+            />
+          )}
 
-        {(activeTab === "people" || activeTab === "members") && (
-          <PeopleView
-            trip={trip}
-            currentUser={currentUser}
-            currentUserId={currentUser.id}
-            memberStats={memberStatsObj}
-            onOpenInviteModal={() => setIsInviteModalOpen(true)}
-            onOpenEditMember={(m) => {
-              setEditingMember(m);
-              setIsMembersModalOpen(true);
-            }}
-            onSendWhatsAppStatement={handleSendWhatsAppStatement}
-          />
-        )}
+          {(activeTab === "people" || activeTab === "members") && (
+            <PeopleView
+              trip={trip}
+              currentUser={currentUser}
+              currentUserId={currentUser.id}
+              memberStats={memberStatsObj}
+              onOpenInviteModal={() => setIsInviteModalOpen(true)}
+              onOpenEditMember={(m) => {
+                setEditingMember(m);
+                setIsMembersModalOpen(true);
+              }}
+              onSendWhatsAppStatement={handleSendWhatsAppStatement}
+            />
+          )}
 
-        {activeTab === "activity" && (
-          <ActivityLogView
-            activities={trip.activities || []}
-            members={trip.members || []}
-          />
-        )}
+          {activeTab === "activity" && (
+            <ActivityLogView
+              activities={trip.activities || []}
+              members={trip.members || []}
+            />
+          )}
+        </React.Suspense>
       </main>
 
       {/* Bottom Navigation Bar */}
@@ -504,259 +556,270 @@ export default function App() {
         }}
         pendingSettlementsCount={simplifiedDebts.length}
         expensesCount={activeExpenses.length}
+        canAddExpense={permissions.canAddExpense}
       />
 
       {/* Floating Action Button for Desktop/Tablet */}
-      <button
-        id="btn-desktop-floating-add-expense"
-        type="button"
-        onClick={() => {
-          setEditingExpense(null);
-          setIsExpenseModalOpen(true);
-        }}
-        className="hidden md:flex fixed bottom-8 right-8 z-40 bg-[var(--c-teal,#0F6B65)] hover:bg-[var(--c-tealDark,#0B4F4B)] text-white px-5 py-3.5 rounded-2xl shadow-xl items-center gap-2.5 font-extrabold text-sm hover:scale-105 active:scale-95 transition-all cursor-pointer border border-white/20"
-        title="Add new expense"
-      >
-        <Plus size={20} strokeWidth={3} />
-        <span>Add Expense</span>
-      </button>
+      {permissions.canAddExpense && (
+        <button
+          id="btn-desktop-floating-add-expense"
+          type="button"
+          onClick={() => {
+            setEditingExpense(null);
+            setIsExpenseModalOpen(true);
+          }}
+          className="hidden md:flex fixed bottom-8 right-8 z-40 bg-[var(--c-teal,#0F6B65)] hover:bg-[var(--c-tealDark,#0B4F4B)] text-white px-5 py-3.5 rounded-2xl shadow-xl items-center gap-2.5 font-extrabold text-sm hover:scale-105 active:scale-95 transition-all cursor-pointer border border-white/20"
+          title="Add new expense"
+        >
+          <Plus size={20} strokeWidth={3} />
+          <span>Add Expense</span>
+        </button>
+      )}
 
-      {/* Modal Dialogs */}
-      {isExpenseModalOpen && (
-        <ExpenseFormModal
-          members={trip.members}
-          initialExpense={editingExpense}
-          currentUserId={currentUser.id}
-          onSave={async (exp) => {
-            const success = await handleSaveExpense(exp);
-            if (success) {
+      {/* Modal Dialogs (Dynamically loaded on demand) */}
+      <React.Suspense fallback={null}>
+        {isExpenseModalOpen && (
+          <ExpenseFormModal
+            members={trip.members}
+            initialExpense={editingExpense}
+            currentUserId={currentUser.id}
+            onSave={async (exp) => {
+              const success = await handleSaveExpense(exp);
+              if (success) {
+                setIsExpenseModalOpen(false);
+                setEditingExpense(null);
+              }
+            }}
+            onClose={() => {
               setIsExpenseModalOpen(false);
               setEditingExpense(null);
-            }
-          }}
-          onClose={() => {
-            setIsExpenseModalOpen(false);
-            setEditingExpense(null);
-          }}
-        />
-      )}
+            }}
+          />
+        )}
 
-      {isSettleModalOpen && (
-        <SettleUpModal
-          tripId={trip.id}
-          members={trip.members}
-          simplifiedDebts={simplifiedDebts}
-          payments={trip.payments || []}
-          tripTitle={trip.title}
-          currentUserId={currentUser.id}
-          onRecordPayment={async (p) => {
-            const success = await handleRecordPayment(p);
-            if (success) {
+        {isSettleModalOpen && (
+          <SettleUpModal
+            tripId={trip.id}
+            members={trip.members}
+            simplifiedDebts={simplifiedDebts}
+            payments={trip.payments || []}
+            tripTitle={trip.title}
+            currentUserId={currentUser.id}
+            onRecordPayment={async (p) => {
+              const success = await handleRecordPayment(p);
+              if (success) {
+                setIsSettleModalOpen(false);
+                setSettlePreselect({});
+              }
+            }}
+            onUpdatePaymentStatus={(id, status) => {
+              if (status === "confirmed" || status === "PAID") handleConfirmPayment(id);
+              else handleRejectPayment(id);
+            }}
+            onDeletePayment={handleRejectPayment}
+            onClose={() => {
               setIsSettleModalOpen(false);
               setSettlePreselect({});
-            }
-          }}
-          onUpdatePaymentStatus={(id, status) => {
-            if (status === "confirmed" || status === "PAID") handleConfirmPayment(id);
-            else handleRejectPayment(id);
-          }}
-          onDeletePayment={handleRejectPayment}
-          onClose={() => {
-            setIsSettleModalOpen(false);
-            setSettlePreselect({});
-          }}
-        />
-      )}
+            }}
+          />
+        )}
 
-      {isInviteModalOpen && (
-        <InviteMembersModal
-          trip={trip}
-          currentUserName={currentUser.name}
-          currentUser={currentUser}
-          onUpdateTrip={updateActiveTrip}
-          onOpenSelfRegister={() => setIsInviteModalOpen(false)}
-          onClose={() => setIsInviteModalOpen(false)}
-        />
-      )}
+        {isInviteModalOpen && (
+          <InviteMembersModal
+            trip={trip}
+            currentUserName={currentUser.name}
+            currentUser={currentUser}
+            onUpdateTrip={updateActiveTrip}
+            onOpenSelfRegister={() => setIsInviteModalOpen(false)}
+            onClose={() => setIsInviteModalOpen(false)}
+          />
+        )}
 
-      {isMembersModalOpen && (
-        <MemberManagementModal
-          members={trip.members}
-          currentUserId={currentUser.id}
-          balances={paidShare}
-          onAddMember={async (m) => {
-            const success = await handleSaveMember(m);
-            if (success) {
+        {isMembersModalOpen && (
+          <MemberManagementModal
+            members={trip.members}
+            currentUserId={currentUser.id}
+            balances={paidShare}
+            ownerId={trip.ownerId}
+            onAddMember={async (m) => {
+              const success = await handleSaveMember(m);
+              if (success) {
+                setIsMembersModalOpen(false);
+                setEditingMember(null);
+              }
+            }}
+            onUpdateMember={async (m) => {
+              const success = await handleSaveMember(m);
+              if (success) {
+                setIsMembersModalOpen(false);
+                setEditingMember(null);
+              }
+            }}
+            onRemoveMember={async (mId) => {
+              const success = await handleDeleteMember(mId);
+              if (success) {
+                setIsMembersModalOpen(false);
+                setEditingMember(null);
+              }
+            }}
+            onOpenInvite={() => {
+              setIsMembersModalOpen(false);
+              setIsInviteModalOpen(true);
+            }}
+            onClose={() => {
               setIsMembersModalOpen(false);
               setEditingMember(null);
-            }
-          }}
-          onUpdateMember={async (m) => {
-            const success = await handleSaveMember(m);
-            if (success) {
-              setIsMembersModalOpen(false);
-              setEditingMember(null);
-            }
-          }}
-          onRemoveMember={async (mId) => {
-            const success = await handleDeleteMember(mId);
-            if (success) {
-              setIsMembersModalOpen(false);
-              setEditingMember(null);
-            }
-          }}
-          onOpenInvite={() => {
-            setIsMembersModalOpen(false);
-            setIsInviteModalOpen(true);
-          }}
-          onClose={() => {
-            setIsMembersModalOpen(false);
-            setEditingMember(null);
-          }}
-        />
-      )}
+            }}
+          />
+        )}
 
-      {isResetModalOpen && (
-        <ResetTripModal
-          onConfirmReset={(mode) => {
-            handleConfirmReset(mode);
-            setIsResetModalOpen(false);
-            setActiveTab("home");
-          }}
-          onClose={() => setIsResetModalOpen(false)}
-        />
-      )}
+        {isResetModalOpen && (
+          <ResetTripModal
+            onConfirmReset={(mode) => {
+              handleConfirmReset(mode);
+              setIsResetModalOpen(false);
+              setActiveTab("home");
+            }}
+            onClose={() => setIsResetModalOpen(false)}
+          />
+        )}
 
-      {isTripsHubModalOpen && (
-        <TripsHubModal
-          trips={userTrips}
-          activeTripId={activeTripId}
-          onSelectTrip={(id) => {
-            setActiveTripId(id);
-            setIsTripsHubModalOpen(false);
-          }}
-          onCreateTrip={async (newTrip) => {
-            await handleCreateTrip(newTrip);
-            setIsTripsHubModalOpen(false);
-          }}
-          onDeleteTrip={handleDeleteTrip}
-          onOpenJoinModal={() => {
-            setIsTripsHubModalOpen(false);
-            setIsJoinTripModalOpen(true);
-          }}
-          onClose={() => setIsTripsHubModalOpen(false)}
-        />
-      )}
+        {isTripsHubModalOpen && (
+          <TripsHubModal
+            trips={userTrips}
+            activeTripId={activeTripId}
+            onSelectTrip={(id) => {
+              setActiveTripId(id);
+              setIsTripsHubModalOpen(false);
+            }}
+            onCreateTrip={async (newTrip) => {
+              await handleCreateTrip(newTrip);
+              setIsTripsHubModalOpen(false);
+            }}
+            onDeleteTrip={handleDeleteTrip}
+            onOpenJoinModal={() => {
+              setIsTripsHubModalOpen(false);
+              setIsJoinTripModalOpen(true);
+            }}
+            onClose={() => setIsTripsHubModalOpen(false)}
+          />
+        )}
 
-      {isShareModalOpen && (
-        <ShareExportModal
-          trip={trip}
-          simplifiedDebts={simplifiedDebts}
-          paidShare={paidShare}
-          netBalances={netBalances}
-          onClose={() => setIsShareModalOpen(false)}
-        />
-      )}
+        {isShareModalOpen && (
+          <ShareExportModal
+            trip={trip}
+            simplifiedDebts={simplifiedDebts}
+            paidShare={paidShare}
+            netBalances={netBalances}
+            onClose={() => setIsShareModalOpen(false)}
+          />
+        )}
 
-      <TripMoreMenuModal
-        isOpen={isMoreMenuOpen}
-        onClose={() => setIsMoreMenuOpen(false)}
-        trip={trip}
-        currentUser={currentUser}
-        currentUserId={currentUser.id}
-        onSelectUserId={(id) => {
-          setCurrentUserId(id);
-        }}
-        authUser={authUser}
-        onOpenAddExpense={() => {
-          setIsMoreMenuOpen(false);
-          setEditingExpense(null);
-          setIsExpenseModalOpen(true);
-        }}
-        onOpenProfile={() => {
-          setIsMoreMenuOpen(false);
-          setIsUserProfileOpen(true);
-        }}
-        onOpenWhatsAppAlerts={() => {
-          setIsMoreMenuOpen(false);
-          handleSendWhatsAppStatement(currentUser);
-        }}
-        onOpenInviteModal={() => {
-          setIsMoreMenuOpen(false);
-          setIsInviteModalOpen(true);
-        }}
-        onOpenMembersModal={() => {
-          setIsMoreMenuOpen(false);
-          setIsMembersModalOpen(true);
-        }}
-        onOpenShareModal={() => {
-          setIsMoreMenuOpen(false);
-          setIsShareModalOpen(true);
-        }}
-        onOpenNotificationsModal={() => {
-          setIsMoreMenuOpen(false);
-          setIsNotificationsOpen(true);
-        }}
-        onOpenTripsHub={() => {
-          setIsMoreMenuOpen(false);
-          setIsTripsHubModalOpen(true);
-        }}
-      />
+        {isMoreMenuOpen && (
+          <TripMoreMenuModal
+            isOpen={isMoreMenuOpen}
+            onClose={() => setIsMoreMenuOpen(false)}
+            trip={trip}
+            currentUser={currentUser}
+            currentUserId={currentUser.id}
+            onSelectUserId={(id) => {
+              setCurrentUserId(id);
+            }}
+            authUser={authUser}
+            onOpenAddExpense={() => {
+              setIsMoreMenuOpen(false);
+              setEditingExpense(null);
+              setIsExpenseModalOpen(true);
+            }}
+            onOpenProfile={() => {
+              setIsMoreMenuOpen(false);
+              setIsUserProfileOpen(true);
+            }}
+            onOpenWhatsAppAlerts={() => {
+              setIsMoreMenuOpen(false);
+              handleSendWhatsAppStatement(currentUser);
+            }}
+            onOpenInviteModal={() => {
+              setIsMoreMenuOpen(false);
+              setIsInviteModalOpen(true);
+            }}
+            onOpenMembersModal={() => {
+              setIsMoreMenuOpen(false);
+              setIsMembersModalOpen(true);
+            }}
+            onOpenShareModal={() => {
+              setIsMoreMenuOpen(false);
+              setIsShareModalOpen(true);
+            }}
+            onOpenNotificationsModal={() => {
+              setIsMoreMenuOpen(false);
+              setIsNotificationsOpen(true);
+            }}
+            onOpenTripsHub={() => {
+              setIsMoreMenuOpen(false);
+              setIsTripsHubModalOpen(true);
+            }}
+          />
+        )}
 
-      <UserProfileModal
-        isOpen={isUserProfileOpen}
-        onClose={() => setIsUserProfileOpen(false)}
-        onOpenAuthPage={() => setIsUserProfileOpen(false)}
-      />
+        {isUserProfileOpen && (
+          <UserProfileModal
+            isOpen={isUserProfileOpen}
+            onClose={() => setIsUserProfileOpen(false)}
+            onOpenAuthPage={() => setIsUserProfileOpen(false)}
+          />
+        )}
 
-      <NotificationCenterModal
-        isOpen={isNotificationsOpen}
-        onClose={() => setIsNotificationsOpen(false)}
-        trip={trip}
-        currentUserId={currentUser.id}
-        onNavigateTab={(t) => {
-          if (
-            t === "expenses" ||
-            t === "settlement" ||
-            t === "analytics" ||
-            t === "people" ||
-            t === "home"
-          ) {
-            setActiveTab(t);
-          }
-        }}
-      />
+        {isNotificationsOpen && (
+          <NotificationCenterModal
+            isOpen={isNotificationsOpen}
+            onClose={() => setIsNotificationsOpen(false)}
+            trip={trip}
+            currentUserId={currentUser.id}
+            onNavigateTab={(t) => {
+              if (
+                t === "expenses" ||
+                t === "settlement" ||
+                t === "analytics" ||
+                t === "people" ||
+                t === "home"
+              ) {
+                setActiveTab(t);
+              }
+            }}
+          />
+        )}
 
-      {isWhatsAppModalOpen && whatsAppPayload && (
-        <WhatsAppNotificationModal
-          payload={whatsAppPayload}
-          members={trip.members}
-          onClose={() => {
-            setIsWhatsAppModalOpen(false);
-            setWhatsAppPayload(null);
-          }}
-        />
-      )}
+        {isWhatsAppModalOpen && whatsAppPayload && (
+          <WhatsAppNotificationModal
+            payload={whatsAppPayload}
+            members={trip.members}
+            onClose={() => {
+              setIsWhatsAppModalOpen(false);
+              setWhatsAppPayload(null);
+            }}
+          />
+        )}
 
-      {isJoinTripModalOpen && (
-        <JoinTripModal
-          currentTrip={null}
-          initialCode={initialJoinCode}
-          onClose={() => setIsJoinTripModalOpen(false)}
-          onJoinTripSuccess={(joinedTrip) => {
-            if (!trips.find((t) => t.id === joinedTrip.id)) {
-              setTrips((prev) => [joinedTrip, ...prev]);
-            } else {
-              setTrips((prev) => prev.map((t) => (t.id === joinedTrip.id ? joinedTrip : t)));
-            }
-            setActiveTripId(joinedTrip.id);
-            setIsJoinTripModalOpen(false);
-          }}
-        />
-      )}
+        {isJoinTripModalOpen && (
+          <JoinTripModal
+            currentTrip={null}
+            initialCode={initialJoinCode}
+            onClose={() => setIsJoinTripModalOpen(false)}
+            onJoinTripSuccess={(joinedTrip) => {
+              if (!trips.find((t) => t.id === joinedTrip.id)) {
+                setTrips((prev) => [joinedTrip, ...prev]);
+              } else {
+                setTrips((prev) => prev.map((t) => (t.id === joinedTrip.id ? joinedTrip : t)));
+              }
+              setActiveTripId(joinedTrip.id);
+              setIsJoinTripModalOpen(false);
+            }}
+          />
+        )}
 
-      <NotificationToastContainer />
-      <ResetPasswordModal />
+        <ResetPasswordModal />
+      </React.Suspense>
     </div>
   );
 }

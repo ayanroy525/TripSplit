@@ -1,4 +1,4 @@
-import { Member, Expense, Payment, SimplifiedDebt } from "../types";
+import { Member, Expense, Payment, SimplifiedDebt, ReceiptItem } from "../types";
 
 export const uid = (p = "id") => `${p}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
 
@@ -11,10 +11,31 @@ export const fromCents = (c: number): number => Math.round(c) / 100;
 /** Round to exact 2 decimal places */
 export const round2 = (n: number): number => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 
+const CURRENCY_SYMBOLS: Record<string, string> = {
+  INR: "₹",
+  USD: "$",
+  EUR: "€",
+  GBP: "£",
+  THB: "฿",
+  AED: "AED ",
+  SGD: "S$",
+  JPY: "¥",
+  AUD: "A$",
+  CAD: "C$",
+  CHF: "CHF ",
+  MYR: "RM ",
+  IDR: "Rp ",
+  VND: "₫",
+  PHP: "₱",
+  NZD: "NZ$",
+  TRY: "₺",
+};
+
 /** Currency Formatter */
 export const money = (n: number | undefined | null, currency = "INR") => {
   const val = Math.round(((n || 0) + Number.EPSILON) * 100) / 100;
-  const symbol = currency === "USD" ? "$" : currency === "EUR" ? "€" : currency === "GBP" ? "£" : "₹";
+  const upperCurr = (currency || "INR").toUpperCase();
+  const symbol = CURRENCY_SYMBOLS[upperCurr] || `${upperCurr} `;
   return `${symbol}${val.toLocaleString("en-IN", {
     minimumFractionDigits: val % 1 === 0 ? 0 : 2,
     maximumFractionDigits: 2,
@@ -163,6 +184,140 @@ export function sharesSplit(
   });
 
   return splits;
+}
+
+/**
+ * 4. ITEMIZED RECEIPT SPLIT:
+ * Divides an expense based on individual line items (e.g. food items, drinks, desserts).
+ * Each line item is shared only among the specific members who consumed/participated in it.
+ * Mathematically sums each participant's item shares with exact cent precision.
+ */
+export function itemizedSplit(
+  items: ReceiptItem[],
+  fallbackParticipants: string[] = []
+): { splits: Record<string, number>; totalAmount: number } {
+  if (!items || !items.length) {
+    return { splits: {}, totalAmount: 0 };
+  }
+
+  const memberCents: Record<string, number> = {};
+  let totalCalculatedCents = 0;
+
+  items.forEach((item) => {
+    const itemAmount = Number(item.amount) || 0;
+    if (itemAmount <= 0) return;
+
+    const itemCents = toCents(itemAmount);
+    totalCalculatedCents += itemCents;
+
+    // Use item-specific participants, falling back to general participants if empty
+    const participants =
+      item.participants && item.participants.length > 0
+        ? item.participants
+        : fallbackParticipants;
+
+    if (!participants.length) return;
+
+    const n = participants.length;
+    const baseCents = Math.floor(itemCents / n);
+    let remainderCents = itemCents - baseCents * n;
+
+    participants.forEach((id) => {
+      let shareCents = baseCents;
+      if (remainderCents > 0) {
+        shareCents += 1;
+        remainderCents--;
+      }
+      memberCents[id] = (memberCents[id] || 0) + shareCents;
+    });
+  });
+
+  const splits: Record<string, number> = {};
+  Object.entries(memberCents).forEach(([id, cents]) => {
+    splits[id] = fromCents(cents);
+  });
+
+  return {
+    splits,
+    totalAmount: fromCents(totalCalculatedCents),
+  };
+}
+
+/**
+ * 5. EXACT AMOUNT AUTO-BALANCING HELPER:
+ * Ensures precision validation and auto-balances the remaining difference onto a specified participant,
+ * or evenly distributes the unallocated balance across all unassigned/specified participants.
+ */
+export function autoBalanceExactSplit(
+  totalAmount: number,
+  currentAllocations: Record<string, number>,
+  targetParticipantId?: string,
+  allParticipants: string[] = []
+): Record<string, number> {
+  const result: Record<string, number> = { ...currentAllocations };
+  const totalCents = toCents(totalAmount);
+
+  if (targetParticipantId) {
+    let otherCents = 0;
+    Object.entries(currentAllocations).forEach(([id, amt]) => {
+      if (id !== targetParticipantId) {
+        otherCents += toCents(amt);
+      }
+    });
+    const remainingCents = Math.max(0, totalCents - otherCents);
+    result[targetParticipantId] = fromCents(remainingCents);
+    return result;
+  }
+
+  const assignedIds = Object.keys(currentAllocations).filter(
+    (id) => (currentAllocations[id] || 0) > 0
+  );
+  const unassignedIds = allParticipants.filter((id) => !assignedIds.includes(id));
+  const pool = unassignedIds.length > 0 ? unassignedIds : allParticipants;
+
+  let allocatedCents = 0;
+  assignedIds.forEach((id) => {
+    if (!unassignedIds.includes(id)) {
+      allocatedCents += toCents(currentAllocations[id]);
+    }
+  });
+
+  const remainingCents = Math.max(0, totalCents - allocatedCents);
+  if (pool.length > 0 && remainingCents > 0) {
+    const baseCents = Math.floor(remainingCents / pool.length);
+    let rem = remainingCents - baseCents * pool.length;
+    pool.forEach((id) => {
+      let addCents = baseCents;
+      if (rem > 0) {
+        addCents += 1;
+        rem--;
+      }
+      result[id] = fromCents(toCents(result[id] || 0) + addCents);
+    });
+  }
+
+  return result;
+}
+
+/**
+ * 6. PERCENTAGE AUTO-BALANCING HELPER:
+ * Auto-balances the remaining percentage to make total equal 100%.
+ */
+export function autoBalancePercentageSplit(
+  currentPercentages: Record<string, number>,
+  targetParticipantId: string
+): Record<string, number> {
+  const result: Record<string, number> = { ...currentPercentages };
+  let otherSum = 0;
+  Object.entries(currentPercentages).forEach(([id, pct]) => {
+    if (id !== targetParticipantId) {
+      otherSum += Number(pct) || 0;
+    }
+  });
+
+  const remainingPct = Math.max(0, round2(100 - otherSum));
+  result[targetParticipantId] = remainingPct;
+  return result;
 }
 
 /**

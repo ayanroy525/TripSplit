@@ -31,7 +31,7 @@ interface LoginPageProps {
 }
 
 export function LoginPage({ onSuccess }: LoginPageProps) {
-  const { login, signup, continueAsGuest, sendPasswordReset } = useAuth();
+  const { login, signup, continueAsGuest, sendPasswordReset, directResetPassword } = useAuth();
 
   const [activeTab, setActiveTab] = useState<"login" | "signup" | "reset">("login");
   const [showPassword, setShowPassword] = useState(false);
@@ -44,6 +44,9 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
 
   // Reset password state
   const [resetEmail, setResetEmail] = useState("");
+  const [resetNewPassword, setResetNewPassword] = useState("");
+  const [resetConfirmPassword, setResetConfirmPassword] = useState("");
+  const [showResetPassword, setShowResetPassword] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
   const [resetSuccessMsg, setResetSuccessMsg] = useState<string | null>(null);
   const [resetErrorDetails, setResetErrorDetails] = useState<{
@@ -73,6 +76,44 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
       setError(result.error || "Failed to log in");
     } else if (onSuccess) {
       onSuccess();
+    }
+  };
+
+  const handleDirectPasswordReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setResetSuccessMsg(null);
+    setResetErrorDetails(null);
+
+    const target = (resetEmail || loginEmail).trim();
+    if (!target) {
+      setError("Please enter your registered email address or phone number.");
+      return;
+    }
+    if (resetNewPassword.length < 6) {
+      setError("New password must be at least 6 characters long.");
+      return;
+    }
+    if (resetNewPassword !== resetConfirmPassword) {
+      setError("Passwords do not match.");
+      return;
+    }
+
+    setIsResetting(true);
+    try {
+      const res = await directResetPassword(target, resetNewPassword);
+      if (res.success) {
+        setResetSuccessMsg("Password successfully updated! Logging you in...");
+        setTimeout(() => {
+          if (onSuccess) onSuccess();
+        }, 500);
+      } else {
+        setError(res.error || "Unable to update password. Please check your details and try again.");
+      }
+    } catch (err: any) {
+      setError(err?.message || "An unexpected error occurred while updating password.");
+    } finally {
+      setIsResetting(false);
     }
   };
 
@@ -510,10 +551,10 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                   background: "rgba(194, 84, 58, 0.12)",
                   border: `1.5px solid ${C.rust}`,
                   borderRadius: 10,
-                  padding: "10px 14px",
+                  padding: "12px 14px",
                   display: "flex",
                   alignItems: "flex-start",
-                  gap: 8,
+                  gap: 10,
                   marginBottom: 16,
                   color: C.rust,
                   fontSize: 12.5,
@@ -521,7 +562,62 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                 }}
               >
                 <AlertCircle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
-                <div style={{ flex: 1 }}>{error}</div>
+                <div style={{ flex: 1 }}>
+                  <div>{error}</div>
+                  {activeTab === "signup" && error.includes("already exists") ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveTab("login");
+                        setError(null);
+                        setResetSuccessMsg(null);
+                        if (email) setLoginEmail(email);
+                      }}
+                      style={{
+                        marginTop: 6,
+                        background: "none",
+                        border: "none",
+                        padding: 0,
+                        color: C.teal,
+                        fontWeight: 800,
+                        fontSize: 12,
+                        cursor: "pointer",
+                        textDecoration: "underline",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 4,
+                      }}
+                    >
+                      <span>Click here to Log In with your password &rarr;</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveTab("reset");
+                        setError(null);
+                        setResetSuccessMsg(null);
+                        if (loginEmail) setResetEmail(loginEmail);
+                      }}
+                      style={{
+                        marginTop: 6,
+                        background: "none",
+                        border: "none",
+                        padding: 0,
+                        color: C.marigoldDark,
+                        fontWeight: 800,
+                        fontSize: 12,
+                        cursor: "pointer",
+                        textDecoration: "underline",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 4,
+                      }}
+                    >
+                      <span>Click here to set or reset your password instantly (zero email required) &rarr;</span>
+                    </button>
+                  )}
+                </div>
               </div>
             )}
 
@@ -538,7 +634,7 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                       marginBottom: 6,
                     }}
                   >
-                    Email Address or Username
+                    Email or Phone Number
                   </label>
                   <div style={{ position: "relative" }}>
                     <Mail
@@ -554,7 +650,7 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                       onChange={(e) => {
                         setLoginEmail(e.target.value);
                       }}
-                      placeholder="e.g. you@example.com"
+                      placeholder="Enter email address or phone number"
                       style={{
                         width: "100%",
                         padding: "11px 14px 11px 40px",
@@ -700,7 +796,7 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
 
             {/* RESET PASSWORD FORM */}
             {activeTab === "reset" && (
-              <form onSubmit={handleResetPasswordSubmit} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              <form onSubmit={handleDirectPasswordReset} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
                 <div
                   style={{
                     background: "rgba(227, 154, 45, 0.08)",
@@ -729,10 +825,10 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                   </div>
                   <div>
                     <h4 style={{ margin: "0 0 4px 0", fontSize: 13.5, fontWeight: 800, color: C.ink }}>
-                      Reset Your Password
+                      Set New Password (Instant)
                     </h4>
                     <p style={{ margin: 0, fontSize: 12, color: C.inkSoft, lineHeight: 1.45 }}>
-                      Enter your registered email address and we'll send you a password recovery link.
+                      Set your new password directly and log in immediately. No email verification or waiting for links required!
                     </p>
                   </div>
                 </div>
@@ -774,7 +870,7 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                   >
                     <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 800, fontSize: 12.5 }}>
                       <AlertCircle size={17} style={{ flexShrink: 0 }} />
-                      <span>Password Reset Diagnostics</span>
+                      <span>Notice</span>
                     </div>
                     <div style={{ fontFamily: "monospace", fontSize: 11.5, background: "rgba(0,0,0,0.04)", padding: "6px 8px", borderRadius: 6, wordBreak: "break-all" }}>
                       <strong>Code:</strong> {resetErrorDetails.code || "unknown"}
@@ -794,7 +890,7 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                       marginBottom: 6,
                     }}
                   >
-                    Registered Email Address
+                    Registered Email or Phone Number
                   </label>
                   <div style={{ position: "relative" }}>
                     <Mail
@@ -804,14 +900,112 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                     />
                     <input
                       id="input-reset-email"
-                      type="email"
+                      type="text"
                       required
                       value={resetEmail}
                       onChange={(e) => setResetEmail(e.target.value)}
-                      placeholder="e.g. you@example.com"
+                      placeholder="Enter registered email or phone number"
                       style={{
                         width: "100%",
                         padding: "11px 14px 11px 40px",
+                        borderRadius: 10,
+                        border: `1.5px solid ${C.line}`,
+                        background: C.inputBg,
+                        color: C.ink,
+                        fontSize: 13.5,
+                        fontWeight: 600,
+                        outline: "none",
+                        boxSizing: "border-box",
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label
+                    style={{
+                      display: "block",
+                      fontSize: 12.5,
+                      fontWeight: 800,
+                      color: C.ink,
+                      marginBottom: 6,
+                    }}
+                  >
+                    New Password
+                  </label>
+                  <div style={{ position: "relative" }}>
+                    <Lock
+                      size={16}
+                      color={C.inkSoft}
+                      style={{ position: "absolute", left: 14, top: 13, pointerEvents: "none" }}
+                    />
+                    <input
+                      id="input-reset-new-password"
+                      type={showResetPassword ? "text" : "password"}
+                      required
+                      value={resetNewPassword}
+                      onChange={(e) => setResetNewPassword(e.target.value)}
+                      placeholder="Minimum 6 characters"
+                      style={{
+                        width: "100%",
+                        padding: "11px 40px 11px 40px",
+                        borderRadius: 10,
+                        border: `1.5px solid ${C.line}`,
+                        background: C.inputBg,
+                        color: C.ink,
+                        fontSize: 13.5,
+                        fontWeight: 600,
+                        outline: "none",
+                        boxSizing: "border-box",
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowResetPassword(!showResetPassword)}
+                      style={{
+                        position: "absolute",
+                        right: 12,
+                        top: 11,
+                        background: "none",
+                        border: "none",
+                        color: C.inkSoft,
+                        cursor: "pointer",
+                        padding: 2,
+                      }}
+                    >
+                      {showResetPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <label
+                    style={{
+                      display: "block",
+                      fontSize: 12.5,
+                      fontWeight: 800,
+                      color: C.ink,
+                      marginBottom: 6,
+                    }}
+                  >
+                    Confirm New Password
+                  </label>
+                  <div style={{ position: "relative" }}>
+                    <Lock
+                      size={16}
+                      color={C.inkSoft}
+                      style={{ position: "absolute", left: 14, top: 13, pointerEvents: "none" }}
+                    />
+                    <input
+                      id="input-reset-confirm-password"
+                      type={showResetPassword ? "text" : "password"}
+                      required
+                      value={resetConfirmPassword}
+                      onChange={(e) => setResetConfirmPassword(e.target.value)}
+                      placeholder="Re-enter your new password"
+                      style={{
+                        width: "100%",
+                        padding: "11px 40px 11px 40px",
                         borderRadius: 10,
                         border: `1.5px solid ${C.line}`,
                         background: C.inputBg,
@@ -847,36 +1041,57 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                     opacity: isResetting ? 0.7 : 1,
                   }}
                 >
-                  {isResetting ? <Loader2 size={16} className="animate-spin" /> : <Mail size={16} />}
-                  <span>{isResetting ? "Sending Reset Email..." : "Send Password Reset Link"}</span>
+                  {isResetting ? <Loader2 size={16} className="animate-spin" /> : <KeyRound size={16} />}
+                  <span>{isResetting ? "Updating Password..." : "Save New Password & Log In Instantly"}</span>
                 </button>
 
-                <button
-                  id="btn-back-to-login"
-                  type="button"
-                  onClick={() => {
-                    setActiveTab("login");
-                    setError(null);
-                    setResetSuccessMsg(null);
-                  }}
-                  style={{
-                    background: "transparent",
-                    border: `1.5px solid ${C.line}`,
-                    borderRadius: 12,
-                    padding: "11px",
-                    fontSize: 13,
-                    fontWeight: 700,
-                    color: C.ink,
-                    cursor: "pointer",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    gap: 6,
-                  }}
-                >
-                  <ArrowLeft size={15} />
-                  <span>Back to Log In</span>
-                </button>
+                <div style={{ display: "flex", gap: 10 }}>
+                  <button
+                    id="btn-back-to-login"
+                    type="button"
+                    onClick={() => {
+                      setActiveTab("login");
+                      setError(null);
+                      setResetSuccessMsg(null);
+                    }}
+                    style={{
+                      flex: 1,
+                      background: "transparent",
+                      border: `1.5px solid ${C.line}`,
+                      borderRadius: 12,
+                      padding: "11px",
+                      fontSize: 13,
+                      fontWeight: 700,
+                      color: C.ink,
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: 6,
+                    }}
+                  >
+                    <ArrowLeft size={15} />
+                    <span>Back to Log In</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleResetPasswordSubmit}
+                    disabled={isResetting}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      color: C.inkSoft,
+                      fontSize: 11.5,
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      textDecoration: "underline",
+                      padding: "0 4px",
+                    }}
+                  >
+                    Or send email link
+                  </button>
+                </div>
               </form>
             )}
 
@@ -900,7 +1115,7 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                       required
                       value={fullName}
                       onChange={(e) => setFullName(e.target.value)}
-                      placeholder="e.g. Alex Morgan"
+                      placeholder="Enter full name"
                       style={{
                         width: "100%",
                         padding: "10px 12px 10px 36px",
@@ -934,7 +1149,7 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                       required
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
-                      placeholder="e.g. alex@example.com"
+                      placeholder="Enter email address"
                       style={{
                         width: "100%",
                         padding: "10px 12px 10px 36px",

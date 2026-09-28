@@ -849,7 +849,7 @@ export function TripsHubModal({
                   <input
                     id="creator-name-input"
                     type="text"
-                    placeholder="e.g. Ayan Roy"
+                    placeholder="e.g. Alex Morgan"
                     value={creatorName}
                     onChange={(e) => setCreatorName(e.target.value)}
                     style={{

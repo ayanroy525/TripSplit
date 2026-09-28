@@ -15,6 +15,7 @@ import {
 import { Trip, Member, SimplifiedDebt, Payment } from "../types";
 import { money, formatDate } from "../utils/calculations";
 import { Avatar } from "./Atoms";
+import { getTripPermissions } from "../utils/permissions";
 
 interface SettlementPlanViewProps {
   trip: Trip;
@@ -36,6 +37,7 @@ export function SettlementPlanView({
   onRejectPayment,
 }: SettlementPlanViewProps) {
   const [activeSubTab, setActiveSubTab] = useState<"plan" | "history">("plan");
+  const permissions = getTripPermissions(trip, currentUser, currentUserId);
   const members = trip.members || [];
   const payments = trip.payments || [];
 
@@ -97,14 +99,16 @@ export function SettlementPlanView({
             </button>
           </div>
 
-          <button
-            type="button"
-            onClick={() => onOpenSettleModal()}
-            className="px-3.5 py-1.5 bg-[var(--c-teal)] hover:bg-[var(--c-tealDark)] text-[var(--c-teal-contrast-text)] rounded-xl text-xs font-bold shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer"
-          >
-            <Plus size={14} />
-            <span>Record Payment</span>
-          </button>
+          {permissions.canRecordPayment && (
+            <button
+              type="button"
+              onClick={() => onOpenSettleModal()}
+              className="px-3.5 py-1.5 bg-[var(--c-teal)] hover:bg-[var(--c-tealDark)] text-[var(--c-teal-contrast-text)] rounded-xl text-xs font-bold shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <Plus size={14} />
+              <span>Record Payment</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -197,14 +201,16 @@ export function SettlementPlanView({
                       <div className="text-[11px] text-[var(--c-inkSoft)]">
                         {debtor.name} pays {creditor.name}
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => onOpenSettleModal(debt.from, debt.to, debt.amount)}
-                        className="px-3 py-1.5 bg-[var(--c-teal)] hover:bg-[var(--c-tealDark)] text-[var(--c-teal-contrast-text)] rounded-xl text-xs font-bold shadow-xs flex items-center gap-1 transition-colors cursor-pointer"
-                      >
-                        <CreditCard size={12} />
-                        <span>Record Manual Payment</span>
-                      </button>
+                      {permissions.canRecordPayment && (
+                        <button
+                          type="button"
+                          onClick={() => onOpenSettleModal(debt.from, debt.to, debt.amount)}
+                          className="px-3 py-1.5 bg-[var(--c-teal)] hover:bg-[var(--c-tealDark)] text-[var(--c-teal-contrast-text)] rounded-xl text-xs font-bold shadow-xs flex items-center gap-1 transition-colors cursor-pointer"
+                        >
+                          <CreditCard size={12} />
+                          <span>Record Manual Payment</span>
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
@@ -303,8 +309,8 @@ export function SettlementPlanView({
                       {/* Action buttons strictly authorized */}
                       {isPending && (
                         <div className="flex items-center gap-1.5">
-                          {/* Only receiver or owner can confirm */}
-                          {(isCreditor || isOwner) && (
+                          {/* Only receiver or admin can confirm */}
+                          {permissions.canConfirmPayment(p.to, p.toUserId) && (
                             <button
                               type="button"
                               onClick={() => onConfirmPayment(p.id)}
@@ -317,14 +323,14 @@ export function SettlementPlanView({
                           )}
 
                           {/* Payer sees Waiting notice */}
-                          {isDebtor && !isCreditor && !isOwner && (
+                          {isDebtor && !isCreditor && !permissions.isAdmin && (
                             <span className="text-[10px] text-amber-600 font-medium italic">
                               Waiting for receiver confirmation
                             </span>
                           )}
 
-                          {/* Payer, receiver, or owner can cancel */}
-                          {(isDebtor || isCreditor || isOwner) && (
+                          {/* Payer, receiver, or admin can cancel */}
+                          {permissions.canCancelPayment(p.from, p.fromUserId, p.to, p.toUserId) && (
                             <button
                               type="button"
                               onClick={() => onRejectPayment(p.id)}

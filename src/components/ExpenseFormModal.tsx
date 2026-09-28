@@ -22,9 +22,25 @@ import {
   Train,
   Plane,
   Fuel,
+  ListOrdered,
+  Wand2,
+  Plus,
+  Trash2,
 } from "lucide-react";
-import { Expense, Member, SplitMethod } from "../types";
-import { equalSplit, percentageSplit, sharesSplit, money, round2, toCents, fromCents, uid } from "../utils/calculations";
+import { Expense, Member, SplitMethod, ReceiptItem } from "../types";
+import {
+  equalSplit,
+  percentageSplit,
+  sharesSplit,
+  itemizedSplit,
+  autoBalanceExactSplit,
+  autoBalancePercentageSplit,
+  money,
+  round2,
+  toCents,
+  fromCents,
+  uid,
+} from "../utils/calculations";
 import { Avatar, ModalShell } from "./Atoms";
 import { getCategoryMeta } from "../utils/constants";
 
@@ -69,7 +85,10 @@ export function ExpenseFormModal({
       }
     }
   };
-  const [amount, setAmount] = useState(initialExpense?.amount ? initialExpense.amount.toString() : "");
+
+  const [amount, setAmount] = useState<string>(
+    initialExpense?.amount ? initialExpense.amount.toString() : ""
+  );
   const [date, setDate] = useState(
     initialExpense?.date || new Date().toISOString().split("T")[0]
   );
@@ -153,7 +172,21 @@ export function ExpenseFormModal({
     return {};
   });
 
-  const numAmount = parseFloat(amount) || 0;
+  // Itemized Receipt Line Items
+  const [receiptItems, setReceiptItems] = useState<ReceiptItem[]>(() => {
+    if (initialExpense?.items && initialExpense.items.length > 0) {
+      return initialExpense.items;
+    }
+    return [
+      { id: uid("item"), title: "Item 1", amount: 0, participants: members.map((m) => m.id) },
+    ];
+  });
+
+  const itemizedTotal = useMemo(() => {
+    return round2(receiptItems.reduce((s, it) => s + (Number(it.amount) || 0), 0));
+  }, [receiptItems]);
+
+  const numAmount = method === "itemized" ? itemizedTotal : (parseFloat(amount) || 0);
 
   // Participant management
   const toggleParticipant = (id: string) => {
@@ -172,9 +205,10 @@ export function ExpenseFormModal({
   // Live Splits Calculation
   const calculatedSplits = useMemo(() => {
     const res: Record<string, number> = {};
-    if (numAmount <= 0 || participants.length === 0) return res;
+    if (numAmount <= 0) return res;
 
     if (method === "equal") {
+      if (participants.length === 0) return res;
       return equalSplit(numAmount, participants);
     } else if (method === "custom") {
       participants.forEach((id) => {
@@ -193,9 +227,11 @@ export function ExpenseFormModal({
         shareMap[id] = Math.max(1, parseInt(sharesVals[id]) || 1);
       });
       return sharesSplit(numAmount, shareMap, participants);
+    } else if (method === "itemized") {
+      return itemizedSplit(receiptItems, participants).splits;
     }
     return res;
-  }, [numAmount, participants, method, customVals, pctVals, sharesVals]);
+  }, [numAmount, participants, method, customVals, pctVals, sharesVals, receiptItems]);
 
   // Sum of current calculated splits
   const sumSplits = useMemo(() => {
@@ -204,26 +240,136 @@ export function ExpenseFormModal({
 
   const splitDifference = round2(numAmount - sumSplits);
 
-  // Quick fix remainder for custom/percentage
-  const handleAutoBalanceRemainder = () => {
+  // Precision Auto-Balance Helpers
+  const handleAutoBalanceRemainder = (targetId?: string) => {
     if (method === "custom" && participants.length > 0) {
-      const firstId = participants[0];
-      const currentFirstVal = parseFloat(customVals[firstId]) || 0;
-      const newVal = round2(currentFirstVal + splitDifference);
-      setCustomVals((prev) => ({ ...prev, [firstId]: Math.max(0, newVal).toString() }));
+      const currentNumeric: Record<string, number> = {};
+      participants.forEach((id) => {
+        currentNumeric[id] = parseFloat(customVals[id]) || 0;
+      });
+      const balanced = autoBalanceExactSplit(
+        numAmount,
+        currentNumeric,
+        targetId || participants[0],
+        participants
+      );
+      const newVals: Record<string, string> = {};
+      Object.entries(balanced).forEach(([k, v]) => {
+        newVals[k] = v.toString();
+      });
+      setCustomVals((prev) => ({ ...prev, ...newVals }));
     } else if (method === "percentage" && participants.length > 0) {
-      const totalPct = participants.reduce((s, id) => s + (parseFloat(pctVals[id]) || 0), 0);
-      const diffPct = round2(100 - totalPct);
-      const firstId = participants[0];
-      const currentFirstVal = parseFloat(pctVals[firstId]) || 0;
-      setPctVals((prev) => ({ ...prev, [firstId]: Math.max(0, round2(currentFirstVal + diffPct)).toString() }));
+      const currentNumeric: Record<string, number> = {};
+      participants.forEach((id) => {
+        currentNumeric[id] = parseFloat(pctVals[id]) || 0;
+      });
+      const balanced = autoBalancePercentageSplit(
+        currentNumeric,
+        targetId || participants[0]
+      );
+      const newVals: Record<string, string> = {};
+      Object.entries(balanced).forEach(([k, v]) => {
+        newVals[k] = v.toString();
+      });
+      setPctVals((prev) => ({ ...prev, ...newVals }));
     }
+  };
+
+  const handleDistributeRemainingEvenly = () => {
+    if (method === "custom" && participants.length > 0) {
+      const currentNumeric: Record<string, number> = {};
+      participants.forEach((id) => {
+        currentNumeric[id] = parseFloat(customVals[id]) || 0;
+      });
+      const balanced = autoBalanceExactSplit(
+        numAmount,
+        currentNumeric,
+        undefined,
+        participants
+      );
+      const newVals: Record<string, string> = {};
+      Object.entries(balanced).forEach(([k, v]) => {
+        newVals[k] = v.toString();
+      });
+      setCustomVals((prev) => ({ ...prev, ...newVals }));
+    }
+  };
+
+  // Itemized Receipt Line Item Management
+  const handleAddItem = () => {
+    setReceiptItems((prev) => [
+      ...prev,
+      {
+        id: uid("item"),
+        title: `Item ${prev.length + 1}`,
+        amount: 0,
+        participants: [...participants],
+      },
+    ]);
+  };
+
+  const handleRemoveItem = (itemId: string) => {
+    if (receiptItems.length <= 1) return;
+    setReceiptItems((prev) => prev.filter((it) => it.id !== itemId));
+  };
+
+  const handleUpdateItem = (itemId: string, field: "title" | "amount", val: any) => {
+    setReceiptItems((prev) =>
+      prev.map((it) => (it.id === itemId ? { ...it, [field]: val } : it))
+    );
+  };
+
+  const handleToggleItemParticipant = (itemId: string, memberId: string) => {
+    setReceiptItems((prev) =>
+      prev.map((it) => {
+        if (it.id !== itemId) return it;
+        const exists = it.participants.includes(memberId);
+        const updated = exists
+          ? it.participants.filter((p) => p !== memberId)
+          : [...it.participants, memberId];
+        return { ...it, participants: updated };
+      })
+    );
+  };
+
+  const handleToggleItemAllParticipants = (itemId: string) => {
+    setReceiptItems((prev) =>
+      prev.map((it) => {
+        if (it.id !== itemId) return it;
+        const allSelected = it.participants.length === members.length;
+        return {
+          ...it,
+          participants: allSelected ? [] : members.map((m) => m.id),
+        };
+      })
+    );
   };
 
   // Submit Handler
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg("");
+
+    const currentMember = members.find((m) => m.id === currentUserId || m.userId === currentUserId);
+    const memberRole = currentMember?.role?.toLowerCase();
+
+    if (memberRole === "viewer") {
+      setErrorMsg("Permission Denied: Viewers have read-only access and cannot add or edit expenses.");
+      return;
+    }
+
+    if (initialExpense && (memberRole === "participant" || memberRole === "member")) {
+      const isOwner =
+        initialExpense.createdBy === currentUserId ||
+        initialExpense.paidBy === currentUserId ||
+        (currentMember && (initialExpense.createdBy === currentMember.id || initialExpense.paidBy === currentMember.id)) ||
+        (initialExpense.payers && (initialExpense.payers[currentUserId] || (currentMember && initialExpense.payers[currentMember.id])));
+
+      if (!isOwner) {
+        setErrorMsg("Permission Denied: Participants can only edit their own expenses.");
+        return;
+      }
+    }
 
     if (!title.trim()) {
       setErrorMsg("Please enter an expense title.");
@@ -280,6 +426,18 @@ export function ExpenseFormModal({
         setErrorMsg(`Total allocated shares (${money(sumSplits)}) do not match expense total (${money(numAmount)}).`);
         return;
       }
+    } else if (method === "itemized") {
+      if (receiptItems.length === 0 || itemizedTotal <= 0) {
+        setErrorMsg("Please add at least 1 receipt line item with an amount.");
+        return;
+      }
+      const invalidItem = receiptItems.find(
+        (it) => (Number(it.amount) || 0) > 0 && (!it.participants || it.participants.length === 0)
+      );
+      if (invalidItem) {
+        setErrorMsg(`Please select at least 1 participant for item "${invalidItem.title || 'Untitled'}".`);
+        return;
+      }
     }
 
     const resolvedCat = getCategoryMeta(category, title).resolvedCategory;
@@ -297,8 +455,15 @@ export function ExpenseFormModal({
       method,
       participants,
       splits: calculatedSplits,
-      splitPercentages: method === "percentage" ? Object.fromEntries(participants.map((id) => [id, parseFloat(pctVals[id]) || 0])) : undefined,
-      splitShares: method === "shares" ? Object.fromEntries(participants.map((id) => [id, parseInt(sharesVals[id]) || 1])) : undefined,
+      items: method === "itemized" ? receiptItems : undefined,
+      splitPercentages:
+        method === "percentage"
+          ? Object.fromEntries(participants.map((id) => [id, parseFloat(pctVals[id]) || 0]))
+          : undefined,
+      splitShares:
+        method === "shares"
+          ? Object.fromEntries(participants.map((id) => [id, parseInt(sharesVals[id]) || 1]))
+          : undefined,
       notes: notes.trim() || undefined,
       createdAt: initialExpense?.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -311,7 +476,7 @@ export function ExpenseFormModal({
   return (
     <ModalShell
       title={initialExpense ? "Edit Expense" : "Add New Expense"}
-      subtitle="Log group costs, choose payers, and split mathematically"
+      subtitle="Log group costs, choose payers, and split mathematically in INR (₹)"
       onClose={onClose}
       width={620}
     >
@@ -340,7 +505,12 @@ export function ExpenseFormModal({
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-bold text-[var(--c-inkSoft)]">Total Amount (₹) *</label>
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-bold text-[var(--c-inkSoft)]">Total Amount (₹) *</label>
+              {method === "itemized" && (
+                <span className="text-[10px] font-bold text-[var(--c-teal)]">From items</span>
+              )}
+            </div>
             <div className="relative">
               <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[var(--c-inkSoft)] font-bold text-sm">₹</span>
               <input
@@ -350,9 +520,16 @@ export function ExpenseFormModal({
                 min="0.01"
                 required
                 placeholder="0.00"
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-                className="w-full pl-8 pr-3.5 py-2.5 bg-[var(--c-paperDark)] border border-[var(--c-line)] rounded-xl text-[var(--c-ink)] text-sm font-bold focus:bg-[var(--c-input-bg)] focus:border-[var(--c-teal)] focus:outline-none transition-all"
+                value={method === "itemized" ? (itemizedTotal > 0 ? itemizedTotal.toString() : "") : amount}
+                onChange={(e) => {
+                  if (method !== "itemized") setAmount(e.target.value);
+                }}
+                readOnly={method === "itemized"}
+                className={`w-full pl-8 pr-3.5 py-2.5 rounded-xl text-sm font-bold border transition-all ${
+                  method === "itemized"
+                    ? "bg-[var(--c-paperDark)]/60 border-[var(--c-teal)]/40 text-[var(--c-teal)] cursor-not-allowed"
+                    : "bg-[var(--c-paperDark)] border border-[var(--c-line)] text-[var(--c-ink)] focus:bg-[var(--c-input-bg)] focus:border-[var(--c-teal)] focus:outline-none"
+                }`}
               />
             </div>
           </div>
@@ -507,19 +684,20 @@ export function ExpenseFormModal({
 
         {/* 5. Split Strategy & Participants */}
         <div className="border border-[var(--c-line)] rounded-2xl p-4 flex flex-col gap-4">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
             <div>
               <label className="text-xs font-bold text-[var(--c-ink)]">Split Strategy</label>
               <div className="text-[11px] text-[var(--c-inkSoft)]">How should this expense be divided?</div>
             </div>
 
             {/* Split Method Tabs */}
-            <div className="flex items-center bg-[var(--c-lineSoft)] hover:bg-[var(--c-line)] p-0.5 rounded-xl text-xs font-semibold">
+            <div className="flex flex-wrap items-center bg-[var(--c-lineSoft)] p-0.5 rounded-xl text-xs font-semibold">
               {[
                 { id: "equal", label: "Equal", icon: Split },
                 { id: "custom", label: "Exact (₹)", icon: Calculator },
                 { id: "percentage", label: "Percent (%)", icon: Percent },
                 { id: "shares", label: "Shares", icon: Scale },
+                { id: "itemized", label: "Itemized", icon: ListOrdered },
               ].map((t) => {
                 const isSelected = method === t.id;
                 const Icon = t.icon;
@@ -529,163 +707,394 @@ export function ExpenseFormModal({
                     type="button"
                     onClick={() => setMethod(t.id as SplitMethod)}
                     className={`px-2.5 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
-                      isSelected ? "bg-[var(--c-teal)] text-[var(--c-teal-contrast-text)] font-bold shadow-xs" : "text-[var(--c-inkSoft)] hover:text-[var(--c-ink)]"
+                      isSelected
+                        ? "bg-[var(--c-teal)] text-[var(--c-teal-contrast-text)] font-bold shadow-xs"
+                        : "text-[var(--c-inkSoft)] hover:text-[var(--c-ink)]"
                     }`}
                   >
-                    <Icon size={12} />
-                    <span className="hidden sm:inline">{t.label}</span>
+                    <Icon size={13} />
+                    <span>{t.label}</span>
                   </button>
                 );
               })}
             </div>
           </div>
 
-          {/* Quick Select All / Deselect buttons */}
-          <div className="flex items-center justify-between pt-1 border-t border-[var(--c-lineSoft)]">
-            <span className="text-xs font-bold text-[var(--c-inkSoft)]">
-              Participants ({participants.length}/{members.length})
-            </span>
-            <div className="flex items-center gap-2 text-xs font-semibold">
-              <button
-                type="button"
-                onClick={selectAll}
-                className="text-[var(--c-teal)] hover:text-teal-950 cursor-pointer"
-              >
-                Select All
-              </button>
-              <span className="text-[var(--c-line)]">•</span>
-              <button
-                type="button"
-                onClick={deselectAll}
-                className="text-[var(--c-inkSoft)] hover:text-[var(--c-ink)] cursor-pointer"
-              >
-                Deselect All
-              </button>
-            </div>
-          </div>
-
-          {/* Participant Rows */}
-          <div className="flex flex-col gap-2 max-h-60 overflow-y-auto pr-1">
-            {members.map((m) => {
-              const isIncluded = participants.includes(m.id);
-              const shareAmt = calculatedSplits[m.id] || 0;
-
-              return (
-                <div
-                  key={m.id}
-                  className={`p-3 rounded-xl border flex items-center justify-between gap-3 transition-all ${
-                    isIncluded
-                      ? "bg-[var(--c-card)] border-[var(--c-line)] shadow-xs"
-                      : "bg-[var(--c-paperDark)] border-[var(--c-lineSoft)] opacity-60"
-                  }`}
+          {/* ITEMIZE RECEIPT BUILDER (When method === "itemized") */}
+          {method === "itemized" ? (
+            <div className="flex flex-col gap-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="text-xs font-bold text-[var(--c-ink)]">Receipt Line Items</span>
+                  <p className="text-[11px] text-[var(--c-inkSoft)]">
+                    Assign specific dishes, drinks, or tickets only to the individuals who ordered them.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleAddItem}
+                  className="px-3 py-1.5 bg-teal-50 border border-teal-200 text-[var(--c-teal)] rounded-xl text-xs font-bold flex items-center gap-1 hover:bg-teal-100 transition-colors cursor-pointer"
                 >
-                  <label className="flex items-center gap-3 cursor-pointer select-none flex-1 min-w-0">
-                    <input
-                      type="checkbox"
-                      checked={isIncluded}
-                      onChange={() => toggleParticipant(m.id)}
-                      className="w-4 h-4 text-[var(--c-teal)] rounded-md border-[var(--c-line)] focus:ring-teal-700 cursor-pointer"
-                    />
-                    <Avatar name={m.name} color={m.avatarColor} size={24} />
-                    <div className="truncate">
-                      <div className="text-xs font-bold text-[var(--c-ink)]">{m.name}</div>
-                      <div className="text-[10px] text-[var(--c-inkSoft)]">{m.role}</div>
-                    </div>
-                  </label>
+                  <Plus size={13} />
+                  <span>Add Line Item</span>
+                </button>
+              </div>
 
-                  {/* Input based on Split Method */}
-                  {isIncluded && (
-                    <div className="flex items-center gap-2">
-                      {method === "equal" && (
-                        <div className="text-xs font-bold text-[var(--c-teal)] bg-teal-50 px-2.5 py-1 rounded-lg">
-                          {money(shareAmt)}
+              {/* Line Item List */}
+              <div className="flex flex-col gap-2.5 max-h-80 overflow-y-auto pr-1">
+                {receiptItems.map((item, idx) => {
+                  const itemAmt = Number(item.amount) || 0;
+                  const itemPartCount = item.participants.length;
+                  const perPersonAmt = itemPartCount > 0 ? round2(itemAmt / itemPartCount) : 0;
+                  const isAllSelected = item.participants.length === members.length;
+
+                  return (
+                    <div
+                      key={item.id}
+                      className="p-3 bg-[var(--c-card)] border border-[var(--c-line)] rounded-xl flex flex-col gap-2.5 shadow-xs"
+                    >
+                      {/* Item Title & Amount Row */}
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex-1 flex items-center gap-2">
+                          <span className="text-xs font-extrabold text-[var(--c-inkSoft)] shrink-0 w-5">
+                            #{idx + 1}
+                          </span>
+                          <input
+                            type="text"
+                            placeholder="e.g. Veg Starters, Beers, Dessert"
+                            value={item.title}
+                            onChange={(e) => handleUpdateItem(item.id, "title", e.target.value)}
+                            className="w-full px-2.5 py-1.5 bg-[var(--c-paperDark)] border border-[var(--c-line)] rounded-lg text-xs font-semibold text-[var(--c-ink)] focus:outline-none focus:border-[var(--c-teal)]"
+                          />
                         </div>
-                      )}
 
-                      {method === "custom" && (
-                        <div className="relative w-28">
-                          <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--c-inkSoft)] font-bold text-xs">₹</span>
+                        <div className="relative w-28 shrink-0">
+                          <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--c-inkSoft)] font-bold text-xs">
+                            ₹
+                          </span>
                           <input
                             type="number"
                             step="0.01"
+                            min="0"
                             placeholder="0.00"
-                            value={customVals[m.id] || ""}
+                            value={item.amount || ""}
                             onChange={(e) =>
-                              setCustomVals((prev) => ({ ...prev, [m.id]: e.target.value }))
+                              handleUpdateItem(item.id, "amount", parseFloat(e.target.value) || 0)
                             }
-                            className="w-full pl-6 pr-2 py-1 bg-[var(--c-paperDark)] border border-[var(--c-line)] rounded-lg text-xs font-bold text-right text-[var(--c-ink)] focus:bg-[var(--c-input-bg)] focus:border-[var(--c-teal)] focus:outline-none"
+                            className="w-full pl-6 pr-2 py-1.5 bg-[var(--c-paperDark)] border border-[var(--c-line)] rounded-lg text-xs font-bold text-right text-[var(--c-ink)] focus:outline-none focus:border-[var(--c-teal)]"
                           />
                         </div>
-                      )}
 
-                      {method === "percentage" && (
-                        <div className="flex items-center gap-1.5">
-                          <div className="relative w-20">
-                            <input
-                              type="number"
-                              step="0.1"
-                              placeholder="0"
-                              value={pctVals[m.id] || ""}
-                              onChange={(e) =>
-                                setPctVals((prev) => ({ ...prev, [m.id]: e.target.value }))
-                              }
-                              className="w-full pl-2 pr-5 py-1 bg-[var(--c-paperDark)] border border-[var(--c-line)] rounded-lg text-xs font-bold text-right text-[var(--c-ink)] focus:bg-[var(--c-input-bg)] focus:border-[var(--c-teal)] focus:outline-none"
-                            />
-                            <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--c-inkSoft)] font-bold text-xs">%</span>
-                          </div>
-                          <span className="text-[11px] font-bold text-[var(--c-inkSoft)] w-16 text-right">
-                            {money(shareAmt)}
+                        {receiptItems.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveItem(item.id)}
+                            className="p-1.5 text-[var(--c-inkSoft)] hover:text-[var(--c-rust)] hover:bg-[var(--c-rustSoft)] rounded-lg transition-colors cursor-pointer"
+                            title="Remove line item"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Participant Chips for this Line Item */}
+                      <div className="flex flex-col gap-1.5 pt-1 border-t border-[var(--c-lineSoft)]">
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="font-semibold text-[var(--c-inkSoft)]">Who shared this?</span>
+                          <span className="font-bold text-[var(--c-teal)]">
+                            {itemAmt > 0 && itemPartCount > 0 ? (
+                              <>₹{perPersonAmt} / person ({itemPartCount} people)</>
+                            ) : (
+                              <span className="text-amber-700">Select participants</span>
+                            )}
                           </span>
                         </div>
-                      )}
 
-                      {method === "shares" && (
-                        <div className="flex items-center gap-1.5">
-                          <div className="relative w-16">
-                            <input
-                              type="number"
-                              min="1"
-                              step="1"
-                              placeholder="1"
-                              value={sharesVals[m.id] || "1"}
-                              onChange={(e) =>
-                                setSharesVals((prev) => ({ ...prev, [m.id]: e.target.value }))
-                              }
-                              className="w-full px-2 py-1 bg-[var(--c-paperDark)] border border-[var(--c-line)] rounded-lg text-xs font-bold text-center text-[var(--c-ink)] focus:bg-[var(--c-input-bg)] focus:border-[var(--c-teal)] focus:outline-none"
-                            />
-                          </div>
-                          <span className="text-[11px] text-[var(--c-inkSoft)]">share(s)</span>
-                          <span className="text-[11px] font-bold text-[var(--c-inkSoft)] w-16 text-right">
-                            {money(shareAmt)}
-                          </span>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {/* Quick "Everyone" chip */}
+                          <button
+                            type="button"
+                            onClick={() => handleToggleItemAllParticipants(item.id)}
+                            className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-all cursor-pointer ${
+                              isAllSelected
+                                ? "bg-teal-50 border-teal-300 text-[var(--c-teal)]"
+                                : "bg-[var(--c-paperDark)] border-[var(--c-line)] text-[var(--c-inkSoft)]"
+                            }`}
+                          >
+                            {isAllSelected ? "✓ Everyone" : "Everyone"}
+                          </button>
+
+                          {/* Member Chips */}
+                          {members.map((m) => {
+                            const isShared = item.participants.includes(m.id);
+                            return (
+                              <button
+                                key={m.id}
+                                type="button"
+                                onClick={() => handleToggleItemParticipant(item.id, m.id)}
+                                className={`px-2 py-1 rounded-lg text-[11px] font-medium flex items-center gap-1.5 border transition-all cursor-pointer ${
+                                  isShared
+                                    ? "bg-[var(--c-teal)] text-[var(--c-teal-contrast-text)] border-[var(--c-teal)] shadow-xs"
+                                    : "bg-[var(--c-paperDark)] border-[var(--c-line)] text-[var(--c-inkSoft)] hover:border-[var(--c-inkSoft)]"
+                                }`}
+                              >
+                                <Avatar name={m.name} color={m.avatarColor} size={15} />
+                                <span>{m.name}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Itemized Subtotal Summary */}
+              <div className="p-3 bg-[var(--c-paperDark)] border border-[var(--c-line)] rounded-xl flex flex-col gap-2">
+                <div className="flex items-center justify-between text-xs font-bold">
+                  <span className="text-[var(--c-ink)]">Calculated Member Shares:</span>
+                  <span className="text-[var(--c-teal)]">Total: {money(itemizedTotal)}</span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                  {members.map((m) => {
+                    const share = calculatedSplits[m.id] || 0;
+                    return (
+                      <div
+                        key={m.id}
+                        className={`p-1.5 rounded-lg flex items-center justify-between text-[11px] border ${
+                          share > 0
+                            ? "bg-[var(--c-card)] border-[var(--c-line)]"
+                            : "bg-[var(--c-paperDark)]/50 border-transparent opacity-60"
+                        }`}
+                      >
+                        <span className="truncate text-[var(--c-inkSoft)] font-medium">{m.name}:</span>
+                        <span className="font-bold text-[var(--c-ink)]">{money(share)}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          ) : (
+            /* STANDARD PARTICIPANTS LIST (Equal, Exact, Percentage, Shares) */
+            <>
+              {/* Quick Select All / Deselect buttons */}
+              <div className="flex items-center justify-between pt-1 border-t border-[var(--c-lineSoft)]">
+                <span className="text-xs font-bold text-[var(--c-inkSoft)]">
+                  Participants ({participants.length}/{members.length})
+                </span>
+                <div className="flex items-center gap-2 text-xs font-semibold">
+                  <button
+                    type="button"
+                    onClick={selectAll}
+                    className="text-[var(--c-teal)] hover:text-teal-950 cursor-pointer"
+                  >
+                    Select All
+                  </button>
+                  <span className="text-[var(--c-line)]">•</span>
+                  <button
+                    type="button"
+                    onClick={deselectAll}
+                    className="text-[var(--c-inkSoft)] hover:text-[var(--c-ink)] cursor-pointer"
+                  >
+                    Deselect All
+                  </button>
+                </div>
+              </div>
+
+              {/* Participant Rows */}
+              <div className="flex flex-col gap-2 max-h-60 overflow-y-auto pr-1">
+                {members.map((m) => {
+                  const isIncluded = participants.includes(m.id);
+                  const shareAmt = calculatedSplits[m.id] || 0;
+
+                  return (
+                    <div
+                      key={m.id}
+                      className={`p-3 rounded-xl border flex items-center justify-between gap-3 transition-all ${
+                        isIncluded
+                          ? "bg-[var(--c-card)] border-[var(--c-line)] shadow-xs"
+                          : "bg-[var(--c-paperDark)] border-[var(--c-lineSoft)] opacity-60"
+                      }`}
+                    >
+                      <label className="flex items-center gap-3 cursor-pointer select-none flex-1 min-w-0">
+                        <input
+                          type="checkbox"
+                          checked={isIncluded}
+                          onChange={() => toggleParticipant(m.id)}
+                          className="w-4 h-4 text-[var(--c-teal)] rounded-md border-[var(--c-line)] focus:ring-teal-700 cursor-pointer"
+                        />
+                        <Avatar name={m.name} color={m.avatarColor} size={24} />
+                        <div className="truncate">
+                          <div className="text-xs font-bold text-[var(--c-ink)]">{m.name}</div>
+                          <div className="text-[10px] text-[var(--c-inkSoft)]">{m.role}</div>
+                        </div>
+                      </label>
+
+                      {/* Input based on Split Method */}
+                      {isIncluded && (
+                        <div className="flex items-center gap-2">
+                          {method === "equal" && (
+                            <div className="text-xs font-bold text-[var(--c-teal)] bg-teal-50 px-2.5 py-1 rounded-lg">
+                              {money(shareAmt)}
+                            </div>
+                          )}
+
+                          {method === "custom" && (
+                            <div className="flex items-center gap-1.5">
+                              <div className="relative w-28">
+                                <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--c-inkSoft)] font-bold text-xs">
+                                  ₹
+                                </span>
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  placeholder="0.00"
+                                  value={customVals[m.id] || ""}
+                                  onChange={(e) =>
+                                    setCustomVals((prev) => ({ ...prev, [m.id]: e.target.value }))
+                                  }
+                                  className="w-full pl-6 pr-2 py-1 bg-[var(--c-paperDark)] border border-[var(--c-line)] rounded-lg text-xs font-bold text-right text-[var(--c-ink)] focus:bg-[var(--c-input-bg)] focus:border-[var(--c-teal)] focus:outline-none"
+                                />
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => handleAutoBalanceRemainder(m.id)}
+                                title="Auto-fill remaining balance to this member"
+                                className="p-1 text-[var(--c-teal)] hover:bg-teal-50 rounded-md transition-colors cursor-pointer"
+                              >
+                                <Wand2 size={13} />
+                              </button>
+                            </div>
+                          )}
+
+                          {method === "percentage" && (
+                            <div className="flex items-center gap-1.5">
+                              <div className="relative w-20">
+                                <input
+                                  type="number"
+                                  step="0.1"
+                                  placeholder="0"
+                                  value={pctVals[m.id] || ""}
+                                  onChange={(e) =>
+                                    setPctVals((prev) => ({ ...prev, [m.id]: e.target.value }))
+                                  }
+                                  className="w-full pl-2 pr-5 py-1 bg-[var(--c-paperDark)] border border-[var(--c-line)] rounded-lg text-xs font-bold text-right text-[var(--c-ink)] focus:bg-[var(--c-input-bg)] focus:border-[var(--c-teal)] focus:outline-none"
+                                />
+                                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--c-inkSoft)] font-bold text-xs">
+                                  %
+                                </span>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => handleAutoBalanceRemainder(m.id)}
+                                title="Auto-balance remaining % to 100%"
+                                className="p-1 text-[var(--c-teal)] hover:bg-teal-50 rounded-md transition-colors cursor-pointer"
+                              >
+                                <Wand2 size={13} />
+                              </button>
+                              <span className="text-[11px] font-bold text-[var(--c-inkSoft)] w-16 text-right">
+                                {money(shareAmt)}
+                              </span>
+                            </div>
+                          )}
+
+                          {method === "shares" && (
+                            <div className="flex items-center gap-1.5">
+                              {/* Quick weight buttons */}
+                              <div className="flex items-center gap-1">
+                                {[
+                                  { label: "1x", val: "1", title: "Solo (1 share)" },
+                                  { label: "2x", val: "2", title: "Couple (2 shares)" },
+                                  { label: "3x", val: "3", title: "Family (3 shares)" },
+                                ].map((sw) => (
+                                  <button
+                                    key={sw.val}
+                                    type="button"
+                                    onClick={() =>
+                                      setSharesVals((prev) => ({ ...prev, [m.id]: sw.val }))
+                                    }
+                                    title={sw.title}
+                                    className={`px-1.5 py-0.5 rounded text-[10px] font-bold border transition-colors cursor-pointer ${
+                                      (sharesVals[m.id] || "1") === sw.val
+                                        ? "bg-teal-50 text-[var(--c-teal)] border-teal-300"
+                                        : "bg-[var(--c-paperDark)] text-[var(--c-inkSoft)] border-[var(--c-line)]"
+                                    }`}
+                                  >
+                                    {sw.label}
+                                  </button>
+                                ))}
+                              </div>
+
+                              <div className="relative w-14">
+                                <input
+                                  type="number"
+                                  min="1"
+                                  step="1"
+                                  placeholder="1"
+                                  value={sharesVals[m.id] || "1"}
+                                  onChange={(e) =>
+                                    setSharesVals((prev) => ({ ...prev, [m.id]: e.target.value }))
+                                  }
+                                  className="w-full px-2 py-1 bg-[var(--c-paperDark)] border border-[var(--c-line)] rounded-lg text-xs font-bold text-center text-[var(--c-ink)] focus:bg-[var(--c-input-bg)] focus:border-[var(--c-teal)] focus:outline-none"
+                                />
+                              </div>
+                              <span className="text-[11px] font-bold text-[var(--c-inkSoft)] w-16 text-right">
+                                {money(shareAmt)}
+                              </span>
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
+                  );
+                })}
+              </div>
+
+              {/* Allocation Summary & Auto-Balance Remainder Bar */}
+              {(method === "custom" || method === "percentage") && (
+                <div className="pt-2 border-t border-[var(--c-lineSoft)] flex flex-wrap items-center justify-between gap-2 text-xs font-bold">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[var(--c-inkSoft)]">Allocated:</span>
+                    <span
+                      className={
+                        Math.abs(splitDifference) < 0.01 ? "text-emerald-700" : "text-[var(--c-rust)]"
+                      }
+                    >
+                      {money(sumSplits)} / {money(numAmount)}
+                    </span>
+                    {Math.abs(splitDifference) >= 0.01 && (
+                      <span className="text-[11px] text-[var(--c-rust)] font-normal">
+                        ({splitDifference > 0 ? "Under by" : "Over by"} {money(Math.abs(splitDifference))})
+                      </span>
+                    )}
+                  </div>
+
+                  {Math.abs(splitDifference) > 0.01 && (
+                    <div className="flex items-center gap-1.5">
+                      {method === "custom" && (
+                        <button
+                          type="button"
+                          onClick={handleDistributeRemainingEvenly}
+                          className="px-2.5 py-1 bg-[var(--c-paperDark)] text-[var(--c-ink)] border border-[var(--c-line)] rounded-lg text-[11px] font-semibold hover:border-[var(--c-teal)] transition-colors cursor-pointer"
+                        >
+                          Split Remainder Evenly
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => handleAutoBalanceRemainder()}
+                        className="px-2.5 py-1 bg-amber-50 text-amber-900 border border-amber-200 rounded-lg text-[11px] font-semibold hover:bg-amber-100 transition-colors flex items-center gap-1 cursor-pointer"
+                      >
+                        <Wand2 size={12} />
+                        <span>Fix Remainder ({money(splitDifference)})</span>
+                      </button>
+                    </div>
                   )}
                 </div>
-              );
-            })}
-          </div>
-
-          {/* Allocation Summary & Fix Button */}
-          {(method === "custom" || method === "percentage") && (
-            <div className="pt-2 border-t border-[var(--c-lineSoft)] flex items-center justify-between text-xs font-bold">
-              <div className="flex items-center gap-2">
-                <span className="text-[var(--c-inkSoft)]">Allocated:</span>
-                <span className={Math.abs(splitDifference) < 0.01 ? "text-emerald-700" : "text-[var(--c-rust)]"}>
-                  {money(sumSplits)} / {money(numAmount)}
-                </span>
-              </div>
-              {Math.abs(splitDifference) > 0.01 && (
-                <button
-                  type="button"
-                  onClick={handleAutoBalanceRemainder}
-                  className="px-2 py-1 bg-amber-50 text-amber-900 border border-amber-200 rounded-lg text-[11px] font-semibold hover:bg-amber-100 transition-colors cursor-pointer"
-                >
-                  Fix Remainder ({money(splitDifference)})
-                </button>
               )}
-            </div>
+            </>
           )}
         </div>
 

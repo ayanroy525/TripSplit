@@ -1,7 +1,8 @@
 import React from "react";
-import { Crown, Eye, UserCircle2, X } from "lucide-react";
+import { Crown, Eye, UserCircle2, X, Shield } from "lucide-react";
 import { Member, Role } from "../types";
 import { C, CATEGORY_META, getCategoryMeta } from "../utils/constants";
+import { normalizeRole } from "../utils/permissions";
 
 export function Avatar({
   member,
@@ -54,13 +55,14 @@ export function Avatar({
   );
 }
 
-export function RoleBadge({ role }: { role: Role }) {
+export function RoleBadge({ role }: { role: Role | string }) {
+  const norm = normalizeRole(role);
   const map = {
-    owner: { icon: Crown, label: "Owner", bg: C.marigoldDark },
-    member: { icon: UserCircle2, label: "Member", bg: C.teal },
+    admin: { icon: Shield, label: "Admin", bg: C.marigoldDark },
+    participant: { icon: UserCircle2, label: "Participant", bg: C.teal },
     viewer: { icon: Eye, label: "Viewer", bg: C.inkSoft },
   };
-  const cfg = map[role] || map.member;
+  const cfg = map[norm] || map.participant;
   const Icon = cfg.icon;
 
   return (

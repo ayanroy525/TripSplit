@@ -1,4 +1,5 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useRef } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   Search,
   Filter,
@@ -21,17 +22,21 @@ import {
   Calculator,
   Scale,
   Sparkles,
+  Zap,
 } from "lucide-react";
-import { Expense, Member, SplitMethod } from "../types";
+import { Expense, Member, SplitMethod, Trip } from "../types";
 import { money, formatDate } from "../utils/calculations";
 import { Avatar } from "./Atoms";
 import { CATEGORY_META, getCategoryMeta, PRIMARY_CATEGORIES } from "../utils/constants";
+import { getTripPermissions } from "../utils/permissions";
 
 interface ExpensesListViewProps {
   expenses: Expense[];
   members: Member[];
   currentUserId: string;
   currency?: string;
+  trip?: Trip;
+  currentUser?: Member;
   onOpenAddExpense: () => void;
   onEditExpense: (expense: Expense) => void;
   onDeleteExpense: (expenseId: string) => void;
@@ -62,15 +67,23 @@ export function ExpensesListView({
   members,
   currentUserId,
   currency = "INR",
+  trip,
+  currentUser,
   onOpenAddExpense,
   onEditExpense,
   onDeleteExpense,
 }: ExpensesListViewProps) {
+  const permissions = useMemo(
+    () => getTripPermissions(trip, currentUser, currentUserId),
+    [trip, currentUser, currentUserId]
+  );
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<string>("all");
   const [selectedPayer, setSelectedPayer] = useState<string>("all");
   const [sortBy, setSortBy] = useState<"date_desc" | "date_asc" | "amount_desc" | "amount_asc">("date_desc");
   const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  const parentRef = useRef<HTMLDivElement>(null);
 
   const activeExpenses = useMemo(() => expenses.filter((e) => !e.deleted), [expenses]);
   const memberMap = useMemo(() => new Map(members.map((m) => [m.id, m])), [members]);
@@ -150,6 +163,13 @@ export function ExpensesListView({
     [filteredExpenses]
   );
 
+  const rowVirtualizer = useVirtualizer({
+    count: filteredExpenses.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 165,
+    overscan: 5,
+  });
+
   return (
     <div className="flex flex-col gap-4">
       {/* 1. Header & Actions */}
@@ -160,21 +180,29 @@ export function ExpensesListView({
             <span className="text-xs px-2 py-0.5 rounded-full bg-teal-50 text-[var(--c-teal)] font-bold border border-teal-200">
               {filteredExpenses.length} entries
             </span>
+            {filteredExpenses.length > 5 && (
+              <span className="text-[11px] font-bold text-[var(--c-teal)] flex items-center gap-1">
+                <Zap size={12} className="text-amber-500 fill-amber-500" />
+                <span>Virtualized</span>
+              </span>
+            )}
           </h2>
           <div className="text-xs text-[var(--c-inkSoft)] mt-0.5">
             Filtered Total: <span className="font-bold text-[var(--c-ink)]">{money(totalFilteredAmount, currency)}</span>
           </div>
         </div>
 
-        <button
-          id="btn-add-expense-top"
-          type="button"
-          onClick={onOpenAddExpense}
-          className="px-4 py-2.5 bg-[var(--c-teal)] hover:bg-[var(--c-tealDark)] text-[var(--c-teal-contrast-text)] rounded-xl text-xs font-bold shadow-xs transition-colors flex items-center justify-center gap-2 cursor-pointer"
-        >
-          <Plus size={15} />
-          <span>Add Expense</span>
-        </button>
+        {permissions.canAddExpense && (
+          <button
+            id="btn-add-expense-top"
+            type="button"
+            onClick={onOpenAddExpense}
+            className="px-4 py-2.5 bg-[var(--c-teal)] hover:bg-[var(--c-tealDark)] text-[var(--c-teal-contrast-text)] rounded-xl text-xs font-bold shadow-xs transition-colors flex items-center justify-center gap-2 cursor-pointer"
+          >
+            <Plus size={15} />
+            <span>Add Expense</span>
+          </button>
+        )}
       </div>
 
       {/* 2. Search & Filter Bar */}
@@ -270,198 +298,318 @@ export function ExpensesListView({
           </button>
         </div>
       ) : (
-        <div className="flex flex-col gap-2.5">
-          {filteredExpenses.map((expense) => {
-            const isExpanded = expandedId === expense.id;
-            const meta = getCategoryMeta(expense.category, expense.title);
-            const Icon = meta.icon;
-            const colors = { bg: meta.bg || "#F1F5F9", text: meta.text || meta.color };
+        <div
+          ref={parentRef}
+          className="relative overflow-y-auto max-h-[75vh] sm:max-h-[80vh] pr-1 focus:outline-none"
+        >
+          <div
+            style={{
+              height: `${rowVirtualizer.getTotalSize()}px`,
+              width: "100%",
+              position: "relative",
+            }}
+          >
+            {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+              const expense = filteredExpenses[virtualRow.index];
+              const isExpanded = expandedId === expense.id;
+              const meta = getCategoryMeta(expense.category, expense.title);
+              const Icon = meta.icon;
+              const colors = { bg: meta.bg || "#F1F5F9", text: meta.text || meta.color };
 
-            // Payer resolution
-            let payerLabel = "";
-            let payerAvatar: Member | undefined = undefined;
+              // Payer resolution
+              let payerLabel = "";
+              let payerAvatar: Member | undefined = undefined;
 
-            const currentUserMember = members.find((m) => m.id === currentUserId || m.userId === currentUserId);
+              const currentUserMember = members.find((m) => m.id === currentUserId || m.userId === currentUserId);
 
-            if (expense.payers && Object.keys(expense.payers).length > 1) {
-              payerLabel = `Multi-Payer (${Object.keys(expense.payers).length})`;
-            } else {
-              const pId = expense.payers ? Object.keys(expense.payers)[0] : expense.paidBy;
-              const payerMember =
-                memberMap.get(pId) ||
-                members.find((m) => m.userId === pId || (m.name && m.name.toLowerCase() === (pId || "").toLowerCase()));
-              payerAvatar = payerMember;
-              const isPaidByMe =
-                pId === currentUserId ||
-                (currentUserMember && (pId === currentUserMember.id || pId === currentUserMember.userId)) ||
-                (payerMember && currentUserMember && (payerMember.id === currentUserMember.id || (payerMember.name && currentUserMember.name && payerMember.name.trim().toLowerCase() === currentUserMember.name.trim().toLowerCase())));
-              payerLabel = isPaidByMe ? "You" : payerMember ? `${payerMember.name}` : pId;
-            }
+              if (expense.payers && Object.keys(expense.payers).length > 1) {
+                payerLabel = `Multi-Payer (${Object.keys(expense.payers).length})`;
+              } else {
+                const pId = expense.payers ? Object.keys(expense.payers)[0] : expense.paidBy;
+                const payerMember =
+                  memberMap.get(pId) ||
+                  members.find((m) => m.userId === pId || (m.name && m.name.toLowerCase() === (pId || "").toLowerCase()));
+                payerAvatar = payerMember;
+                const isPaidByMe =
+                  pId === currentUserId ||
+                  (currentUserMember && (pId === currentUserMember.id || pId === currentUserMember.userId)) ||
+                  (payerMember && currentUserMember && (payerMember.id === currentUserMember.id || (payerMember.name && currentUserMember.name && payerMember.name.trim().toLowerCase() === currentUserMember.name.trim().toLowerCase())));
+                payerLabel = isPaidByMe ? "You" : payerMember ? `${payerMember.name}` : pId;
+              }
 
-            // User's own share in this expense
-            const myShare =
-              expense.splits[currentUserId] ||
-              (currentUserMember ? expense.splits[currentUserMember.id] : 0) ||
-              (currentUserMember?.userId ? expense.splits[currentUserMember.userId] : 0) ||
-              0;
+              // User's own share in this expense
+              const myShare =
+                expense.splits[currentUserId] ||
+                (currentUserMember ? expense.splits[currentUserMember.id] : 0) ||
+                (currentUserMember?.userId ? expense.splits[currentUserMember.userId] : 0) ||
+                0;
 
-            return (
-              <div
-                key={expense.id}
-                className="bg-[var(--c-card)] border border-[var(--c-line)] rounded-2xl p-4 shadow-xs hover:border-[var(--c-line)] transition-all flex flex-col gap-3"
-              >
-                {/* Top Row: Category Icon + Title + Amount */}
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex items-start gap-3 min-w-0">
-                    <div
-                      className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
-                      style={{ backgroundColor: colors.bg, color: colors.text }}
-                    >
-                      <Icon size={18} />
-                    </div>
+              return (
+                <div
+                  key={expense.id}
+                  data-index={virtualRow.index}
+                  ref={rowVirtualizer.measureElement}
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    width: "100%",
+                    transform: `translateY(${virtualRow.start}px)`,
+                    paddingBottom: "12px",
+                  }}
+                >
+                  <div className="bg-[var(--c-card)] border border-[var(--c-line)] rounded-2xl p-4 shadow-xs hover:border-[var(--c-line)] transition-all flex flex-col gap-3">
+                    {/* Top Row: Category Icon + Title + Amount */}
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-start gap-3 min-w-0">
+                        <div
+                          className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
+                          style={{ backgroundColor: colors.bg, color: colors.text }}
+                        >
+                          <Icon size={18} />
+                        </div>
 
-                    <div className="min-w-0">
-                      <h3 className="text-sm font-bold text-[var(--c-ink)] truncate">{expense.title}</h3>
-                      <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--c-inkSoft)] mt-0.5">
-                        <span className="flex items-center gap-1">
-                          <Calendar size={11} className="text-[var(--c-inkSoft)]" />
-                          <span>{formatDate(expense.date)}</span>
-                        </span>
-                        <span>•</span>
-                        <span className="font-semibold text-[var(--c-inkSoft)]">{meta.resolvedCategory}</span>
+                        <div className="min-w-0">
+                          <h3 className="text-sm font-bold text-[var(--c-ink)] truncate">{expense.title}</h3>
+                          <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--c-inkSoft)] mt-0.5">
+                            <span className="flex items-center gap-1">
+                              <Calendar size={11} className="text-[var(--c-inkSoft)]" />
+                              <span>{formatDate(expense.date)}</span>
+                            </span>
+                            <span>•</span>
+                            <span className="font-semibold text-[var(--c-inkSoft)]">{meta.resolvedCategory}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="text-right shrink-0">
+                        <div className="text-base font-extrabold text-[var(--c-ink)] tracking-tight">
+                          {money(expense.amount, currency)}
+                        </div>
+                        {myShare > 0 && (
+                          <div className="text-[11px] font-bold text-[var(--c-teal)] bg-teal-50 px-2 py-0.5 rounded-md mt-0.5">
+                            Your share: {money(myShare, currency)}
+                          </div>
+                        )}
                       </div>
                     </div>
-                  </div>
 
-                  <div className="text-right shrink-0">
-                    <div className="text-base font-extrabold text-[var(--c-ink)] tracking-tight">
-                      {money(expense.amount, currency)}
+                    {/* Middle Row: Payer & Split Method Badges */}
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[var(--c-lineSoft)] text-xs">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[var(--c-inkSoft)] font-medium">Paid by:</span>
+                        <div className="flex items-center gap-1.5 bg-[var(--c-paperDark)] px-2 py-1 rounded-lg border border-[var(--c-line)]">
+                          {payerAvatar && <Avatar name={payerAvatar.name} color={payerAvatar.avatarColor} size={18} />}
+                          <span className="font-bold text-[var(--c-ink)]">{payerLabel}</span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-1.5">
+                        <span className="px-2 py-0.5 rounded-md bg-[var(--c-lineSoft)] text-[var(--c-teal)] text-[11px] font-bold uppercase tracking-wider">
+                          {expense.method === "itemized"
+                            ? "Itemized Receipt"
+                            : expense.method === "shares"
+                            ? "Shares / Weights"
+                            : expense.method === "percentage"
+                            ? "Percentage"
+                            : expense.method === "custom"
+                            ? "Exact"
+                            : "Equal Split"}
+                        </span>
+                        <span className="text-[11px] text-[var(--c-inkSoft)] font-medium">
+                          {expense.participants.length} {expense.participants.length === 1 ? "person" : "people"}
+                        </span>
+                      </div>
                     </div>
-                    {myShare > 0 && (
-                      <div className="text-[11px] font-bold text-[var(--c-teal)] bg-teal-50 px-2 py-0.5 rounded-md mt-0.5">
-                        Your share: {money(myShare, currency)}
+
+                    {/* Notes if any */}
+                    {expense.notes && (
+                      <div className="text-xs text-[var(--c-inkSoft)] italic bg-[var(--c-paperDark)]/70 p-2 rounded-lg">
+                        "{expense.notes}"
                       </div>
                     )}
-                  </div>
-                </div>
 
-                {/* Middle Row: Payer & Split Method Badges */}
-                <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[var(--c-lineSoft)] text-xs">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[var(--c-inkSoft)] font-medium">Paid by:</span>
-                    <div className="flex items-center gap-1.5 bg-[var(--c-paperDark)] px-2 py-1 rounded-lg border border-[var(--c-line)]">
-                      {payerAvatar && <Avatar name={payerAvatar.name} color={payerAvatar.avatarColor} size={18} />}
-                      <span className="font-bold text-[var(--c-ink)]">{payerLabel}</span>
-                    </div>
-                  </div>
+                    {/* Expandable Split Breakdown Drawer */}
+                    {isExpanded && (
+                      <div className="bg-[var(--c-paperDark)] p-3 rounded-xl border border-[var(--c-line)] flex flex-col gap-3 text-xs">
+                        <div className="font-bold text-[var(--c-ink)] flex items-center justify-between">
+                          <span className="text-xs">Split Breakdown & Allocations</span>
+                          <span className="text-[11px] text-[var(--c-inkSoft)] font-semibold uppercase">
+                            Method: {expense.method}
+                          </span>
+                        </div>
 
-                  <div className="flex items-center gap-1.5">
-                    <span className="px-2 py-0.5 rounded-md bg-[var(--c-lineSoft)] text-[var(--c-inkSoft)] text-[11px] font-semibold uppercase tracking-wider">
-                      {expense.method}
-                    </span>
-                    <span className="text-[11px] text-[var(--c-inkSoft)]">
-                      {expense.participants.length} people
-                    </span>
-                  </div>
-                </div>
+                        {/* Multi-Payer Breakdown if applicable */}
+                        {expense.payers && Object.keys(expense.payers).length > 1 && (
+                          <div className="p-2.5 bg-[var(--c-card)] rounded-lg border border-[var(--c-line)] flex flex-col gap-1.5">
+                            <div className="font-bold text-[var(--c-inkSoft)] text-[11px]">Upfront Contributors:</div>
+                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                              {Object.entries(expense.payers).map(([pid, amt]) => {
+                                const m = memberMap.get(pid);
+                                return (
+                                  <div key={pid} className="flex items-center justify-between text-[11px] p-1.5 bg-[var(--c-paperDark)] rounded-md border border-[var(--c-line)]">
+                                    <span className="text-[var(--c-inkSoft)] font-medium truncate mr-1">{m?.name || pid}:</span>
+                                    <span className="font-bold text-emerald-700 shrink-0">{money(amt, currency)}</span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
 
-                {/* Notes if any */}
-                {expense.notes && (
-                  <div className="text-xs text-[var(--c-inkSoft)] italic bg-[var(--c-paperDark)]/70 p-2 rounded-lg">
-                    "{expense.notes}"
-                  </div>
-                )}
+                        {/* Receipt Line Items Table for Itemized Splits */}
+                        {expense.method === "itemized" && expense.items && expense.items.length > 0 && (
+                          <div className="p-2.5 bg-[var(--c-card)] rounded-lg border border-[var(--c-line)] flex flex-col gap-2">
+                            <div className="flex items-center justify-between">
+                              <span className="font-bold text-[var(--c-ink)] text-[11px]">
+                                Receipt Line Items ({expense.items.length})
+                              </span>
+                              <span className="text-[11px] font-bold text-[var(--c-teal)]">
+                                Subtotal: {money(expense.amount, currency)}
+                              </span>
+                            </div>
+                            <div className="flex flex-col gap-1.5 max-h-48 overflow-y-auto">
+                              {expense.items.map((it, idx) => {
+                                const itAmt = Number(it.amount) || 0;
+                                const itPartCount = it.participants.length;
+                                return (
+                                  <div
+                                    key={it.id || idx}
+                                    className="p-2 bg-[var(--c-paperDark)] rounded-lg border border-[var(--c-line)] flex flex-col sm:flex-row sm:items-center justify-between gap-1.5"
+                                  >
+                                    <div className="flex items-center gap-2 min-w-0">
+                                      <span className="text-[10px] font-extrabold text-[var(--c-inkSoft)] shrink-0 w-4">
+                                        #{idx + 1}
+                                      </span>
+                                      <span className="font-bold text-[var(--c-ink)] text-[11px] truncate">
+                                        {it.title || "Untitled Line Item"}
+                                      </span>
+                                    </div>
 
-                {/* Expandable Split Breakdown Drawer */}
-                {isExpanded && (
-                  <div className="bg-[var(--c-paperDark)] p-3 rounded-xl border border-[var(--c-line)] flex flex-col gap-2 text-xs">
-                    <div className="font-bold text-[var(--c-ink)] flex items-center justify-between">
-                      <span>Itemized Member Breakdown:</span>
-                      <span className="text-[var(--c-inkSoft)] font-normal">Method: {expense.method}</span>
-                    </div>
+                                    <div className="flex items-center justify-between sm:justify-end gap-2.5 shrink-0">
+                                      <div className="flex items-center gap-1">
+                                        {it.participants.map((pid) => {
+                                          const m = memberMap.get(pid);
+                                          return (
+                                            <span
+                                              key={pid}
+                                              title={`${m?.name || pid} shared this`}
+                                              className="inline-block"
+                                            >
+                                              <Avatar
+                                                name={m?.name || pid}
+                                                color={m?.avatarColor || "#0F6B65"}
+                                                size={16}
+                                              />
+                                            </span>
+                                          );
+                                        })}
+                                        <span className="text-[10px] text-[var(--c-inkSoft)] ml-0.5">
+                                          ({itPartCount})
+                                        </span>
+                                      </div>
+                                      <span className="font-extrabold text-[var(--c-ink)] text-[11px]">
+                                        {money(itAmt, currency)}
+                                      </span>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
 
-                    {/* Multi-Payer Breakdown if applicable */}
-                    {expense.payers && Object.keys(expense.payers).length > 1 && (
-                      <div className="p-2 bg-[var(--c-card)] rounded-lg border border-[var(--c-line)]">
-                        <div className="font-bold text-[var(--c-inkSoft)] mb-1 text-[11px]">Upfront Payers:</div>
-                        <div className="grid grid-cols-2 gap-1.5">
-                          {Object.entries(expense.payers).map(([pid, amt]) => {
-                            const m = memberMap.get(pid);
-                            return (
-                              <div key={pid} className="flex items-center justify-between text-[11px]">
-                                <span className="text-[var(--c-inkSoft)]">{m?.name || pid}:</span>
-                                <span className="font-bold text-emerald-700">{money(amt, currency)}</span>
-                              </div>
-                            );
-                          })}
+                        {/* Final Individual Member Debits */}
+                        <div className="flex flex-col gap-1">
+                          <div className="font-bold text-[var(--c-inkSoft)] text-[11px]">
+                            Final Member Shares:
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                            {expense.participants.map((pid) => {
+                              const m = memberMap.get(pid);
+                              const share = expense.splits[pid] || 0;
+                              const isMe = pid === currentUserId;
+                              const shareWeight = expense.splitShares?.[pid];
+                              const sharePct = expense.splitPercentages?.[pid];
+
+                              return (
+                                <div
+                                  key={pid}
+                                  className={`p-2 rounded-lg flex items-center justify-between ${
+                                    isMe
+                                      ? "bg-teal-50 border border-teal-200 font-bold"
+                                      : "bg-[var(--c-card)] border border-[var(--c-line)]"
+                                  }`}
+                                >
+                                  <div className="flex items-center gap-1.5 truncate">
+                                    <Avatar name={m?.name || pid} color={m?.avatarColor || "#0F6B65"} size={18} />
+                                    <span className="truncate">{m?.name || pid}</span>
+                                    {isMe && <span className="text-[10px] text-[var(--c-teal)]">(You)</span>}
+                                    {shareWeight != null && (
+                                      <span className="text-[10px] px-1 py-0.2 rounded bg-amber-50 text-amber-800 font-bold border border-amber-200">
+                                        {shareWeight}x
+                                      </span>
+                                    )}
+                                    {sharePct != null && (
+                                      <span className="text-[10px] px-1 py-0.2 rounded bg-sky-50 text-sky-800 font-bold border border-sky-200">
+                                        {sharePct}%
+                                      </span>
+                                    )}
+                                  </div>
+                                  <span className={isMe ? "text-[var(--c-teal)] font-extrabold" : "text-[var(--c-inkSoft)] font-semibold"}>
+                                    {money(share, currency)}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
                         </div>
                       </div>
                     )}
 
-                    {/* Participant Shares */}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                      {expense.participants.map((pid) => {
-                        const m = memberMap.get(pid);
-                        const share = expense.splits[pid] || 0;
-                        const isMe = pid === currentUserId;
-                        return (
-                          <div
-                            key={pid}
-                            className={`p-2 rounded-lg flex items-center justify-between ${
-                              isMe ? "bg-teal-50 border border-teal-200 font-bold" : "bg-[var(--c-card)] border border-[var(--c-line)]"
-                            }`}
+                    {/* Bottom Actions: View Splits + Edit + Delete */}
+                    <div className="flex items-center justify-between pt-1 border-t border-[var(--c-lineSoft)]">
+                      <button
+                        type="button"
+                        onClick={() => setExpandedId(isExpanded ? null : expense.id)}
+                        className="text-xs font-semibold text-[var(--c-teal)] hover:text-teal-950 flex items-center gap-1 cursor-pointer"
+                      >
+                        <span>{isExpanded ? "Hide Details" : "View Split Details"}</span>
+                        {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                      </button>
+
+                      <div className="flex items-center gap-1">
+                        {permissions.canEditExpense(expense) && (
+                          <button
+                            type="button"
+                            onClick={() => onEditExpense(expense)}
+                            className="p-1.5 text-[var(--c-inkSoft)] hover:text-[var(--c-ink)] hover:bg-[var(--c-lineSoft)] rounded-lg transition-colors cursor-pointer"
+                            title="Edit Expense"
                           >
-                            <div className="flex items-center gap-1.5 truncate">
-                              <Avatar name={m?.name || pid} color={m?.avatarColor || "#0F6B65"} size={18} />
-                              <span className="truncate">{m?.name || pid}</span>
-                            </div>
-                            <span className={isMe ? "text-[var(--c-teal)]" : "text-[var(--c-inkSoft)] font-semibold"}>
-                              {money(share, currency)}
-                            </span>
-                          </div>
-                        );
-                      })}
+                            <Pencil size={14} />
+                          </button>
+                        )}
+                        {permissions.canDeleteExpense(expense) && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (window.confirm(`Delete expense "${expense.title}"?`)) {
+                                onDeleteExpense(expense.id);
+                              }
+                            }}
+                            className="p-1.5 text-[var(--c-inkSoft)] hover:text-[var(--c-rust)] hover:bg-[var(--c-rustSoft)] rounded-lg transition-colors cursor-pointer"
+                            title="Delete Expense"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
-                )}
-
-                {/* Bottom Actions: View Splits + Edit + Delete */}
-                <div className="flex items-center justify-between pt-1 border-t border-[var(--c-lineSoft)]">
-                  <button
-                    type="button"
-                    onClick={() => setExpandedId(isExpanded ? null : expense.id)}
-                    className="text-xs font-semibold text-[var(--c-teal)] hover:text-teal-950 flex items-center gap-1 cursor-pointer"
-                  >
-                    <span>{isExpanded ? "Hide Details" : "View Split Details"}</span>
-                    {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                  </button>
-
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => onEditExpense(expense)}
-                      className="p-1.5 text-[var(--c-inkSoft)] hover:text-[var(--c-ink)] hover:bg-[var(--c-lineSoft)] rounded-lg transition-colors cursor-pointer"
-                      title="Edit Expense"
-                    >
-                      <Pencil size={14} />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (window.confirm(`Delete expense "${expense.title}"?`)) {
-                          onDeleteExpense(expense.id);
-                        }
-                      }}
-                      className="p-1.5 text-[var(--c-inkSoft)] hover:text-[var(--c-rust)] hover:bg-[var(--c-rustSoft)] rounded-lg transition-colors cursor-pointer"
-                      title="Delete Expense"
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
       )}
     </div>

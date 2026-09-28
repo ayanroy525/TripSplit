@@ -82,10 +82,10 @@ export function ShareExportModal({
     setTimeout(() => setCopiedText(false), 2500);
   };
 
-  const handleDownloadExcel = () => {
+  const handleDownloadExcel = async () => {
     try {
       setIsExportingExcel(true);
-      exportTripToExcel(trip, trip.members, paidShare, netBalances, simplifiedDebts);
+      await exportTripToExcel(trip, trip.members, paidShare, netBalances, simplifiedDebts);
       setExcelSuccess(true);
       setTimeout(() => setExcelSuccess(false), 3000);
     } catch (err) {
@@ -95,10 +95,10 @@ export function ShareExportModal({
     }
   };
 
-  const handleDownloadPDF = () => {
+  const handleDownloadPDF = async () => {
     try {
       setIsExportingPDF(true);
-      exportTripToPDF(trip, trip.members, paidShare, netBalances, simplifiedDebts);
+      await exportTripToPDF(trip, trip.members, paidShare, netBalances, simplifiedDebts);
       setPdfSuccess(true);
       setTimeout(() => setPdfSuccess(false), 3000);
     } catch (err) {

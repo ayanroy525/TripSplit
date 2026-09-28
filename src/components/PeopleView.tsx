@@ -12,6 +12,7 @@ import { Trip, Member, UserAccount } from "../types";
 import { C } from "../utils/constants";
 import { money } from "../utils/calculations";
 import { Avatar, RoleBadge } from "./Atoms";
+import { getTripPermissions } from "../utils/permissions";
 
 interface PeopleViewProps {
   trip: Trip;
@@ -39,6 +40,8 @@ export function PeopleView({
   onOpenEditMember,
   onSendWhatsAppStatement,
 }: PeopleViewProps) {
+  const permissions = getTripPermissions(trip, currentUser, currentUserId);
+
   return (
     <div className="flex flex-col gap-4">
       {/* Top Header & Invite Button */}
@@ -52,15 +55,17 @@ export function PeopleView({
           </div>
         </div>
 
-        <button
-          id="btn-people-invite-friends"
-          type="button"
-          onClick={onOpenInviteModal}
-          className="px-3.5 py-2 text-xs font-semibold text-[var(--c-teal-contrast-text)] bg-teal-800 hover:bg-[var(--c-teal)] rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"
-        >
-          <UserPlus size={14} />
-          <span>Invite Members</span>
-        </button>
+        {permissions.canInviteMember && (
+          <button
+            id="btn-people-invite-friends"
+            type="button"
+            onClick={onOpenInviteModal}
+            className="px-3.5 py-2 text-xs font-semibold text-[var(--c-teal-contrast-text)] bg-teal-800 hover:bg-[var(--c-teal)] rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"
+          >
+            <UserPlus size={14} />
+            <span>Invite Members</span>
+          </button>
+        )}
       </div>
 
       {/* Member Cards List */}

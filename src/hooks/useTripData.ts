@@ -210,7 +210,7 @@ export function useTripData({ authUser, onNotify }: UseTripDataOptions) {
         );
       }
 
-      // 3. Name match (case-insensitive, e.g. "Ayan roy")
+      // 3. Name match (case-insensitive)
       if (!match && effectiveName) {
         match = trip.members.find(
           (m) => m.name && m.name.trim().toLowerCase() === effectiveName.trim().toLowerCase()
@@ -219,7 +219,7 @@ export function useTripData({ authUser, onNotify }: UseTripDataOptions) {
 
       // 4. Trip Owner fallback
       if (!match && trip.ownerId && (trip.ownerId === effectiveUid || (authUser?.id && trip.ownerId === authUser.id))) {
-        match = trip.members.find((m) => m.role === "owner");
+        match = trip.members.find((m) => m.role === "admin" || m.role === "owner");
       }
 
       if (match) {
@@ -234,7 +234,7 @@ export function useTripData({ authUser, onNotify }: UseTripDataOptions) {
       id: effectiveUid,
       userId: effectiveUid,
       name: effectiveName,
-      role: trip?.ownerId === effectiveUid ? ("owner" as const) : ("member" as const),
+      role: trip?.ownerId === effectiveUid ? ("admin" as const) : ("participant" as const),
       avatarColor: effectiveColor,
       phone: effectivePhone,
       joinedAt: new Date().toISOString(),

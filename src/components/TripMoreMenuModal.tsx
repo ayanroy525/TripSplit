@@ -16,6 +16,7 @@ import { Avatar } from "./Atoms";
 import { ThemeToggle } from "./ThemeToggle";
 import { useAuth } from "../context/AuthContext";
 import { PWAInstallButton } from "./PWAInstallButton";
+import { getRoleDisplayName } from "../utils/permissions";
 
 interface TripMoreMenuModalProps {
   isOpen: boolean;
@@ -349,7 +350,7 @@ export function TripMoreMenuModal({
                         textOverflow: "ellipsis",
                       }}
                     >
-                      {currentUser?.name} ({currentUser?.role || "member"})
+                      {currentUser?.name} ({getRoleDisplayName(currentUser?.role)})
                     </div>
                   </div>
                 </div>
