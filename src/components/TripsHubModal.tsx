@@ -212,13 +212,13 @@ export function TripsHubModal({
             onClick={() => setView("recent")}
             style={{
               flex: 1,
-              padding: "8px 12px",
+              padding: "8px 10px",
               borderRadius: 8,
               border: "none",
               background: view === "recent" ? C.card : "transparent",
               color: view === "recent" ? C.ink : C.inkSoft,
               fontWeight: 800,
-              fontSize: 13,
+              fontSize: 12.5,
               cursor: "pointer",
               display: "flex",
               alignItems: "center",
@@ -227,22 +227,52 @@ export function TripsHubModal({
               boxShadow: view === "recent" ? "0 2px 5px rgba(0,0,0,0.05)" : "none",
             }}
           >
-            <Compass size={16} color={view === "recent" ? C.marigoldDark : C.inkSoft} />
+            <Compass size={15} color={view === "recent" ? C.marigoldDark : C.inkSoft} />
             Recent Trips ({trips.length})
           </button>
+          {onOpenJoinModal && (
+            <button
+              id="tab-join-invite-trip"
+              type="button"
+              onClick={() => {
+                onClose();
+                onOpenJoinModal();
+              }}
+              style={{
+                flex: 1,
+                padding: "8px 10px",
+                borderRadius: 8,
+                border: "none",
+                background: "transparent",
+                color: C.marigoldDark,
+                fontWeight: 800,
+                fontSize: 12.5,
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 6,
+                transition: "opacity 0.15s ease",
+              }}
+              title="Join another trip using an invite code"
+            >
+              <KeyRound size={15} color={C.marigoldDark} />
+              Join with Code
+            </button>
+          )}
           <button
             id="tab-create-new-trip"
             type="button"
             onClick={() => setView("create")}
             style={{
               flex: 1,
-              padding: "8px 12px",
+              padding: "8px 10px",
               borderRadius: 8,
               border: "none",
               background: view === "create" ? C.card : "transparent",
               color: view === "create" ? C.teal : C.inkSoft,
               fontWeight: 800,
-              fontSize: 13,
+              fontSize: 12.5,
               cursor: "pointer",
               display: "flex",
               alignItems: "center",
@@ -251,8 +281,8 @@ export function TripsHubModal({
               boxShadow: view === "create" ? "0 2px 5px rgba(0,0,0,0.05)" : "none",
             }}
           >
-            <Plus size={16} color={view === "create" ? C.teal : C.inkSoft} />
-            + Create New Trip
+            <Plus size={15} color={view === "create" ? C.teal : C.inkSoft} />
+            + New Trip
           </button>
         </div>
 
@@ -278,24 +308,50 @@ export function TripsHubModal({
               >
                 Saved Trips
               </span>
-              <button
-                id="btn-quick-create-trip"
-                type="button"
-                onClick={() => setView("create")}
-                style={{
-                  background: "transparent",
-                  border: "none",
-                  color: C.teal,
-                  fontSize: 12,
-                  fontWeight: 700,
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 4,
-                }}
-              >
-                <Plus size={13} /> New Trip
-              </button>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                {onOpenJoinModal && (
+                  <button
+                    id="btn-quick-join-trip"
+                    type="button"
+                    onClick={() => {
+                      onClose();
+                      onOpenJoinModal();
+                    }}
+                    style={{
+                      background: "transparent",
+                      border: "none",
+                      color: C.marigoldDark,
+                      fontSize: 12,
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 4,
+                    }}
+                    title="Enter an invite code to join another trip"
+                  >
+                    <KeyRound size={12} color={C.marigoldDark} /> Join with Code
+                  </button>
+                )}
+                <button
+                  id="btn-quick-create-trip"
+                  type="button"
+                  onClick={() => setView("create")}
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    color: C.teal,
+                    fontSize: 12,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 4,
+                  }}
+                >
+                  <Plus size={13} /> New Trip
+                </button>
+              </div>
             </div>
 
             <div
@@ -626,6 +682,49 @@ export function TripsHubModal({
               })
             )}
             </div>
+
+            {trips.length > 0 && onOpenJoinModal && (
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "10px 14px",
+                  borderRadius: 10,
+                  background: C.paperDark,
+                  border: `1px dashed ${C.line}`,
+                  gap: 12,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <KeyRound size={16} color={C.marigoldDark} />
+                  <span style={{ fontSize: 12.5, color: C.ink, fontWeight: 600 }}>
+                    Have an invite code for another trip?
+                  </span>
+                </div>
+                <button
+                  id="btn-footer-join-trip"
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onOpenJoinModal();
+                  }}
+                  style={{
+                    background: C.card,
+                    border: `1px solid ${C.line}`,
+                    borderRadius: 6,
+                    padding: "5px 12px",
+                    color: C.marigoldDark,
+                    fontSize: 12,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  Join Trip
+                </button>
+              </div>
+            )}
           </div>
         )}
 
