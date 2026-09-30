@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { useAuth } from "../context/AuthContext";
 import { C, PRESET_AVATAR_PALETTE } from "../utils/constants";
 import { ThemeToggle } from "./ThemeToggle";
+import { ResetPasswordModal } from "./ResetPasswordModal";
 import {
   Compass,
   Mail,
@@ -31,7 +32,7 @@ interface LoginPageProps {
 }
 
 export function LoginPage({ onSuccess }: LoginPageProps) {
-  const { login, signup, continueAsGuest, sendPasswordReset, directResetPassword } = useAuth();
+  const { login, signup, continueAsGuest, sendPasswordReset } = useAuth();
 
   const [activeTab, setActiveTab] = useState<"login" | "signup" | "reset">("login");
   const [showPassword, setShowPassword] = useState(false);
@@ -44,9 +45,6 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
 
   // Reset password state
   const [resetEmail, setResetEmail] = useState("");
-  const [resetNewPassword, setResetNewPassword] = useState("");
-  const [resetConfirmPassword, setResetConfirmPassword] = useState("");
-  const [showResetPassword, setShowResetPassword] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
   const [resetSuccessMsg, setResetSuccessMsg] = useState<string | null>(null);
   const [resetErrorDetails, setResetErrorDetails] = useState<{
@@ -79,44 +77,6 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
     }
   };
 
-  const handleDirectPasswordReset = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError(null);
-    setResetSuccessMsg(null);
-    setResetErrorDetails(null);
-
-    const target = (resetEmail || loginEmail).trim();
-    if (!target) {
-      setError("Please enter your registered email address or phone number.");
-      return;
-    }
-    if (resetNewPassword.length < 6) {
-      setError("New password must be at least 6 characters long.");
-      return;
-    }
-    if (resetNewPassword !== resetConfirmPassword) {
-      setError("Passwords do not match.");
-      return;
-    }
-
-    setIsResetting(true);
-    try {
-      const res = await directResetPassword(target, resetNewPassword);
-      if (res.success) {
-        setResetSuccessMsg("Password successfully updated! Logging you in...");
-        setTimeout(() => {
-          if (onSuccess) onSuccess();
-        }, 500);
-      } else {
-        setError(res.error || "Unable to update password. Please check your details and try again.");
-      }
-    } catch (err: any) {
-      setError(err?.message || "An unexpected error occurred while updating password.");
-    } finally {
-      setIsResetting(false);
-    }
-  };
-
   const handleResetPasswordSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -125,7 +85,7 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
 
     const targetEmail = (resetEmail || loginEmail).trim();
     if (!targetEmail || !targetEmail.includes("@")) {
-      setError("Please enter a valid email address to receive the reset link.");
+      setError("Please enter a valid email address to receive the password reset link.");
       return;
     }
 
@@ -134,7 +94,7 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
       const res = await sendPasswordReset(targetEmail);
       if (res.success) {
         setResetSuccessMsg(
-          `Password reset link sent to ${targetEmail}! Please check your email inbox (and spam folder) to set a new password.`
+          `Password reset link sent to ${targetEmail}! Please check your email inbox (and spam folder) and follow the link to securely set a new password.`
         );
       } else {
         setError(res.error || "Unable to send password reset email. Please try again.");
@@ -145,7 +105,7 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
         });
       }
     } catch (err: any) {
-      setError(err.message || "An unexpected error occurred. Please try again.");
+      setError(err?.message || "An unexpected error occurred. Please try again.");
       setResetErrorDetails({
         code: err?.code || "exception",
         message: err?.message || String(err),
@@ -590,14 +550,14 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                     >
                       <span>Click here to Log In with your password &rarr;</span>
                     </button>
-                  ) : (
+                  ) : activeTab === "login" ? (
                     <button
                       type="button"
                       onClick={() => {
                         setActiveTab("reset");
                         setError(null);
                         setResetSuccessMsg(null);
-                        if (loginEmail) setResetEmail(loginEmail);
+                        if (loginEmail.includes("@")) setResetEmail(loginEmail);
                       }}
                       style={{
                         marginTop: 6,
@@ -614,9 +574,9 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                         gap: 4,
                       }}
                     >
-                      <span>Click here to set or reset your password instantly (zero email required) &rarr;</span>
+                      <span>Forgot your password? Click here to request a password reset link &rarr;</span>
                     </button>
-                  )}
+                  ) : null}
                 </div>
               </div>
             )}
@@ -794,9 +754,9 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
               </form>
             )}
 
-            {/* RESET PASSWORD FORM */}
+            {/* FORGOT / RESET PASSWORD FORM */}
             {activeTab === "reset" && (
-              <form onSubmit={handleDirectPasswordReset} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              <form onSubmit={handleResetPasswordSubmit} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
                 <div
                   style={{
                     background: "rgba(227, 154, 45, 0.08)",
@@ -825,10 +785,10 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                   </div>
                   <div>
                     <h4 style={{ margin: "0 0 4px 0", fontSize: 13.5, fontWeight: 800, color: C.ink }}>
-                      Set New Password (Instant)
+                      Reset Your Password
                     </h4>
                     <p style={{ margin: 0, fontSize: 12, color: C.inkSoft, lineHeight: 1.45 }}>
-                      Set your new password directly and log in immediately. No email verification or waiting for links required!
+                      Enter your registered email address and we'll send a secure password reset link to your inbox.
                     </p>
                   </div>
                 </div>
@@ -890,7 +850,7 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                       marginBottom: 6,
                     }}
                   >
-                    Registered Email or Phone Number
+                    Registered Email Address
                   </label>
                   <div style={{ position: "relative" }}>
                     <Mail
@@ -900,112 +860,14 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                     />
                     <input
                       id="input-reset-email"
-                      type="text"
+                      type="email"
                       required
                       value={resetEmail}
                       onChange={(e) => setResetEmail(e.target.value)}
-                      placeholder="Enter registered email or phone number"
+                      placeholder="e.g. yourname@gmail.com"
                       style={{
                         width: "100%",
                         padding: "11px 14px 11px 40px",
-                        borderRadius: 10,
-                        border: `1.5px solid ${C.line}`,
-                        background: C.inputBg,
-                        color: C.ink,
-                        fontSize: 13.5,
-                        fontWeight: 600,
-                        outline: "none",
-                        boxSizing: "border-box",
-                      }}
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label
-                    style={{
-                      display: "block",
-                      fontSize: 12.5,
-                      fontWeight: 800,
-                      color: C.ink,
-                      marginBottom: 6,
-                    }}
-                  >
-                    New Password
-                  </label>
-                  <div style={{ position: "relative" }}>
-                    <Lock
-                      size={16}
-                      color={C.inkSoft}
-                      style={{ position: "absolute", left: 14, top: 13, pointerEvents: "none" }}
-                    />
-                    <input
-                      id="input-reset-new-password"
-                      type={showResetPassword ? "text" : "password"}
-                      required
-                      value={resetNewPassword}
-                      onChange={(e) => setResetNewPassword(e.target.value)}
-                      placeholder="Minimum 6 characters"
-                      style={{
-                        width: "100%",
-                        padding: "11px 40px 11px 40px",
-                        borderRadius: 10,
-                        border: `1.5px solid ${C.line}`,
-                        background: C.inputBg,
-                        color: C.ink,
-                        fontSize: 13.5,
-                        fontWeight: 600,
-                        outline: "none",
-                        boxSizing: "border-box",
-                      }}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowResetPassword(!showResetPassword)}
-                      style={{
-                        position: "absolute",
-                        right: 12,
-                        top: 11,
-                        background: "none",
-                        border: "none",
-                        color: C.inkSoft,
-                        cursor: "pointer",
-                        padding: 2,
-                      }}
-                    >
-                      {showResetPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-                    </button>
-                  </div>
-                </div>
-
-                <div>
-                  <label
-                    style={{
-                      display: "block",
-                      fontSize: 12.5,
-                      fontWeight: 800,
-                      color: C.ink,
-                      marginBottom: 6,
-                    }}
-                  >
-                    Confirm New Password
-                  </label>
-                  <div style={{ position: "relative" }}>
-                    <Lock
-                      size={16}
-                      color={C.inkSoft}
-                      style={{ position: "absolute", left: 14, top: 13, pointerEvents: "none" }}
-                    />
-                    <input
-                      id="input-reset-confirm-password"
-                      type={showResetPassword ? "text" : "password"}
-                      required
-                      value={resetConfirmPassword}
-                      onChange={(e) => setResetConfirmPassword(e.target.value)}
-                      placeholder="Re-enter your new password"
-                      style={{
-                        width: "100%",
-                        padding: "11px 40px 11px 40px",
                         borderRadius: 10,
                         border: `1.5px solid ${C.line}`,
                         background: C.inputBg,
@@ -1041,8 +903,8 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                     opacity: isResetting ? 0.7 : 1,
                   }}
                 >
-                  {isResetting ? <Loader2 size={16} className="animate-spin" /> : <KeyRound size={16} />}
-                  <span>{isResetting ? "Updating Password..." : "Save New Password & Log In Instantly"}</span>
+                  {isResetting ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+                  <span>{isResetting ? "Sending Reset Link..." : "Send Password Reset Link"}</span>
                 </button>
 
                 <div style={{ display: "flex", gap: 10 }}>
@@ -1072,24 +934,6 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                   >
                     <ArrowLeft size={15} />
                     <span>Back to Log In</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={handleResetPasswordSubmit}
-                    disabled={isResetting}
-                    style={{
-                      background: "none",
-                      border: "none",
-                      color: C.inkSoft,
-                      fontSize: 11.5,
-                      fontWeight: 600,
-                      cursor: "pointer",
-                      textDecoration: "underline",
-                      padding: "0 4px",
-                    }}
-                  >
-                    Or send email link
                   </button>
                 </div>
               </form>
@@ -1412,6 +1256,9 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
         <span>•</span>
         <span>Version 2.4</span>
       </footer>
+
+      {/* Password Recovery Modal */}
+      <ResetPasswordModal />
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import confetti from "canvas-confetti";
+import { isValidWhatsAppPhone } from "../utils/whatsappNotifications";
 import {
   Trip,
   Member,
@@ -474,10 +475,13 @@ export function useTripActions({
       `• *Net Balance*: ${statusText}\n\n` +
       `Track full details on SplitTrip!`;
 
+    const hasValidPhone = member.phone ? isValidWhatsAppPhone(member.phone) : false;
+    const cleanPhone = hasValidPhone ? member.phone!.trim() : undefined;
+
     return {
       title: `Send Statement to ${member.name}`,
       messageText: message,
-      targetPhone: member.phone,
+      targetPhone: cleanPhone,
       targetMemberIds: [member.id],
       eventType: "reminder",
     };
@@ -488,11 +492,13 @@ export function useTripActions({
     amount: number
   ): WhatsAppNotificationPayload | null => {
     if (!trip) return null;
+    const hasValidPhone = debtor.phone ? isValidWhatsAppPhone(debtor.phone) : false;
+    const cleanPhone = hasValidPhone ? debtor.phone!.trim() : undefined;
     const msg = `Hi ${debtor.name}, a friendly reminder regarding our *${trip.title}* trip expenses: you have an outstanding balance of *${money(amount, trip.currency)}*.`;
     return {
       title: `Send Reminder to ${debtor.name}`,
       messageText: msg,
-      targetPhone: debtor.phone,
+      targetPhone: cleanPhone,
       targetMemberIds: [debtor.id],
       eventType: "reminder",
     };

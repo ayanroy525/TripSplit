@@ -174,6 +174,22 @@ export async function getTripFromDatabase(tripId: string): Promise<Trip | null> 
       .maybeSingle();
 
     if (tripErr || !tripRow) {
+      try {
+        const apiRes = await fetch(`/api/trips/${encodeURIComponent(tripId)}`);
+        if (apiRes.ok) {
+          const apiData = await apiRes.json();
+          if (apiData.success && apiData.trip) {
+            const t = apiData.trip;
+            return mapTripRowToTrip(
+              t,
+              (t.members || []).map(mapMemberRowToMember),
+              (t.expenses || []).map(mapExpenseRowToExpense),
+              (t.payments || []).map(mapPaymentRowToPayment),
+              (t.activities || []).map(mapActivityRowToActivity)
+            );
+          }
+        }
+      } catch (e) {}
       return null;
     }
 
@@ -192,6 +208,22 @@ export async function getTripFromDatabase(tripId: string): Promise<Trip | null> 
     return mapTripRowToTrip(tripRow, members, expenses, payments, activities);
   } catch (err) {
     console.error("Error loading trip from Supabase:", err);
+    try {
+      const apiRes = await fetch(`/api/trips/${encodeURIComponent(tripId)}`);
+      if (apiRes.ok) {
+        const apiData = await apiRes.json();
+        if (apiData.success && apiData.trip) {
+          const t = apiData.trip;
+          return mapTripRowToTrip(
+            t,
+            (t.members || []).map(mapMemberRowToMember),
+            (t.expenses || []).map(mapExpenseRowToExpense),
+            (t.payments || []).map(mapPaymentRowToPayment),
+            (t.activities || []).map(mapActivityRowToActivity)
+          );
+        }
+      }
+    } catch (e) {}
     return null;
   }
 }
@@ -471,9 +503,51 @@ export function subscribeToUserTrips(
         if (trip) fullTrips.push(trip);
       }
 
-      onTripsUpdate(fullTrips);
+      if (fullTrips.length > 0) {
+        onTripsUpdate(fullTrips);
+      } else {
+        // Direct database API fallback
+        try {
+          const apiRes = await fetch(`/api/user-trips?userId=${encodeURIComponent(userId)}`);
+          if (apiRes.ok) {
+            const apiData = await apiRes.json();
+            if (apiData.success && Array.isArray(apiData.trips)) {
+              const mapped = apiData.trips.map((t: any) =>
+                mapTripRowToTrip(
+                  t,
+                  (t.members || []).map(mapMemberRowToMember),
+                  (t.expenses || []).map(mapExpenseRowToExpense),
+                  (t.payments || []).map(mapPaymentRowToPayment),
+                  (t.activities || []).map(mapActivityRowToActivity)
+                )
+              );
+              onTripsUpdate(mapped);
+              return;
+            }
+          }
+        } catch (e) {}
+        onTripsUpdate([]);
+      }
     } catch (err) {
-      console.warn("Error fetching user trips from Supabase:", err);
+      console.warn("Error fetching user trips from Supabase, attempting API fallback:", err);
+      try {
+        const apiRes = await fetch(`/api/user-trips?userId=${encodeURIComponent(userId)}`);
+        if (apiRes.ok) {
+          const apiData = await apiRes.json();
+          if (apiData.success && Array.isArray(apiData.trips)) {
+            const mapped = apiData.trips.map((t: any) =>
+              mapTripRowToTrip(
+                t,
+                (t.members || []).map(mapMemberRowToMember),
+                (t.expenses || []).map(mapExpenseRowToExpense),
+                (t.payments || []).map(mapPaymentRowToPayment),
+                (t.activities || []).map(mapActivityRowToActivity)
+              )
+            );
+            onTripsUpdate(mapped);
+          }
+        }
+      } catch (e) {}
     }
   };
 

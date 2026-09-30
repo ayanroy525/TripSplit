@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import {
   Trip,
   Member,
@@ -28,6 +28,16 @@ export function useTripData({ authUser, onNotify }: UseTripDataOptions) {
   const [currentUserId, setCurrentUserId] = useState<string>(() => authUser?.id || "");
   const [initialJoinCode, setInitialJoinCode] = useState<string>("");
   const [autoOpenJoinModal, setAutoOpenJoinModal] = useState<boolean>(false);
+
+  // Keep refs to the latest trips array and callbacks so listeners never capture stale closures
+  const tripsRef = useRef<Trip[]>(trips);
+  tripsRef.current = trips;
+  useEffect(() => {
+    tripsRef.current = trips;
+  }, [trips]);
+
+  const onNotifyRef = useRef(onNotify);
+  onNotifyRef.current = onNotify;
 
   // Keep currentUserId in sync with authUser.id
   useEffect(() => {
@@ -103,8 +113,8 @@ export function useTripData({ authUser, onNotify }: UseTripDataOptions) {
           setActiveTripId(requestedTripId);
         } else if (currentAuthorizedTrips.length > 0) {
           window.history.replaceState(null, "", window.location.pathname);
-          if (onNotify) {
-            onNotify({
+          if (onNotifyRef.current) {
+            onNotifyRef.current({
               tripId: "system",
               tripTitle: "Trip Access",
               type: "system",
@@ -124,6 +134,7 @@ export function useTripData({ authUser, onNotify }: UseTripDataOptions) {
       effectiveUid,
       (userTrips) => {
         if (!isMounted) return;
+        tripsRef.current = userTrips;
         setTrips(userTrips);
 
         setActiveTripId((prev) => {
@@ -143,7 +154,7 @@ export function useTripData({ authUser, onNotify }: UseTripDataOptions) {
     );
 
     const onHashChange = () => {
-      handleUrlRouting(trips);
+      handleUrlRouting(tripsRef.current);
     };
     window.addEventListener("hashchange", onHashChange);
     window.addEventListener("popstate", onHashChange);

@@ -37,7 +37,7 @@ export function WhatsAppNotificationModal({
   onClose,
 }: WhatsAppNotificationModalProps) {
   const [activeMode, setActiveMode] = useState<"group" | "individual">(
-    payload.targetMemberIds?.length === 1 ? "individual" : "group"
+    payload.targetMemberIds?.length === 1 && payload.targetPhone ? "individual" : "group"
   );
   const [copiedGroup, setCopiedGroup] = useState(false);
   const [copiedIndividual, setCopiedIndividual] = useState(false);
@@ -98,7 +98,7 @@ export function WhatsAppNotificationModal({
   };
 
   const handleSendToIndividual = (m: Member) => {
-    if (!m.phone) return;
+    if (!m.phone || !isValidWhatsAppPhone(m.phone)) return;
     const msg = getIndividualMessage(m);
     const url = getWhatsAppDirectLink(m.phone, msg);
     window.open(url, "_blank", "noopener,noreferrer");

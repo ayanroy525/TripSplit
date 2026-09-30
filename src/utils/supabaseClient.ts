@@ -8,10 +8,31 @@ const supabaseUrl =
   metaEnv.NEXT_PUBLIC_SUPABASE_URL ||
   "https://ryamchjjwoaimwrmurry.supabase.co";
 
-const supabaseAnonKey =
-  metaEnv.VITE_SUPABASE_ANON_KEY ||
-  metaEnv.SUPABASE_ANON_KEY ||
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ5YW1jaGpqd29haW13cm11cnJ5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAwMTIwOTYsImV4cCI6MjEwNTU4ODA5Nn0.6r-qcinkytxEzCxb4jhRjXNZ0-g4_YTKdsnhUG3De6A";
+function getValidAnonKey(): string {
+  const defaultAnonKey =
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ5YW1jaGpqd29haW13cm11cnJ5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAwMTIwOTYsImV4cCI6MjEwNTU4ODA5Nn0.6r-qcinkytxEzCxb4jhRjXNZ0-g4_YTKdsnhUG3De6A";
+
+  const candidates = [
+    metaEnv.VITE_SUPABASE_PUBLISHABLE_KEY,
+    metaEnv.SUPABASE_PUBLISHABLE_KEY,
+    metaEnv.VITE_SUPABASE_ANON_KEY,
+    metaEnv.SUPABASE_ANON_KEY,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      const cleanKey = candidate.trim().replace(/^["']|["']$/g, "");
+      // Discard secret / service_role keys that cause "Forbidden use of secret API key in browser"
+      if (!cleanKey.startsWith("sb_secret_") && !cleanKey.toLowerCase().includes("secret")) {
+        return cleanKey;
+      }
+    }
+  }
+
+  return defaultAnonKey;
+}
+
+const supabaseAnonKey = getValidAnonKey();
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
