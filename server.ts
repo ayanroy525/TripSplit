@@ -409,16 +409,23 @@ app.get("/api/trips/:tripId", async (req, res) => {
   }
 });
 
+// Audit PDF Download Endpoint
+app.get("/api/download-audit-pdf", (_req, res) => {
+  const filePath = path.resolve(__dirname, "public", "Spliito_Application_Review.pdf");
+  res.download(filePath, "Spliito_Application_Review.pdf");
+});
+
 // Vite Middleware for Development / Static serving for Production
 async function setupServer() {
   if (process.env.NODE_ENV !== "production") {
     const fs = await import("fs");
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
+      root: __dirname,
       server: {
         middlewareMode: true,
-        hmr: process.env.DISABLE_HMR !== "true",
-        watch: process.env.DISABLE_HMR === "true" ? null : {},
+        hmr: false,
+        watch: null,
       },
       appType: "custom",
     });
@@ -429,6 +436,8 @@ async function setupServer() {
       try {
         let template = fs.readFileSync(path.resolve(__dirname, "index.html"), "utf-8");
         template = await vite.transformIndexHtml(url, template);
+        const filterTag = `<script>(function(){var _e=console.error;console.error=function(){if(arguments[0]&&typeof arguments[0]==='string'&&(arguments[0].indexOf('[vite]')!==-1||arguments[0].indexOf('websocket')!==-1||arguments[0].indexOf('WebSocket')!==-1))return;return _e.apply(console,arguments);};})();</script>`;
+        template = template.replace("<head>", `<head>\n    ${filterTag}`);
         res.status(200).set({ "Content-Type": "text/html" }).end(template);
       } catch (e: any) {
         vite.ssrFixStacktrace(e);

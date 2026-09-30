@@ -15,7 +15,6 @@ import { Trip, Member, UserAccount } from "../types";
 import { Avatar } from "./Atoms";
 import { ThemeToggle } from "./ThemeToggle";
 import { useAuth } from "../context/AuthContext";
-import { PWAInstallButton } from "./PWAInstallButton";
 import { getRoleDisplayName } from "../utils/permissions";
 
 interface TripMoreMenuModalProps {
@@ -852,17 +851,18 @@ export function TripMoreMenuModal({
                 background: "var(--c-card, #FFFFFF)",
                 border: "1px solid var(--c-line, #E5E7EB)",
                 borderRadius: 16,
-                overflow: "hidden",
+                overflow: "visible",
               }}
             >
-              {/* Row 1: App Theme */}
+              {/* App Theme */}
               <div
                 style={{
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "space-between",
                   padding: "14px 16px",
-                  borderBottom: "1px solid var(--c-line, #E5E7EB)",
+                  gap: 12,
+                  flexWrap: "wrap",
                 }}
               >
                 <div>
@@ -885,16 +885,7 @@ export function TripMoreMenuModal({
                   </div>
                 </div>
 
-                <ThemeToggle />
-              </div>
-
-              {/* Row 2: Offline & Home Screen Install */}
-              <div
-                style={{
-                  padding: "12px 16px",
-                }}
-              >
-                <PWAInstallButton variant="menu-item" />
+                <ThemeToggle variant="segmented" />
               </div>
             </div>
           </div>

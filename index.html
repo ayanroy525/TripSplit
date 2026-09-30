@@ -1,6 +1,20 @@
 <!doctype html>
 <html lang="en">
   <head>
+    <script>
+      (function() {
+        var _e = console.error;
+        console.error = function() {
+          if (arguments[0] && typeof arguments[0] === 'string' && (arguments[0].indexOf('[vite]') !== -1 || arguments[0].indexOf('websocket') !== -1 || arguments[0].indexOf('WebSocket') !== -1)) return;
+          return _e.apply(console, arguments);
+        };
+        var _w = console.warn;
+        console.warn = function() {
+          if (arguments[0] && typeof arguments[0] === 'string' && (arguments[0].indexOf('[vite]') !== -1 || arguments[0].indexOf('websocket') !== -1 || arguments[0].indexOf('WebSocket') !== -1)) return;
+          return _w.apply(console, arguments);
+        };
+      })();
+    </script>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Trip Expense Splitter</title>
