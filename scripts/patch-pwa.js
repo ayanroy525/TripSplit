@@ -44,3 +44,10 @@ if (fs.existsSync(targetFile)) {
     console.log("vite-plugin-pwa successfully patched for Node 22 ESM compatibility.");
   }
 }
+
+try {
+  const { patchViteClient } = await import("./patch-vite-client.js");
+  patchViteClient();
+} catch (e) {
+  console.warn("Failed to patch vite client:", e);
+}

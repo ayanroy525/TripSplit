@@ -3,6 +3,29 @@
   <head>
     <script>
       (function() {
+        if (typeof window !== 'undefined' && window.WebSocket) {
+          var OrigWS = window.WebSocket;
+          var DummyWS = function(u, p) {
+            if (p === 'vite-hmr' || (typeof u === 'string' && (u.indexOf('24678') !== -1 || u.indexOf('token=') !== -1))) {
+              var t = new EventTarget();
+              t.readyState = 1;
+              t.url = u;
+              t.protocol = 'vite-hmr';
+              t.send = function() {};
+              t.close = function() {};
+              setTimeout(function() {
+                var ev = new Event('open');
+                t.dispatchEvent(ev);
+                if (typeof t.onopen === 'function') t.onopen(ev);
+              }, 10);
+              return t;
+            }
+            return new OrigWS(u, p);
+          };
+          DummyWS.prototype = OrigWS.prototype;
+          DummyWS.CONNECTING = 0; DummyWS.OPEN = 1; DummyWS.CLOSING = 2; DummyWS.CLOSED = 3;
+          window.WebSocket = DummyWS;
+        }
         var _e = console.error;
         console.error = function() {
           if (arguments[0] && typeof arguments[0] === 'string' && (arguments[0].indexOf('[vite]') !== -1 || arguments[0].indexOf('websocket') !== -1 || arguments[0].indexOf('WebSocket') !== -1)) return;
@@ -13,6 +36,12 @@
           if (arguments[0] && typeof arguments[0] === 'string' && (arguments[0].indexOf('[vite]') !== -1 || arguments[0].indexOf('websocket') !== -1 || arguments[0].indexOf('WebSocket') !== -1)) return;
           return _w.apply(console, arguments);
         };
+        window.addEventListener('unhandledrejection', function(e) {
+          if (e.reason && (typeof e.reason === 'string' || e.reason.message) && (String(e.reason.message || e.reason).indexOf('[vite]') !== -1 || String(e.reason.message || e.reason).indexOf('WebSocket') !== -1)) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+          }
+        });
       })();
     </script>
     <meta charset="UTF-8" />

@@ -1,17 +1,18 @@
 import { createClient } from "@supabase/supabase-js";
 import { Trip, Member, Expense, Payment, Activity, UserAccount } from "../types";
 
-const metaEnv = (import.meta as any).env || {};
+const metaEnv: Record<string, any> = {
+  ...(typeof process !== "undefined" && process.env ? process.env : {}),
+  ...((import.meta as any).env || {}),
+};
 
-const supabaseUrl =
+const supabaseUrl: string =
   metaEnv.VITE_SUPABASE_URL ||
   metaEnv.NEXT_PUBLIC_SUPABASE_URL ||
-  "https://ryamchjjwoaimwrmurry.supabase.co";
+  metaEnv.SUPABASE_URL ||
+  "https://placeholder-project.supabase.co";
 
 function getValidAnonKey(): string {
-  const defaultAnonKey =
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ5YW1jaGpqd29haW13cm11cnJ5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAwMTIwOTYsImV4cCI6MjEwNTU4ODA5Nn0.6r-qcinkytxEzCxb4jhRjXNZ0-g4_YTKdsnhUG3De6A";
-
   const candidates = [
     metaEnv.VITE_SUPABASE_PUBLISHABLE_KEY,
     metaEnv.SUPABASE_PUBLISHABLE_KEY,
@@ -21,7 +22,19 @@ function getValidAnonKey(): string {
 
   for (const candidate of candidates) {
     if (typeof candidate === "string" && candidate.trim()) {
-      const cleanKey = candidate.trim().replace(/^["']|["']$/g, "");
+      let cleanKey = candidate.trim().replace(/^["']|["']$/g, "");
+      // Handle malformed compound env strings containing multiple assignments
+      if (cleanKey.includes('"') || cleanKey.includes(" ") || cleanKey.includes("=")) {
+        const tokens = cleanKey.split(/[\s"'=]+/);
+        for (const token of tokens) {
+          if (token.startsWith("sb_publishable_")) {
+            return token;
+          }
+          if (token.startsWith("eyJ") && token.split(".").length === 3) {
+            return token;
+          }
+        }
+      }
       // Discard secret / service_role keys that cause "Forbidden use of secret API key in browser"
       if (!cleanKey.startsWith("sb_secret_") && !cleanKey.toLowerCase().includes("secret")) {
         return cleanKey;
@@ -29,7 +42,8 @@ function getValidAnonKey(): string {
     }
   }
 
-  return defaultAnonKey;
+  // Safe dummy anon token placeholder if unconfigured (does not grant any access)
+  return "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.placeholder_anon_key";
 }
 
 const supabaseAnonKey = getValidAnonKey();

@@ -76,10 +76,16 @@ async function syncUserProfileToDatabase(user: any, extraProfile?: Partial<UserA
   }
 }
 
+const CLIENT_PASSWORD_SALT =
+  (import.meta as any).env?.VITE_PASSWORD_SALT ||
+  (import.meta as any).env?.PASSWORD_SALT ||
+  "";
+
 async function hashPassword(password: string): Promise<string> {
   try {
+    const salt = CLIENT_PASSWORD_SALT || "_tripsplit_salt_v1";
     const encoder = new TextEncoder();
-    const data = encoder.encode(password + "_tripsplit_salt_v1");
+    const data = encoder.encode(password + salt);
     const hashBuffer = await crypto.subtle.digest("SHA-256", data);
     const hashArray = Array.from(new Uint8Array(hashBuffer));
     return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -111,7 +117,20 @@ async function verifyPasswordMatch(
     return true;
   }
 
-  // 2. Unsalted SHA-256
+  // 2. Legacy salted SHA-256 for backward compatibility with previously created accounts
+  try {
+    const encoder = new TextEncoder();
+    const legacyData = encoder.encode(inputPassword + "_tripsplit_salt_v1");
+    const hashBuffer = await crypto.subtle.digest("SHA-256", legacyData);
+    const legacyHex = Array.from(new Uint8Array(hashBuffer))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    if (storedHashOrPassword === legacyHex) {
+      return true;
+    }
+  } catch (e) {}
+
+  // 3. Unsalted SHA-256
   try {
     const encoder = new TextEncoder();
     const unsaltedBuffer = await crypto.subtle.digest("SHA-256", encoder.encode(inputPassword));
@@ -123,7 +142,7 @@ async function verifyPasswordMatch(
     }
   } catch (e) {}
 
-  // 3. Fallback string hash (fb_...)
+  // 4. Fallback string hash (fb_...)
   let simpleHash = 0;
   for (let i = 0; i < inputPassword.length; i++) {
     simpleHash = ((simpleHash << 5) - simpleHash + inputPassword.charCodeAt(i)) | 0;
@@ -139,6 +158,14 @@ const LOCAL_CREDENTIALS_KEY = "trip_splitter_user_credentials_v1";
 const ACTIVE_USER_KEY = "trip_expense_splitter_active_user_v1";
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
+  // One-time security purge of any legacy credentials / passwords in localStorage
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.removeItem(LOCAL_CREDENTIALS_KEY);
+      } catch {}
+    }
+  }, []);
   const [token, setTokenState] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(() => {
     if (typeof window !== "undefined") {
@@ -292,15 +319,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           persistUser(userAccount);
           setAccounts((prev) => [userAccount, ...prev.filter((a) => a.id !== userAccount.id)]);
 
-          try {
-            if (typeof window !== "undefined") {
-              const creds = JSON.parse(localStorage.getItem(LOCAL_CREDENTIALS_KEY) || "{}");
-              creds[trimmedInput] = { password, account: userAccount };
-              if (userAccount.email) creds[userAccount.email.toLowerCase()] = { password, account: userAccount };
-              localStorage.setItem(LOCAL_CREDENTIALS_KEY, JSON.stringify(creds));
-            }
-          } catch (e) {}
-
           // Try Supabase auth in background if available
           if (trimmedInput.includes("@")) {
             supabase.auth.signInWithPassword({ email: trimmedInput, password }).catch(() => {});
@@ -353,14 +371,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           const userAccount = buildUserFromSupabase(authData.user, extraProfile);
           persistUser(userAccount);
           setAccounts((prev) => [userAccount, ...prev.filter((a) => a.id !== userAccount.id)]);
-
-          try {
-            if (typeof window !== "undefined") {
-              const creds = JSON.parse(localStorage.getItem(LOCAL_CREDENTIALS_KEY) || "{}");
-              creds[trimmedInput] = { password, account: userAccount };
-              localStorage.setItem(LOCAL_CREDENTIALS_KEY, JSON.stringify(creds));
-            }
-          } catch (e) {}
 
           return { success: true, user: userAccount };
         } else if (authError) {
@@ -435,15 +445,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         persistUser(userAccount);
         setAccounts((prev) => [userAccount, ...prev.filter((a) => a.id !== userAccount.id)]);
 
-        try {
-          if (typeof window !== "undefined") {
-            const creds = JSON.parse(localStorage.getItem(LOCAL_CREDENTIALS_KEY) || "{}");
-            creds[trimmedInput] = { password, account: userAccount };
-            if (foundDbUser.email) creds[foundDbUser.email.toLowerCase()] = { password, account: userAccount };
-            localStorage.setItem(LOCAL_CREDENTIALS_KEY, JSON.stringify(creds));
-          }
-        } catch (e) {}
-
         return { success: true, user: userAccount };
       } else {
         return {
@@ -500,55 +501,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       console.warn("Notice querying members table:", e);
     }
 
-    // 4. Fallback check in local credentials store (supports both email and phone lookup)
+    // 4. Fallback check active user / user storage from previous app versions
     try {
       if (typeof window !== "undefined") {
-        const creds = JSON.parse(localStorage.getItem(LOCAL_CREDENTIALS_KEY) || "{}");
-        let matchedRecord: any = null;
-
-        // Try direct key match
-        if (creds[trimmedInput]) {
-          matchedRecord = creds[trimmedInput];
-        } else {
-          // Scan records for matching email or phone
-          for (const key of Object.keys(creds)) {
-            const record = creds[key];
-            if (!record) continue;
-            const recEmail = (record.account?.email || key || "").toLowerCase();
-            const recPhone = (record.account?.phone || "").replace(/\D/g, "");
-
-            if (recEmail === trimmedInput) {
-              matchedRecord = record;
-              break;
-            }
-            if (cleanDigits.length >= 7 && recPhone) {
-              if (recPhone.endsWith(cleanDigits) || cleanDigits.endsWith(recPhone)) {
-                matchedRecord = record;
-                break;
-              }
-            }
-          }
-        }
-
-        if (matchedRecord) {
-          const isPassValid = await verifyPasswordMatch(
-            password,
-            matchedRecord.password || matchedRecord.passwordHash
-          );
-          if (isPassValid) {
-            const userAcc = matchedRecord.account;
-            persistUser(userAcc);
-            setAccounts((prev) => [userAcc, ...prev.filter((a) => a.id !== userAcc.id)]);
-            return { success: true, user: userAcc };
-          } else {
-            return {
-              success: false,
-              error: "Incorrect password. Please verify your credentials or click 'Forgot Password?' to reset your password.",
-            };
-          }
-        }
-
-        // 5. Fallback check active user / user storage from previous app versions
         const previousStoredKeys = [
           ACTIVE_USER_KEY,
           "trip_expense_splitter_auth_user_v3",
@@ -648,19 +603,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       console.warn("Notice checking existing users during signup:", e);
     }
 
-    // Check local credentials store for existing email
-    try {
-      if (typeof window !== "undefined") {
-        const creds = JSON.parse(localStorage.getItem(LOCAL_CREDENTIALS_KEY) || "{}");
-        if (creds[trimmedEmail]) {
-          return {
-            success: false,
-            error: "An account with this email already exists. Please log in with your password.",
-          };
-        }
-      }
-    } catch (e) {}
-
     const hashedPassword = await hashPassword(accountData.password);
     let supabaseUserId: string | null = null;
     let supabaseSessionToken: string | null = null;
@@ -751,18 +693,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (supabaseSessionToken) {
       setTokenState(supabaseSessionToken);
     }
-
-    // Persist credentials locally
-    try {
-      if (typeof window !== "undefined") {
-        const creds = JSON.parse(localStorage.getItem(LOCAL_CREDENTIALS_KEY) || "{}");
-        creds[trimmedEmail] = {
-          password: accountData.password,
-          account: newAccount,
-        };
-        localStorage.setItem(LOCAL_CREDENTIALS_KEY, JSON.stringify(creds));
-      }
-    } catch (e) {}
 
     // Persist active session and update state
     persistUser(newAccount);

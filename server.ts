@@ -1,3 +1,4 @@
+process.env.DISABLE_HMR = "true";
 import express from "express";
 import dotenv from "dotenv";
 import path from "path";
@@ -25,17 +26,26 @@ const pool = rawConn
     })
   : null;
 
+const PASSWORD_SALT = process.env.PASSWORD_SALT || process.env.AUTH_SECRET || "";
+
 function hashPasswordNode(password: string): string {
-  return crypto.createHash("sha256").update(password + "_tripsplit_salt_v1").digest("hex");
+  const salt = PASSWORD_SALT || "_tripsplit_salt_v1";
+  return crypto.createHash("sha256").update(password + salt).digest("hex");
 }
 
 function verifyPasswordMatchNode(inputPassword: string, storedHashOrPassword?: string | null): boolean {
   if (!storedHashOrPassword || storedHashOrPassword.trim() === "") return true;
   if (storedHashOrPassword === inputPassword || storedHashOrPassword.trim() === inputPassword.trim()) return true;
 
-  // Salted SHA-256
-  const salted = crypto.createHash("sha256").update(inputPassword + "_tripsplit_salt_v1").digest("hex");
-  if (storedHashOrPassword === salted) return true;
+  // Salted with configurable env var PASSWORD_SALT
+  if (PASSWORD_SALT) {
+    const envSalted = crypto.createHash("sha256").update(inputPassword + PASSWORD_SALT).digest("hex");
+    if (storedHashOrPassword === envSalted) return true;
+  }
+
+  // Salted SHA-256 (supports legacy salted hashes for backwards compatibility with existing DB accounts)
+  const legacySalted = crypto.createHash("sha256").update(inputPassword + "_tripsplit_salt_v1").digest("hex");
+  if (storedHashOrPassword === legacySalted) return true;
 
   // Unsalted SHA-256
   const unsalted = crypto.createHash("sha256").update(inputPassword).digest("hex");
@@ -54,6 +64,49 @@ function verifyPasswordMatchNode(inputPassword: string, storedHashOrPassword?: s
 // Health check endpoint
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
+});
+
+// Database health and statistics endpoint
+app.get("/api/db/status", async (_req, res) => {
+  if (!pool) {
+    return res.status(503).json({ connected: false, error: "Database pool not initialized" });
+  }
+
+  const start = Date.now();
+  try {
+    const verRes = await pool.query("SELECT version();");
+    const latencyMs = Date.now() - start;
+
+    const tablesRes = await pool.query(`
+      SELECT table_name 
+      FROM information_schema.tables 
+      WHERE table_schema = 'public' 
+      ORDER BY table_name;
+    `);
+
+    const tableCounts: Record<string, number> = {};
+    for (const row of tablesRes.rows) {
+      try {
+        const countRes = await pool.query(`SELECT COUNT(*) FROM "${row.table_name}";`);
+        tableCounts[row.table_name] = parseInt(countRes.rows[0].count, 10);
+      } catch {
+        tableCounts[row.table_name] = -1;
+      }
+    }
+
+    return res.json({
+      connected: true,
+      latencyMs,
+      version: verRes.rows[0]?.version,
+      tables: tableCounts,
+      checkedAt: new Date().toISOString(),
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      connected: false,
+      error: err?.message || "Unknown database error",
+    });
+  }
 });
 
 // Authentication: Login Endpoint
@@ -418,6 +471,10 @@ app.get("/api/download-audit-pdf", (_req, res) => {
 // Vite Middleware for Development / Static serving for Production
 async function setupServer() {
   if (process.env.NODE_ENV !== "production") {
+    try {
+      const { patchViteClient } = await import("./scripts/patch-vite-client.js");
+      patchViteClient();
+    } catch {}
     const fs = await import("fs");
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
@@ -425,6 +482,7 @@ async function setupServer() {
       server: {
         middlewareMode: true,
         hmr: false,
+        ws: false,
         watch: null,
       },
       appType: "custom",
@@ -436,7 +494,49 @@ async function setupServer() {
       try {
         let template = fs.readFileSync(path.resolve(__dirname, "index.html"), "utf-8");
         template = await vite.transformIndexHtml(url, template);
-        const filterTag = `<script>(function(){var _e=console.error;console.error=function(){if(arguments[0]&&typeof arguments[0]==='string'&&(arguments[0].indexOf('[vite]')!==-1||arguments[0].indexOf('websocket')!==-1||arguments[0].indexOf('WebSocket')!==-1))return;return _e.apply(console,arguments);};})();</script>`;
+        const filterTag = `<script>
+(function(){
+  if(typeof window!=='undefined'&&window.WebSocket){
+    var OrigWS=window.WebSocket;
+    var DummyWS=function(u,p){
+      if(p==='vite-hmr'||(typeof u==='string'&&(u.indexOf('24678')!==-1||u.indexOf('token=')!==-1))){
+        var t=new EventTarget();
+        t.readyState=1;
+        t.url=u;
+        t.protocol='vite-hmr';
+        t.send=function(){};
+        t.close=function(){};
+        setTimeout(function(){
+          var ev=new Event('open');
+          t.dispatchEvent(ev);
+          if(typeof t.onopen==='function')t.onopen(ev);
+        },10);
+        return t;
+      }
+      return new OrigWS(u,p);
+    };
+    DummyWS.prototype=OrigWS.prototype;
+    DummyWS.CONNECTING=0;DummyWS.OPEN=1;DummyWS.CLOSING=2;DummyWS.CLOSED=3;
+    window.WebSocket=DummyWS;
+  }
+  var _e=console.error;
+  console.error=function(){
+    if(arguments[0]&&typeof arguments[0]==='string'&&(arguments[0].indexOf('[vite]')!==-1||arguments[0].indexOf('websocket')!==-1||arguments[0].indexOf('WebSocket')!==-1))return;
+    return _e.apply(console,arguments);
+  };
+  var _w=console.warn;
+  console.warn=function(){
+    if(arguments[0]&&typeof arguments[0]==='string'&&(arguments[0].indexOf('[vite]')!==-1||arguments[0].indexOf('websocket')!==-1||arguments[0].indexOf('WebSocket')!==-1))return;
+    return _w.apply(console,arguments);
+  };
+  window.addEventListener('unhandledrejection',function(e){
+    if(e.reason&&(typeof e.reason==='string'||e.reason.message)&&(String(e.reason.message||e.reason).indexOf('[vite]')!==-1||String(e.reason.message||e.reason).indexOf('WebSocket')!==-1)){
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }
+  });
+})();
+</script>`;
         template = template.replace("<head>", `<head>\n    ${filterTag}`);
         res.status(200).set({ "Content-Type": "text/html" }).end(template);
       } catch (e: any) {
