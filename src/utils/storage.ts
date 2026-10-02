@@ -33,6 +33,21 @@ export function getUserTripsStorageKey(userId: string): string {
   return `tripExpenseSplitter:user:${userId}:trips`;
 }
 
+export function getAuthHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (typeof window !== "undefined") {
+    try {
+      const token = localStorage.getItem("trip_expense_splitter_auth_token_v1");
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+    } catch {}
+  }
+  return headers;
+}
+
 export function getUserActiveTripStorageKey(userId: string): string {
   return `tripExpenseSplitter:user:${userId}:activeTrip`;
 }
@@ -175,7 +190,9 @@ export async function getTripFromDatabase(tripId: string): Promise<Trip | null> 
 
     if (tripErr || !tripRow) {
       try {
-        const apiRes = await fetch(`/api/trips/${encodeURIComponent(tripId)}`);
+        const apiRes = await fetch(`/api/trips/${encodeURIComponent(tripId)}`, {
+          headers: getAuthHeaders(),
+        });
         if (apiRes.ok) {
           const apiData = await apiRes.json();
           if (apiData.success && apiData.trip) {
@@ -209,7 +226,9 @@ export async function getTripFromDatabase(tripId: string): Promise<Trip | null> 
   } catch (err) {
     console.error("Error loading trip from Supabase:", err);
     try {
-      const apiRes = await fetch(`/api/trips/${encodeURIComponent(tripId)}`);
+      const apiRes = await fetch(`/api/trips/${encodeURIComponent(tripId)}`, {
+        headers: getAuthHeaders(),
+      });
       if (apiRes.ok) {
         const apiData = await apiRes.json();
         if (apiData.success && apiData.trip) {
@@ -508,7 +527,9 @@ export function subscribeToUserTrips(
       } else {
         // Direct database API fallback
         try {
-          const apiRes = await fetch(`/api/user-trips?userId=${encodeURIComponent(userId)}`);
+          const apiRes = await fetch(`/api/user-trips`, {
+            headers: getAuthHeaders(),
+          });
           if (apiRes.ok) {
             const apiData = await apiRes.json();
             if (apiData.success && Array.isArray(apiData.trips)) {
@@ -531,7 +552,9 @@ export function subscribeToUserTrips(
     } catch (err) {
       console.warn("Error fetching user trips from Supabase, attempting API fallback:", err);
       try {
-        const apiRes = await fetch(`/api/user-trips?userId=${encodeURIComponent(userId)}`);
+        const apiRes = await fetch(`/api/user-trips`, {
+          headers: getAuthHeaders(),
+        });
         if (apiRes.ok) {
           const apiData = await apiRes.json();
           if (apiData.success && Array.isArray(apiData.trips)) {

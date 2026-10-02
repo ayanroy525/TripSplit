@@ -196,6 +196,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           linkUserToExistingTripMembers(user).catch(() => {});
         } else {
           localStorage.removeItem(ACTIVE_USER_KEY);
+          localStorage.removeItem("trip_expense_splitter_auth_token_v1");
         }
       } catch (e) {}
     }
@@ -316,6 +317,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const resData = await response.json();
         if (response.ok && resData.success && resData.user) {
           const userAccount: UserAccount = resData.user;
+          if (resData.token) {
+            setTokenState(resData.token);
+            if (typeof window !== "undefined") {
+              try {
+                localStorage.setItem("trip_expense_splitter_auth_token_v1", resData.token);
+              } catch {}
+            }
+          }
           persistUser(userAccount);
           setAccounts((prev) => [userAccount, ...prev.filter((a) => a.id !== userAccount.id)]);
 
@@ -659,7 +668,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     // Save to PostgreSQL via server endpoint and Supabase
     try {
-      await fetch("/api/auth/signup", {
+      const serverRes = await fetch("/api/auth/signup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -671,6 +680,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           bio: accountData.bio,
         }),
       });
+      if (serverRes.ok) {
+        const sData = await serverRes.json();
+        if (sData.token) {
+          setTokenState(sData.token);
+          if (typeof window !== "undefined") {
+            try {
+              localStorage.setItem("trip_expense_splitter_auth_token_v1", sData.token);
+            } catch {}
+          }
+        }
+      }
     } catch (e) {}
 
     // Save directly to Supabase public.users table with password_hash!
