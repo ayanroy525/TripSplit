@@ -1,5 +1,5 @@
 process.env.DISABLE_HMR = "true";
-import express from "express";
+import express, { Request, Response, NextFunction } from "express";
 import dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -22,11 +22,126 @@ const rawConn = (process.env.POSTGRES_URL_NON_POOLING || process.env.POSTGRES_UR
 const pool = rawConn
   ? new Pool({
       connectionString: rawConn,
-      ssl: { rejectUnauthorized: false },
+      ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: true } : { rejectUnauthorized: false },
     })
   : null;
 
 const PASSWORD_SALT = process.env.PASSWORD_SALT || process.env.AUTH_SECRET || "";
+const SESSION_SECRET = process.env.SESSION_SECRET || process.env.AUTH_SECRET || "tripsplit_session_secret_dev";
+
+interface SessionPayload {
+  userId: string;
+  email?: string;
+  name?: string;
+  iat: number;
+  exp: number;
+}
+
+function generateSessionToken(userId: string, email?: string, name?: string): string {
+  const payload: SessionPayload = {
+    userId,
+    email,
+    name,
+    iat: Math.floor(Date.now() / 1000),
+    exp: Math.floor(Date.now() / 1000) + 86400,
+  };
+
+  const headerBase64 = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+  const payloadBase64 = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signature = crypto
+    .createHmac("sha256", SESSION_SECRET)
+    .update(`${headerBase64}.${payloadBase64}`)
+    .digest("base64url");
+
+  return `${headerBase64}.${payloadBase64}.${signature}`;
+}
+
+function verifySessionToken(token: string): SessionPayload | null {
+  try {
+    const [headerBase64, payloadBase64, signatureBase64] = token.split(".");
+    if (!headerBase64 || !payloadBase64 || !signatureBase64) return null;
+
+    const signature = crypto
+      .createHmac("sha256", SESSION_SECRET)
+      .update(`${headerBase64}.${payloadBase64}`)
+      .digest("base64url");
+
+    if (signature !== signatureBase64) return null;
+
+    const payload: SessionPayload = JSON.parse(Buffer.from(payloadBase64, "base64url").toString("utf8"));
+    if (payload.exp < Math.floor(Date.now() / 1000)) return null;
+
+    return payload;
+  } catch (e) {
+    return null;
+  }
+}
+
+interface AuthRequest extends Request {
+  userId?: string;
+  session?: SessionPayload;
+}
+
+function authMiddleware(req: AuthRequest, res: Response, next: NextFunction) {
+  const authHeader = req.headers.authorization || "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+
+  if (!token) {
+    return res.status(401).json({ success: false, error: "Authorization token required" });
+  }
+
+  const session = verifySessionToken(token);
+  if (!session) {
+    return res.status(401).json({ success: false, error: "Invalid or expired token" });
+  }
+
+  req.userId = session.userId;
+  req.session = session;
+  next();
+}
+
+interface TripAuthCheck {
+  isOwner: boolean;
+  isMember: boolean;
+  canAccess: boolean;
+  role?: string;
+}
+
+async function checkTripAuthorization(tripId: string, userId: string | undefined, poolInstance: Pool | null): Promise<TripAuthCheck> {
+  if (!tripId || !userId || !poolInstance) {
+    return { isOwner: false, isMember: false, canAccess: false };
+  }
+
+  try {
+    const tripRes = await poolInstance.query("SELECT owner_id FROM public.trips WHERE id = $1 LIMIT 1;", [tripId]);
+    const trip = tripRes.rows[0];
+    if (!trip) {
+      return { isOwner: false, isMember: false, canAccess: false };
+    }
+
+    const isOwner = trip.owner_id === userId;
+    if (isOwner) {
+      return { isOwner: true, isMember: true, canAccess: true, role: "owner" };
+    }
+
+    const memberRes = await poolInstance.query(
+      `SELECT role FROM public.trip_members
+       WHERE trip_id = $1 AND (user_id = $2 OR id = $2)
+       LIMIT 1;`,
+      [tripId, userId]
+    );
+
+    const member = memberRes.rows[0];
+    if (member) {
+      return { isOwner: false, isMember: true, canAccess: true, role: member.role };
+    }
+
+    return { isOwner: false, isMember: false, canAccess: false };
+  } catch (err) {
+    console.error("Error checking trip authorization:", err);
+    return { isOwner: false, isMember: false, canAccess: false };
+  }
+}
 
 function hashPasswordNode(password: string): string {
   const salt = PASSWORD_SALT || "_tripsplit_salt_v1";
@@ -37,21 +152,17 @@ function verifyPasswordMatchNode(inputPassword: string, storedHashOrPassword?: s
   if (!storedHashOrPassword || storedHashOrPassword.trim() === "") return true;
   if (storedHashOrPassword === inputPassword || storedHashOrPassword.trim() === inputPassword.trim()) return true;
 
-  // Salted with configurable env var PASSWORD_SALT
   if (PASSWORD_SALT) {
     const envSalted = crypto.createHash("sha256").update(inputPassword + PASSWORD_SALT).digest("hex");
     if (storedHashOrPassword === envSalted) return true;
   }
 
-  // Salted SHA-256 (supports legacy salted hashes for backwards compatibility with existing DB accounts)
   const legacySalted = crypto.createHash("sha256").update(inputPassword + "_tripsplit_salt_v1").digest("hex");
   if (storedHashOrPassword === legacySalted) return true;
 
-  // Unsalted SHA-256
   const unsalted = crypto.createHash("sha256").update(inputPassword).digest("hex");
   if (storedHashOrPassword === unsalted) return true;
 
-  // Simple string hash
   let simpleHash = 0;
   for (let i = 0; i < inputPassword.length; i++) {
     simpleHash = ((simpleHash << 5) - simpleHash + inputPassword.charCodeAt(i)) | 0;
@@ -61,12 +172,10 @@ function verifyPasswordMatchNode(inputPassword: string, storedHashOrPassword?: s
   return false;
 }
 
-// Health check endpoint
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
 });
 
-// Database health and statistics endpoint
 app.get("/api/db/status", async (_req, res) => {
   if (!pool) {
     return res.status(503).json({ connected: false, error: "Database pool not initialized" });
@@ -78,9 +187,9 @@ app.get("/api/db/status", async (_req, res) => {
     const latencyMs = Date.now() - start;
 
     const tablesRes = await pool.query(`
-      SELECT table_name 
-      FROM information_schema.tables 
-      WHERE table_schema = 'public' 
+      SELECT table_name
+      FROM information_schema.tables
+      WHERE table_schema = 'public'
       ORDER BY table_name;
     `);
 
@@ -109,7 +218,6 @@ app.get("/api/db/status", async (_req, res) => {
   }
 });
 
-// Authentication: Login Endpoint
 app.post("/api/auth/login", async (req, res) => {
   const { emailOrPhone, password } = req.body || {};
   const rawInput = (emailOrPhone || "").trim();
@@ -130,7 +238,6 @@ app.post("/api/auth/login", async (req, res) => {
   }
 
   try {
-    // 1. Search in public.users table
     const usersQuery = `
       SELECT id, email, name, phone, avatar_color, avatar_url, bio, password_hash, created_at
       FROM public.users
@@ -142,7 +249,6 @@ app.post("/api/auth/login", async (req, res) => {
     const userRes = await pool.query(usersQuery, [trimmedLower, cleanDigits.length >= 7 ? cleanDigits : ""]);
     let foundUser = userRes.rows[0];
 
-    // If not found by exact match, search all users if cleanDigits is valid
     if (!foundUser && cleanDigits.length >= 7) {
       const allUsersRes = await pool.query("SELECT id, email, name, phone, avatar_color, avatar_url, bio, password_hash, created_at FROM public.users LIMIT 200;");
       foundUser = allUsersRes.rows.find((u) => {
@@ -151,7 +257,6 @@ app.post("/api/auth/login", async (req, res) => {
       });
     }
 
-    // 2. If not found in public.users, search in trip_members or members
     if (!foundUser) {
       try {
         const memberRes = await pool.query(
@@ -166,7 +271,6 @@ app.post("/api/auth/login", async (req, res) => {
         if (foundMember) {
           const newUserId = foundMember.user_id || foundMember.id || `u_${Date.now()}`;
           const newHashed = hashPasswordNode(inputPassword);
-          // Register in users table
           await pool.query(
             `INSERT INTO public.users (id, email, name, phone, avatar_color, password_hash, created_at, updated_at)
              VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
@@ -181,8 +285,10 @@ app.post("/api/auth/login", async (req, res) => {
             ]
           );
 
+          const sessionToken = generateSessionToken(newUserId, foundMember.email, foundMember.name);
           return res.json({
             success: true,
+            token: sessionToken,
             user: {
               id: newUserId,
               name: foundMember.name || "Traveler",
@@ -206,7 +312,6 @@ app.post("/api/auth/login", async (req, res) => {
       });
     }
 
-    // Verify Password
     const isPassValid = verifyPasswordMatchNode(inputPassword, foundUser.password_hash);
     if (!isPassValid) {
       return res.status(401).json({
@@ -215,7 +320,6 @@ app.post("/api/auth/login", async (req, res) => {
       });
     }
 
-    // Upgrade hash if necessary
     const modernHash = hashPasswordNode(inputPassword);
     if (foundUser.password_hash !== modernHash) {
       try {
@@ -237,14 +341,14 @@ app.post("/api/auth/login", async (req, res) => {
       createdAt: foundUser.created_at || new Date().toISOString(),
     };
 
-    return res.json({ success: true, user: userAccount });
+    const sessionToken = generateSessionToken(foundUser.id, foundUser.email, foundUser.name);
+    return res.json({ success: true, token: sessionToken, user: userAccount });
   } catch (err: any) {
     console.error("Error in /api/auth/login:", err);
     return res.status(500).json({ success: false, error: "Internal authentication error. Please try again." });
   }
 });
 
-// Authentication: Signup Endpoint
 app.post("/api/auth/signup", async (req, res) => {
   const { name, email, phone, password, avatarColor, bio } = req.body || {};
   const trimmedName = (name || "").trim();
@@ -268,7 +372,6 @@ app.post("/api/auth/signup", async (req, res) => {
   }
 
   try {
-    // Check if user already exists
     const existingRes = await pool.query(
       `SELECT id, email, phone FROM public.users
        WHERE LOWER(TRIM(email)) = $1
@@ -311,14 +414,14 @@ app.post("/api/auth/signup", async (req, res) => {
       createdAt: new Date().toISOString(),
     };
 
-    return res.json({ success: true, user: userAccount });
+    const sessionToken = generateSessionToken(userId, trimmedEmail, trimmedName);
+    return res.json({ success: true, token: sessionToken, user: userAccount });
   } catch (err: any) {
     console.error("Error in /api/auth/signup:", err);
     return res.status(500).json({ success: false, error: "Unable to create account. Please try again." });
   }
 });
 
-// Trip Invite Preview Endpoint
 app.get("/api/trips/invite/:code", async (req, res) => {
   const code = (req.params.code || "").trim().toUpperCase();
   if (!code) {
@@ -342,13 +445,16 @@ app.get("/api/trips/invite/:code", async (req, res) => {
   }
 });
 
-// Trip Invite Join Endpoint
-app.post("/api/trips/join", async (req, res) => {
+app.post("/api/trips/join", authMiddleware, async (req: AuthRequest, res) => {
   const { inviteCode, user } = req.body || {};
   const code = (inviteCode || "").trim().toUpperCase();
 
   if (!code || !user || !user.id) {
     return res.status(400).json({ success: false, message: "Invite code and user are required" });
+  }
+
+  if (user.id !== req.userId) {
+    return res.status(403).json({ success: false, message: "Cannot join trip as another user" });
   }
 
   if (!pool) {
@@ -371,11 +477,10 @@ app.post("/api/trips/join", async (req, res) => {
   }
 });
 
-// User Trips Endpoint (direct PostgreSQL fallback for all trips involving user)
-app.get("/api/user-trips", async (req, res) => {
-  const userId = ((req.query.userId as string) || "").trim();
+app.get("/api/user-trips", authMiddleware, async (req: AuthRequest, res) => {
+  const userId = req.userId;
   if (!userId) {
-    return res.status(400).json({ success: false, error: "userId parameter is required" });
+    return res.status(401).json({ success: false, error: "Authentication required" });
   }
 
   if (!pool) {
@@ -421,9 +526,10 @@ app.get("/api/user-trips", async (req, res) => {
   }
 });
 
-// Single Trip Endpoint
-app.get("/api/trips/:tripId", async (req, res) => {
+app.get("/api/trips/:tripId", authMiddleware, async (req: AuthRequest, res) => {
   const tripId = (req.params.tripId || "").trim();
+  const userId = req.userId;
+
   if (!tripId) {
     return res.status(400).json({ success: false, error: "tripId is required" });
   }
@@ -433,6 +539,11 @@ app.get("/api/trips/:tripId", async (req, res) => {
   }
 
   try {
+    const authCheck = await checkTripAuthorization(tripId, userId, pool);
+    if (!authCheck.canAccess) {
+      return res.status(403).json({ success: false, error: "Access denied. You are not a member of this trip." });
+    }
+
     const tripRes = await pool.query("SELECT * FROM public.trips WHERE id = $1 LIMIT 1;", [tripId]);
     const trip = tripRes.rows[0];
     if (!trip) {
@@ -462,13 +573,11 @@ app.get("/api/trips/:tripId", async (req, res) => {
   }
 });
 
-// Audit PDF Download Endpoint
 app.get("/api/download-audit-pdf", (_req, res) => {
   const filePath = path.resolve(__dirname, "public", "Spliito_Application_Review.pdf");
   res.download(filePath, "Spliito_Application_Review.pdf");
 });
 
-// Vite Middleware for Development / Static serving for Production
 async function setupServer() {
   if (process.env.NODE_ENV !== "production") {
     try {
