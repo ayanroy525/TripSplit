@@ -1,1 +1,406 @@
-/**\n * TripSplit Auth Endpoint Test Script\n * Run with: npx ts-node test-auth.ts\n * or: npx tsx test-auth.ts\n *\n * Tests:\n * 1. Signup creates a new user and returns a token\n * 2. Login returns a token for existing user\n * 3. Token is validated on protected endpoints\n * 4. Missing token returns 401\n * 5. Invalid token returns 401\n * 6. Unauthorized user cannot access other trips (403)\n */\n\nconst BASE_URL = process.env.API_URL || \"http://localhost:3000\";\n\ninterface TestResult {\n  name: string;\n  status: \"PASS\" | \"FAIL\";\n  error?: string;\n  details?: any;\n}\n\nconst results: TestResult[] = [];\n\nfunction log(message: string) {\n  console.log(`[TEST] ${message}`);\n}\n\nfunction pass(name: string, details?: any) {\n  results.push({ name, status: \"PASS\", details });\n  log(`✓ ${name}`);\n}\n\nfunction fail(name: string, error: string, details?: any) {\n  results.push({ name, status: \"FAIL\", error, details });\n  log(`✗ ${name}: ${error}`);\n}\n\nfunction delay(ms: number) {\n  return new Promise((resolve) => setTimeout(resolve, ms));\n}\n\nasync function request(\n  method: string,\n  endpoint: string,\n  body?: any,\n  token?: string\n) {\n  const url = `${BASE_URL}${endpoint}`;\n  const options: RequestInit = {\n    method,\n    headers: {\n      \"Content-Type\": \"application/json\",\n    },\n  };\n\n  if (token) {\n    options.headers = {\n      ...options.headers,\n      Authorization: `Bearer ${token}`,\n    };\n  }\n\n  if (body) {\n    options.body = JSON.stringify(body);\n  }\n\n  try {\n    const response = await fetch(url, options);\n    const data = await response.json();\n    return {\n      status: response.status,\n      ok: response.ok,\n      data,\n    };\n  } catch (err: any) {\n    throw new Error(`Request failed: ${err.message}`);\n  }\n}\n\nasync function testHealthCheck() {\n  try {\n    const res = await request(\"GET\", \"/api/health\");\n    if (res.status === 200) {\n      pass(\"Health check\", res.data);\n    } else {\n      fail(\"Health check\", `Expected 200, got ${res.status}`, res.data);\n    }\n  } catch (err: any) {\n    fail(\"Health check\", err.message);\n  }\n}\n\nasync function testSignup(email: string, password: string) {\n  try {\n    const res = await request(\"POST\", \"/api/auth/signup\", {\n      name: \"Test User\",\n      email,\n      phone: \"+1234567890\",\n      password,\n      avatarColor: \"#0F6B65\",\n      bio: \"Test Account\",\n    });\n\n    if (res.status === 200 && res.data.success && res.data.token) {\n      pass(\"Signup - Creates user and returns token\", {\n        userId: res.data.user?.id,\n        email: res.data.user?.email,\n        hasToken: !!res.data.token,\n      });\n      return res.data.token;\n    } else if (res.status === 409) {\n      pass(\"Signup - User already exists (expected on retry)\", res.data);\n      return null;\n    } else {\n      fail(\n        \"Signup - Create user\",\n        `Expected 200, got ${res.status}`,\n        res.data\n      );\n      return null;\n    }\n  } catch (err: any) {\n    fail(\"Signup - Create user\", err.message);\n    return null;\n  }\n}\n\nasync function testLogin(email: string, password: string) {\n  try {\n    const res = await request(\"POST\", \"/api/auth/login\", {\n      emailOrPhone: email,\n      password,\n    });\n\n    if (res.status === 200 && res.data.success && res.data.token) {\n      pass(\"Login - Returns token for valid credentials\", {\n        userId: res.data.user?.id,\n        email: res.data.user?.email,\n        hasToken: !!res.data.token,\n      });\n      return res.data.token;\n    } else if (res.status === 404) {\n      fail(\n        \"Login - Valid credentials\",\n        \"User not found (ensure signup succeeded)\",\n        res.data\n      );\n      return null;\n    } else {\n      fail(\n        \"Login - Valid credentials\",\n        `Expected 200, got ${res.status}`,\n        res.data\n      );\n      return null;\n    }\n  } catch (err: any) {\n    fail(\"Login - Valid credentials\", err.message);\n    return null;\n  }\n}\n\nasync function testLoginInvalidPassword(email: string) {\n  try {\n    const res = await request(\"POST\", \"/api/auth/login\", {\n      emailOrPhone: email,\n      password: \"wrongpassword123\",\n    });\n\n    if (res.status === 401) {\n      pass(\"Login - Rejects invalid password (401)\", res.data);\n    } else {\n      fail(\n        \"Login - Rejects invalid password\",\n        `Expected 401, got ${res.status}`,\n        res.data\n      );\n    }\n  } catch (err: any) {\n    fail(\"Login - Rejects invalid password\", err.message);\n  }\n}\n\nasync function testUserTripsWithoutToken() {\n  try {\n    const res = await request(\"GET\", \"/api/user-trips\");\n\n    if (res.status === 401) {\n      pass(\"Protected endpoint - Rejects request without token (401)\", res.data);\n    } else {\n      fail(\n        \"Protected endpoint - Rejects request without token\",\n        `Expected 401, got ${res.status}`,\n        res.data\n      );\n    }\n  } catch (err: any) {\n    fail(\n      \"Protected endpoint - Rejects request without token\",\n      err.message\n    );\n  }\n}\n\nasync function testUserTripsWithInvalidToken() {\n  try {\n    const res = await request(\n      \"GET\",\n      \"/api/user-trips\",\n      undefined,\n      \"invalid.token.here\"\n    );\n\n    if (res.status === 401) {\n      pass(\n        \"Protected endpoint - Rejects invalid token (401)\",\n        res.data\n      );\n    } else {\n      fail(\n        \"Protected endpoint - Rejects invalid token\",\n        `Expected 401, got ${res.status}`,\n        res.data\n      );\n    }\n  } catch (err: any) {\n    fail(\"Protected endpoint - Rejects invalid token\", err.message);\n  }\n}\n\nasync function testUserTripsWithValidToken(token: string) {\n  try {\n    const res = await request(\"GET\", \"/api/user-trips\", undefined, token);\n\n    if (res.status === 200 && res.data.success) {\n      pass(\n        \"Protected endpoint - Returns data with valid token (200)\",\n        {\n          tripsCount: res.data.trips?.length || 0,\n        }\n      );\n    } else {\n      fail(\n        \"Protected endpoint - Returns data with valid token\",\n        `Expected 200, got ${res.status}`,\n        res.data\n      );\n    }\n  } catch (err: any) {\n    fail(\n      \"Protected endpoint - Returns data with valid token\",\n      err.message\n    );\n  }\n}\n\nasync function testSingleTripWithoutToken() {\n  try {\n    const res = await request(\"GET\", \"/api/trips/nonexistent-trip-id\");\n\n    if (res.status === 401) {\n      pass(\n        \"Single trip endpoint - Rejects request without token (401)\",\n        res.data\n      );\n    } else {\n      fail(\n        \"Single trip endpoint - Rejects request without token\",\n        `Expected 401, got ${res.status}`,\n        res.data\n      );\n    }\n  } catch (err: any) {\n    fail(\n      \"Single trip endpoint - Rejects request without token\",\n      err.message\n    );\n  }\n}\n\nasync function testSingleTripWithValidToken(token: string) {\n  try {\n    // Try to access a nonexistent trip with valid token\n    // Should return 404 (not found) instead of 401 (unauthorized)\n    // This proves the token was accepted\n    const res = await request(\n      \"GET\",\n      \"/api/trips/nonexistent-trip-id\",\n      undefined,\n      token\n    );\n\n    if (res.status === 404) {\n      pass(\n        \"Single trip endpoint - Token accepted, trip not found (404)\",\n        res.data\n      );\n    } else if (res.status === 403) {\n      pass(\n        \"Single trip endpoint - Token accepted, access denied (403)\",\n        res.data\n      );\n    } else if (res.status === 401) {\n      fail(\n        \"Single trip endpoint - Token accepted\",\n        \"Token was rejected (401) - token validation failed\",\n        res.data\n      );\n    } else {\n      fail(\n        \"Single trip endpoint - Token accepted\",\n        `Expected 404/403, got ${res.status}`,\n        res.data\n      );\n    }\n  } catch (err: any) {\n    fail(\"Single trip endpoint - Token accepted\", err.message);\n  }\n}\n\nasync function printSummary() {\n  console.log(\"\\n\" + \"=\".repeat(60));\n  console.log(\"TEST SUMMARY\");\n  console.log(\"=\".repeat(60));\n\n  const passed = results.filter((r) => r.status === \"PASS\").length;\n  const failed = results.filter((r) => r.status === \"FAIL\").length;\n  const total = results.length;\n\n  console.log(`\\nTotal: ${total} | Passed: ${passed} | Failed: ${failed}\\n`);\n\n  results.forEach((r) => {\n    const icon = r.status === \"PASS\" ? \"✓\" : \"✗\";\n    console.log(`${icon} ${r.name}`);\n    if (r.error) {\n      console.log(`  Error: ${r.error}`);\n    }\n    if (r.details) {\n      console.log(`  Details: ${JSON.stringify(r.details)}`);\n    }\n  });\n\n  console.log(\"\\n\" + \"=\".repeat(60));\n  if (failed === 0) {\n    console.log(\"✓ All tests passed!\");\n  } else {\n    console.log(`✗ ${failed} test(s) failed`);\n  }\n  console.log(\"=\".repeat(60) + \"\\n\");\n\n  process.exit(failed === 0 ? 0 : 1);\n}\n\nasync function main() {\n  console.log(`\\n🧪 TripSplit Auth Endpoint Tests`);\n  console.log(`Base URL: ${BASE_URL}\\n`);\n\n  const testEmail = `test-${Date.now()}@example.com`;\n  const testPassword = \"SecurePassword123!\";\n\n  // Test 1: Health check\n  await testHealthCheck();\n  await delay(500);\n\n  // Test 2: Signup\n  log(\"Testing signup endpoint...\");\n  let signupToken = await testSignup(testEmail, testPassword);\n  await delay(500);\n\n  // Test 3: Login\n  log(\"Testing login endpoint...\");\n  let loginToken = await testLogin(testEmail, testPassword);\n  await delay(500);\n\n  // Test 4: Login with invalid password\n  log(\"Testing login with invalid password...\");\n  await testLoginInvalidPassword(testEmail);\n  await delay(500);\n\n  // Test 5: Protected endpoint without token\n  log(\"Testing protected endpoints without token...\");\n  await testUserTripsWithoutToken();\n  await delay(500);\n\n  // Test 6: Protected endpoint with invalid token\n  log(\"Testing protected endpoints with invalid token...\");\n  await testUserTripsWithInvalidToken();\n  await delay(500);\n\n  // Test 7: Protected endpoint with valid token (use login token)\n  if (loginToken) {\n    log(\"Testing protected endpoints with valid token...\");\n    await testUserTripsWithValidToken(loginToken);\n    await delay(500);\n  }\n\n  // Test 8: Single trip endpoint without token\n  log(\"Testing single trip endpoint without token...\");\n  await testSingleTripWithoutToken();\n  await delay(500);\n\n  // Test 9: Single trip endpoint with valid token\n  if (loginToken) {\n    log(\"Testing single trip endpoint with valid token...\");\n    await testSingleTripWithValidToken(loginToken);\n    await delay(500);\n  }\n\n  // Print summary\n  await printSummary();\n}\n\nmain().catch((err) => {\n  console.error(\"Test suite error:\", err);\n  process.exit(1);\n});\n"
+/**
+ * TripSplit Auth Endpoint Test Script
+ * Run with: npx tsx test-auth.ts
+ */
+
+const BASE_URL = process.env.API_URL || "http://localhost:3000";
+
+interface TestResult {
+  name: string;
+  status: "PASS" | "FAIL";
+  error?: string;
+  details?: any;
+}
+
+const results: TestResult[] = [];
+
+function log(message: string) {
+  console.log(`[TEST] ${message}`);
+}
+
+function pass(name: string, details?: any) {
+  results.push({ name, status: "PASS", details });
+  log(`✓ ${name}`);
+}
+
+function fail(name: string, error: string, details?: any) {
+  results.push({ name, status: "FAIL", error, details });
+  log(`✗ ${name}: ${error}`);
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function request(
+  method: string,
+  endpoint: string,
+  body?: any,
+  token?: string
+) {
+  const url = `${BASE_URL}${endpoint}`;
+  const options: RequestInit = {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+    },
+  };
+
+  if (token) {
+    options.headers = {
+      ...options.headers,
+      Authorization: `Bearer ${token}`,
+    };
+  }
+
+  if (body) {
+    options.body = JSON.stringify(body);
+  }
+
+  try {
+    const response = await fetch(url, options);
+    const data = await response.json();
+    return {
+      status: response.status,
+      ok: response.ok,
+      data,
+    };
+  } catch (err: any) {
+    throw new Error(`Request failed: ${err.message}`);
+  }
+}
+
+async function testHealthCheck() {
+  try {
+    const res = await request("GET", "/api/health");
+    if (res.status === 200) {
+      pass("Health check", res.data);
+    } else {
+      fail("Health check", `Expected 200, got ${res.status}`, res.data);
+    }
+  } catch (err: any) {
+    fail("Health check", err.message);
+  }
+}
+
+async function testSignup(email: string, password: string) {
+  try {
+    const res = await request("POST", "/api/auth/signup", {
+      name: "Test User",
+      email,
+      phone: "+1234567890",
+      password,
+      avatarColor: "#0F6B65",
+      bio: "Test Account",
+    });
+
+    if (res.status === 200 && res.data.success && res.data.token) {
+      pass("Signup - Creates user and returns token", {
+        userId: res.data.user?.id,
+        email: res.data.user?.email,
+        hasToken: !!res.data.token,
+      });
+      return res.data.token;
+    } else if (res.status === 409) {
+      pass("Signup - User already exists (expected on retry)", res.data);
+      return null;
+    } else {
+      fail(
+        "Signup - Create user",
+        `Expected 200, got ${res.status}`,
+        res.data
+      );
+      return null;
+    }
+  } catch (err: any) {
+    fail("Signup - Create user", err.message);
+    return null;
+  }
+}
+
+async function testLogin(email: string, password: string) {
+  try {
+    const res = await request("POST", "/api/auth/login", {
+      emailOrPhone: email,
+      password,
+    });
+
+    if (res.status === 200 && res.data.success && res.data.token) {
+      pass("Login - Returns token for valid credentials", {
+        userId: res.data.user?.id,
+        email: res.data.user?.email,
+        hasToken: !!res.data.token,
+      });
+      return res.data.token;
+    } else if (res.status === 404) {
+      fail(
+        "Login - Valid credentials",
+        "User not found (ensure signup succeeded)",
+        res.data
+      );
+      return null;
+    } else {
+      fail(
+        "Login - Valid credentials",
+        `Expected 200, got ${res.status}`,
+        res.data
+      );
+      return null;
+    }
+  } catch (err: any) {
+    fail("Login - Valid credentials", err.message);
+    return null;
+  }
+}
+
+async function testLoginInvalidPassword(email: string) {
+  try {
+    const res = await request("POST", "/api/auth/login", {
+      emailOrPhone: email,
+      password: "wrongpassword123",
+    });
+
+    if (res.status === 401) {
+      pass("Login - Rejects invalid password (401)", res.data);
+    } else {
+      fail(
+        "Login - Rejects invalid password",
+        `Expected 401, got ${res.status}`,
+        res.data
+      );
+    }
+  } catch (err: any) {
+    fail("Login - Rejects invalid password", err.message);
+  }
+}
+
+async function testUserTripsWithoutToken() {
+  try {
+    const res = await request("GET", "/api/user-trips");
+
+    if (res.status === 401) {
+      pass("Protected endpoint - Rejects request without token (401)", res.data);
+    } else {
+      fail(
+        "Protected endpoint - Rejects request without token",
+        `Expected 401, got ${res.status}`,
+        res.data
+      );
+    }
+  } catch (err: any) {
+    fail(
+      "Protected endpoint - Rejects request without token",
+      err.message
+    );
+  }
+}
+
+async function testUserTripsWithInvalidToken() {
+  try {
+    const res = await request(
+      "GET",
+      "/api/user-trips",
+      undefined,
+      "invalid.token.here"
+    );
+
+    if (res.status === 401) {
+      pass(
+        "Protected endpoint - Rejects invalid token (401)",
+        res.data
+      );
+    } else {
+      fail(
+        "Protected endpoint - Rejects invalid token",
+        `Expected 401, got ${res.status}`,
+        res.data
+      );
+    }
+  } catch (err: any) {
+    fail("Protected endpoint - Rejects invalid token", err.message);
+  }
+}
+
+async function testUserTripsWithValidToken(token: string) {
+  try {
+    const res = await request("GET", "/api/user-trips", undefined, token);
+
+    if (res.status === 200 && res.data.success) {
+      pass(
+        "Protected endpoint - Returns data with valid token (200)",
+        {
+          tripsCount: res.data.trips?.length || 0,
+        }
+      );
+    } else {
+      fail(
+        "Protected endpoint - Returns data with valid token",
+        `Expected 200, got ${res.status}`,
+        res.data
+      );
+    }
+  } catch (err: any) {
+    fail(
+      "Protected endpoint - Returns data with valid token",
+      err.message
+    );
+  }
+}
+
+async function testSingleTripWithoutToken() {
+  try {
+    const res = await request("GET", "/api/trips/nonexistent-trip-id");
+
+    if (res.status === 401) {
+      pass(
+        "Single trip endpoint - Rejects request without token (401)",
+        res.data
+      );
+    } else {
+      fail(
+        "Single trip endpoint - Rejects request without token",
+        `Expected 401, got ${res.status}`,
+        res.data
+      );
+    }
+  } catch (err: any) {
+    fail(
+      "Single trip endpoint - Rejects request without token",
+      err.message
+    );
+  }
+}
+
+async function testSingleTripWithValidToken(token: string) {
+  try {
+    const res = await request(
+      "GET",
+      "/api/trips/nonexistent-trip-id",
+      undefined,
+      token
+    );
+
+    if (res.status === 404) {
+      pass(
+        "Single trip endpoint - Token accepted, trip not found (404)",
+        res.data
+      );
+    } else if (res.status === 403) {
+      pass(
+        "Single trip endpoint - Token accepted, access denied (403)",
+        res.data
+      );
+    } else if (res.status === 401) {
+      fail(
+        "Single trip endpoint - Token accepted",
+        "Token was rejected (401) - token validation failed",
+        res.data
+      );
+    } else {
+      fail(
+        "Single trip endpoint - Token accepted",
+        `Expected 404/403, got ${res.status}`,
+        res.data
+      );
+    }
+  } catch (err: any) {
+    fail("Single trip endpoint - Token accepted", err.message);
+  }
+}
+
+async function printSummary() {
+  console.log("\n" + "=".repeat(60));
+  console.log("TEST SUMMARY");
+  console.log("=".repeat(60));
+
+  const passed = results.filter((r) => r.status === "PASS").length;
+  const failed = results.filter((r) => r.status === "FAIL").length;
+  const total = results.length;
+
+  console.log(`\nTotal: ${total} | Passed: ${passed} | Failed: ${failed}\n`);
+
+  results.forEach((r) => {
+    const icon = r.status === "PASS" ? "✓" : "✗";
+    console.log(`${icon} ${r.name}`);
+    if (r.error) {
+      console.log(`  Error: ${r.error}`);
+    }
+    if (r.details) {
+      console.log(`  Details: ${JSON.stringify(r.details)}`);
+    }
+  });
+
+  console.log("\n" + "=".repeat(60));
+  if (failed === 0) {
+    console.log("✓ All tests passed!");
+  } else {
+    console.log(`✗ ${failed} test(s) failed`);
+  }
+  console.log("=".repeat(60) + "\n");
+
+  process.exit(failed === 0 ? 0 : 1);
+}
+
+async function main() {
+  console.log(`\n🧪 TripSplit Auth Endpoint Tests`);
+  console.log(`Base URL: ${BASE_URL}\n`);
+
+  const testEmail = `test-${Date.now()}@example.com`;
+  const testPassword = "SecurePassword123!";
+
+  // Test 1: Health check
+  await testHealthCheck();
+  await delay(500);
+
+  // Test 2: Signup
+  log("Testing signup endpoint...");
+  let signupToken = await testSignup(testEmail, testPassword);
+  await delay(500);
+
+  // Test 3: Login
+  log("Testing login endpoint...");
+  let loginToken = await testLogin(testEmail, testPassword);
+  await delay(500);
+
+  // Test 4: Login with invalid password
+  log("Testing login with invalid password...");
+  await testLoginInvalidPassword(testEmail);
+  await delay(500);
+
+  // Test 5: Protected endpoint without token
+  log("Testing protected endpoints without token...");
+  await testUserTripsWithoutToken();
+  await delay(500);
+
+  // Test 6: Protected endpoint with invalid token
+  log("Testing protected endpoints with invalid token...");
+  await testUserTripsWithInvalidToken();
+  await delay(500);
+
+  // Test 7: Protected endpoint with valid token (use login token)
+  if (loginToken) {
+    log("Testing protected endpoints with valid token...");
+    await testUserTripsWithValidToken(loginToken);
+    await delay(500);
+  }
+
+  // Test 8: Single trip endpoint without token
+  log("Testing single trip endpoint without token...");
+  await testSingleTripWithoutToken();
+  await delay(500);
+
+  // Test 9: Single trip endpoint with valid token
+  if (loginToken) {
+    log("Testing single trip endpoint with valid token...");
+    await testSingleTripWithValidToken(loginToken);
+    await delay(500);
+  }
+
+  // Print summary
+  await printSummary();
+}
+
+main().catch((err) => {
+  console.error("Test suite error:", err);
+  process.exit(1);
+});
