@@ -83,12 +83,12 @@ async function testHealthCheck() {
   }
 }
 
-async function testSignup(email: string, password: string) {
+async function testSignup(email: string, password: string, phone: string = "+1234567890") {
   try {
     const res = await request("POST", "/api/auth/signup", {
       name: "Test User",
       email,
-      phone: "+1234567890",
+      phone,
       password,
       avatarColor: "#0F6B65",
       bio: "Test Account",
@@ -346,6 +346,7 @@ async function main() {
   console.log(`Base URL: ${BASE_URL}\n`);
 
   const testEmail = `test-${Date.now()}@example.com`;
+  const testPhone = `+1${Math.floor(1000000000 + Math.random() * 9000000000)}`;
   const testPassword = "SecurePassword123!";
 
   // Test 1: Health check
@@ -354,7 +355,7 @@ async function main() {
 
   // Test 2: Signup
   log("Testing signup endpoint...");
-  let signupToken = await testSignup(testEmail, testPassword);
+  let signupToken = await testSignup(testEmail, testPassword, testPhone);
   await delay(500);
 
   // Test 3: Login

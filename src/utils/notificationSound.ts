@@ -1,6 +1,7 @@
 // Clean Web Audio API synthesized chime for notifications without external assets
 export function playNotificationChime(type: "default" | "success" | "alert" | "subtle" = "default") {
   try {
+    if (typeof window === "undefined") return;
     const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     if (!AudioContextClass) return;
 
