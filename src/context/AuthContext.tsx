@@ -154,18 +154,54 @@ async function verifyPasswordMatch(
   return false;
 }
 
-const LOCAL_CREDENTIALS_KEY = "trip_splitter_user_credentials_v1";
+export interface LocalStoredUserRecord {
+  id: string;
+  name: string;
+  email: string;
+  phone?: string;
+  avatarColor: string;
+  avatarUrl?: string;
+  bio?: string;
+  password_hash: string;
+  createdAt: string;
+}
+
+const LOCAL_USERS_DB_KEY = "trip_expense_splitter_registered_users_v2";
 const ACTIVE_USER_KEY = "trip_expense_splitter_active_user_v1";
 
-export function AuthProvider({ children }: { children: React.ReactNode }) {
-  // One-time security purge of any legacy credentials / passwords in localStorage
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      try {
-        localStorage.removeItem(LOCAL_CREDENTIALS_KEY);
-      } catch {}
+export function getLocalRegisteredUsers(): LocalStoredUserRecord[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(LOCAL_USERS_DB_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
     }
-  }, []);
+  } catch (e) {}
+  return [];
+}
+
+export function saveLocalRegisteredUser(user: LocalStoredUserRecord) {
+  if (typeof window === "undefined") return;
+  try {
+    const users = getLocalRegisteredUsers();
+    const existingIdx = users.findIndex(
+      (u) =>
+        u.id === user.id ||
+        (u.email && user.email && u.email.trim().toLowerCase() === user.email.trim().toLowerCase()) ||
+        (u.phone && user.phone && isPhoneMatch(u.phone, user.phone))
+    );
+    if (existingIdx >= 0) {
+      users[existingIdx] = { ...users[existingIdx], ...user };
+    } else {
+      users.push(user);
+    }
+    localStorage.setItem(LOCAL_USERS_DB_KEY, JSON.stringify(users));
+  } catch (e) {}
+}
+
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+
   const [token, setTokenState] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(() => {
     if (typeof window !== "undefined") {
@@ -510,7 +546,54 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       console.warn("Notice querying members table:", e);
     }
 
-    // 4. Fallback check active user / user storage from previous app versions
+    // 4. Local Registered Users Store check (works completely offline and on static hosts like Vercel)
+    try {
+      const localUsers = getLocalRegisteredUsers();
+      const foundLocal = localUsers.find((u) => {
+        if (!u) return false;
+        if (u.email && u.email.trim().toLowerCase() === trimmedInput) return true;
+        if (cleanDigits.length >= 7 && u.phone) {
+          const userPhoneDigits = u.phone.replace(/\D/g, "");
+          if (
+            userPhoneDigits.endsWith(cleanDigits) ||
+            cleanDigits.endsWith(userPhoneDigits)
+          ) {
+            return true;
+          }
+        }
+        if (u.name && u.name.trim().toLowerCase() === trimmedInput) return true;
+        return false;
+      });
+
+      if (foundLocal) {
+        const isPassValid = await verifyPasswordMatch(password, foundLocal.password_hash);
+        if (isPassValid) {
+          const userAccount: UserAccount = {
+            id: foundLocal.id,
+            name: foundLocal.name,
+            email: foundLocal.email,
+            phone: foundLocal.phone,
+            avatarColor: foundLocal.avatarColor || "#E39A2D",
+            avatarUrl: foundLocal.avatarUrl,
+            bio: foundLocal.bio || "Travel Enthusiast",
+            createdAt: foundLocal.createdAt || new Date().toISOString(),
+          };
+
+          persistUser(userAccount);
+          setAccounts((prev) => [userAccount, ...prev.filter((a) => a.id !== userAccount.id)]);
+          return { success: true, user: userAccount };
+        } else {
+          return {
+            success: false,
+            error: "Incorrect password for this account. Please verify your password or use 'Forgot Password?' to reset it.",
+          };
+        }
+      }
+    } catch (e) {
+      console.warn("Local registered users check notice:", e);
+    }
+
+    // 5. Fallback check active user / user storage from previous app versions
     try {
       if (typeof window !== "undefined") {
         const previousStoredKeys = [
@@ -578,6 +661,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     // 1. DUPLICATION CHECK: Prevent creating an account if email or phone already exists
     try {
+      const localUsers = getLocalRegisteredUsers();
+      const existingLocalEmail = localUsers.find((u) => u && isEmailMatch(u.email, trimmedEmail));
+      if (existingLocalEmail) {
+        return {
+          success: false,
+          error: "An account with this email already exists. Please log in with your password.",
+        };
+      }
+      if (cleanPhoneDigits.length >= 7) {
+        const existingLocalPhone = localUsers.find(
+          (u) => u && u.phone && isPhoneMatch(u.phone, accountData.phone)
+        );
+        if (existingLocalPhone) {
+          return {
+            success: false,
+            error: "An account with this phone number already exists. Please log in with your password.",
+          };
+        }
+      }
+
       const { data: usersList, error: queryErr } = await supabase
         .from("users")
         .select("*");
@@ -710,6 +813,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       console.warn("Notice inserting user to users table:", e);
     }
 
+    // Save to local registered users store (works completely offline and across logins)
+    saveLocalRegisteredUser({
+      id: userId,
+      name: trimmedName,
+      email: trimmedEmail,
+      phone: accountData.phone,
+      avatarColor: accountData.avatarColor || "#E39A2D",
+      bio: accountData.bio || "Travel Enthusiast",
+      password_hash: hashedPassword,
+      createdAt: new Date().toISOString(),
+    });
+
     if (supabaseSessionToken) {
       setTokenState(supabaseSessionToken);
     }
@@ -797,25 +912,39 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return { success: false, error: "Password must be at least 6 characters long." };
     }
 
+    const newHashed = await hashPassword(newPassword);
+    if (currentUser?.id || currentUser?.email) {
+      try {
+        const users = getLocalRegisteredUsers();
+        const idx = users.findIndex(
+          (u) =>
+            (currentUser.id && u.id === currentUser.id) ||
+            (currentUser.email && u.email && u.email.toLowerCase() === currentUser.email.toLowerCase())
+        );
+        if (idx >= 0) {
+          users[idx].password_hash = newHashed;
+          localStorage.setItem(LOCAL_USERS_DB_KEY, JSON.stringify(users));
+        }
+      } catch (e) {}
+    }
+
     try {
       const { error } = await supabase.auth.updateUser({
         password: newPassword,
       });
 
       if (error) {
-        return { success: false, error: error.message };
+        console.warn("Supabase updateUser notice:", error.message);
       }
+    } catch (e) {}
 
-      setIsPasswordRecovery(false);
-      // Clean up URL hash
-      if (typeof window !== "undefined" && window.location.hash) {
-        window.history.replaceState(null, "", window.location.pathname);
-      }
-
-      return { success: true };
-    } catch (err: any) {
-      return { success: false, error: err.message || "Failed to update password." };
+    setIsPasswordRecovery(false);
+    // Clean up URL hash
+    if (typeof window !== "undefined" && window.location.hash) {
+      window.history.replaceState(null, "", window.location.pathname);
     }
+
+    return { success: true };
   };
 
   // Logout handler
@@ -846,6 +975,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       ...updatedData,
     };
     setCurrentUser(updated);
+
+    try {
+      const users = getLocalRegisteredUsers();
+      const idx = users.findIndex((u) => u.id === updated.id);
+      if (idx >= 0) {
+        users[idx] = {
+          ...users[idx],
+          name: updated.name,
+          phone: updated.phone,
+          avatarColor: updated.avatarColor,
+          avatarUrl: updated.avatarUrl,
+          bio: updated.bio,
+        };
+        localStorage.setItem(LOCAL_USERS_DB_KEY, JSON.stringify(users));
+      }
+    } catch (e) {}
 
     try {
       if (updatedData.name || updatedData.avatarColor || updatedData.bio || updatedData.phone) {

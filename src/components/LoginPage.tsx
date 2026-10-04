@@ -551,31 +551,68 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                       <span>Click here to Log In with your password &rarr;</span>
                     </button>
                   ) : activeTab === "login" ? (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setActiveTab("reset");
-                        setError(null);
-                        setResetSuccessMsg(null);
-                        if (loginEmail.includes("@")) setResetEmail(loginEmail);
-                      }}
-                      style={{
-                        marginTop: 6,
-                        background: "none",
-                        border: "none",
-                        padding: 0,
-                        color: C.marigoldDark,
-                        fontWeight: 800,
-                        fontSize: 12,
-                        cursor: "pointer",
-                        textDecoration: "underline",
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: 4,
-                      }}
-                    >
-                      <span>Forgot your password? Click here to request a password reset link &rarr;</span>
-                    </button>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
+                      {(error.toLowerCase().includes("no account found") ||
+                        error.toLowerCase().includes("create account")) && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActiveTab("signup");
+                            setError(null);
+                            setResetSuccessMsg(null);
+                            if (loginEmail.includes("@")) {
+                              setEmail(loginEmail);
+                            } else if (loginEmail.replace(/\D/g, "").length >= 7) {
+                              setPhone(loginEmail);
+                            }
+                          }}
+                          style={{
+                            background: C.marigold,
+                            color: "#ffffff",
+                            border: "none",
+                            borderRadius: 8,
+                            padding: "7px 14px",
+                            fontWeight: 800,
+                            fontSize: 12.5,
+                            cursor: "pointer",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 6,
+                            width: "fit-content",
+                            boxShadow: "0 2px 6px rgba(217, 119, 6, 0.3)",
+                          }}
+                        >
+                          <UserPlus size={14} />
+                          <span>Create an account with this email &rarr;</span>
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveTab("reset");
+                          setError(null);
+                          setResetSuccessMsg(null);
+                          if (loginEmail.includes("@")) setResetEmail(loginEmail);
+                        }}
+                        style={{
+                          background: "none",
+                          border: "none",
+                          padding: 0,
+                          color: C.marigoldDark,
+                          fontWeight: 800,
+                          fontSize: 12,
+                          cursor: "pointer",
+                          textDecoration: "underline",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 4,
+                          width: "fit-content",
+                        }}
+                      >
+                        <span>Forgot your password? Click here to request a password reset link &rarr;</span>
+                      </button>
+                    </div>
                   ) : null}
                 </div>
               </div>
