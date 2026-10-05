@@ -1,0 +1,152 @@
+import crypto from "crypto";
+import { Pool } from "pg";
+
+const rawConn = (process.env.POSTGRES_URL_NON_POOLING || process.env.POSTGRES_URL || "").replace(/\?.*$/, "");
+
+export const pool = rawConn
+  ? new Pool({
+      connectionString: rawConn,
+      ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: true } : { rejectUnauthorized: false },
+    })
+  : null;
+
+export const PASSWORD_SALT = process.env.PASSWORD_SALT || process.env.AUTH_SECRET || "";
+export const SESSION_SECRET = process.env.SESSION_SECRET || process.env.AUTH_SECRET || "tripsplit_session_secret_dev";
+
+export interface SessionPayload {
+  userId: string;
+  email?: string;
+  name?: string;
+  iat: number;
+  exp: number;
+}
+
+export function generateSessionToken(userId: string, email?: string, name?: string): string {
+  const payload: SessionPayload = {
+    userId,
+    email,
+    name,
+    iat: Math.floor(Date.now() / 1000),
+    exp: Math.floor(Date.now() / 1000) + 86400,
+  };
+
+  const headerBase64 = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+  const payloadBase64 = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signature = crypto
+    .createHmac("sha256", SESSION_SECRET)
+    .update(`${headerBase64}.${payloadBase64}`)
+    .digest("base64url");
+
+  return `${headerBase64}.${payloadBase64}.${signature}`;
+}
+
+export function verifySessionToken(token: string): SessionPayload | null {
+  try {
+    const [headerBase64, payloadBase64, signatureBase64] = token.split(".");
+    if (!headerBase64 || !payloadBase64 || !signatureBase64) return null;
+
+    const signature = crypto
+      .createHmac("sha256", SESSION_SECRET)
+      .update(`${headerBase64}.${payloadBase64}`)
+      .digest("base64url");
+
+    if (signature !== signatureBase64) return null;
+
+    const payload: SessionPayload = JSON.parse(
+      Buffer.from(payloadBase64, "base64url").toString("utf8")
+    );
+
+    if (payload.exp < Math.floor(Date.now() / 1000)) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+export function hashPasswordNode(password: string): string {
+  const salt = PASSWORD_SALT || "_tripsplit_salt_v1";
+  return crypto.createHash("sha256").update(password + salt).digest("hex");
+}
+
+export function verifyPasswordMatchNode(
+  inputPassword: string,
+  storedHashOrPassword?: string | null
+): boolean {
+  if (!storedHashOrPassword || storedHashOrPassword.trim() === "") return true;
+  if (storedHashOrPassword === inputPassword || storedHashOrPassword.trim() === inputPassword.trim()) return true;
+
+  if (PASSWORD_SALT) {
+    const envSalted = crypto.createHash("sha256").update(inputPassword + PASSWORD_SALT).digest("hex");
+    if (storedHashOrPassword === envSalted) return true;
+  }
+
+  const legacySalted = crypto.createHash("sha256").update(inputPassword + "_tripsplit_salt_v1").digest("hex");
+  if (storedHashOrPassword === legacySalted) return true;
+
+  const unsalted = crypto.createHash("sha256").update(inputPassword).digest("hex");
+  if (storedHashOrPassword === unsalted) return true;
+
+  let simpleHash = 0;
+  for (let i = 0; i < inputPassword.length; i++) {
+    simpleHash = ((simpleHash << 5) - simpleHash + inputPassword.charCodeAt(i)) | 0;
+  }
+  if (storedHashOrPassword === `fb_${Math.abs(simpleHash)}`) return true;
+
+  return false;
+}
+
+export async function checkTripAuthorization(
+  tripId: string,
+  userId: string | undefined,
+  poolInstance: typeof pool = pool
+): Promise<{ isOwner: boolean; isMember: boolean; canAccess: boolean; role?: string }> {
+  if (!tripId || !userId || !poolInstance) {
+    return { isOwner: false, isMember: false, canAccess: false };
+  }
+
+  try {
+    const tripRes = await poolInstance.query("SELECT owner_id FROM public.trips WHERE id = $1 LIMIT 1;", [tripId]);
+    const trip = tripRes.rows[0];
+    if (!trip) {
+      return { isOwner: false, isMember: false, canAccess: false };
+    }
+
+    const isOwner = trip.owner_id === userId;
+    if (isOwner) {
+      return { isOwner: true, isMember: true, canAccess: true, role: "owner" };
+    }
+
+    const memberRes = await poolInstance.query(
+      `SELECT role FROM public.trip_members
+       WHERE trip_id = $1 AND (user_id = $2 OR id = $2)
+       LIMIT 1;`,
+      [tripId, userId]
+    );
+
+    const member = memberRes.rows[0];
+    if (member) {
+      return { isOwner: false, isMember: true, canAccess: true, role: member.role };
+    }
+
+    return { isOwner: false, isMember: false, canAccess: false };
+  } catch {
+    return { isOwner: false, isMember: false, canAccess: false };
+  }
+}
+
+export function getBearerToken(req: any): string {
+  const authHeader = req.headers.authorization || "";
+  return authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+}
+
+export function getJsonBody(req: any): any {
+  if (!req.body) return {};
+  if (typeof req.body === "string") {
+    try {
+      return JSON.parse(req.body);
+    } catch {
+      return {};
+    }
+  }
+  return req.body;
+}
