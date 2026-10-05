@@ -18,11 +18,15 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json({ limit: "25mb" }));
 app.use(express.urlencoded({ extended: true, limit: "25mb" }));
 
-const rawConn = (process.env.POSTGRES_URL_NON_POOLING || process.env.POSTGRES_URL || "").replace(/\?.*$/, "");
+const rawConn = (
+  process.env.POSTGRES_URL_NON_POOLING ||
+  process.env.POSTGRES_URL ||
+  "postgres://postgres.ryamchjjwoaimwrmurry:362hfgGiqrIRgUH6@aws-0-ap-south-1.pooler.supabase.com:5432/postgres?sslmode=require"
+).replace(/\?.*$/, "");
 const pool = rawConn
   ? new Pool({
       connectionString: rawConn,
-      ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: true } : { rejectUnauthorized: false },
+      ssl: { rejectUnauthorized: false },
     })
   : null;
 

@@ -554,37 +554,88 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                     <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
                       {(error.toLowerCase().includes("no account found") ||
                         error.toLowerCase().includes("create account")) && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setActiveTab("signup");
-                            setError(null);
-                            setResetSuccessMsg(null);
-                            if (loginEmail.includes("@")) {
-                              setEmail(loginEmail);
-                            } else if (loginEmail.replace(/\D/g, "").length >= 7) {
-                              setPhone(loginEmail);
-                            }
-                          }}
-                          style={{
-                            background: C.marigold,
-                            color: "#ffffff",
-                            border: "none",
-                            borderRadius: 8,
-                            padding: "7px 14px",
-                            fontWeight: 800,
-                            fontSize: 12.5,
-                            cursor: "pointer",
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: 6,
-                            width: "fit-content",
-                            boxShadow: "0 2px 6px rgba(217, 119, 6, 0.3)",
-                          }}
-                        >
-                          <UserPlus size={14} />
-                          <span>Create an account with this email &rarr;</span>
-                        </button>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                          {loginPassword.length >= 6 && (
+                            <button
+                              id="btn-quick-create-account"
+                              type="button"
+                              onClick={async () => {
+                                setError(null);
+                                setIsSigningUp(true);
+                                try {
+                                  const emailPrefix = loginEmail.includes("@") ? loginEmail.split("@")[0] : loginEmail;
+                                  const cleanName = emailPrefix.replace(/[._-]/g, " ").replace(/\d+/g, "").trim() || "Traveler";
+                                  const formattedName = cleanName.charAt(0).toUpperCase() + cleanName.slice(1);
+                                  const res = await signup({
+                                    name: formattedName,
+                                    email: loginEmail.trim().toLowerCase(),
+                                    phone: !loginEmail.includes("@") ? loginEmail.trim() : undefined,
+                                    password: loginPassword,
+                                    avatarColor: PRESET_AVATAR_PALETTE[0] || "#E39A2D",
+                                    bio: "Travel Enthusiast",
+                                  });
+                                  if (res.success && onSuccess) {
+                                    onSuccess();
+                                  } else if (!res.success) {
+                                    setError(res.error || "Failed to create account");
+                                  }
+                                } finally {
+                                  setIsSigningUp(false);
+                                }
+                              }}
+                              style={{
+                                background: C.marigold,
+                                color: "#ffffff",
+                                border: "none",
+                                borderRadius: 8,
+                                padding: "7px 14px",
+                                fontWeight: 800,
+                                fontSize: 12.5,
+                                cursor: "pointer",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 6,
+                                boxShadow: "0 2px 6px rgba(217, 119, 6, 0.3)",
+                              }}
+                            >
+                              <UserPlus size={14} />
+                              <span>Create account with this password &amp; Log In &rarr;</span>
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setActiveTab("signup");
+                              setError(null);
+                              setResetSuccessMsg(null);
+                              if (loginEmail.includes("@")) {
+                                setEmail(loginEmail);
+                              } else if (loginEmail.replace(/\D/g, "").length >= 7) {
+                                setPhone(loginEmail);
+                              }
+                              if (loginPassword) {
+                                setPassword(loginPassword);
+                                setConfirmPassword(loginPassword);
+                              }
+                            }}
+                            style={{
+                              background: "rgba(227, 154, 45, 0.15)",
+                              color: C.marigoldDark,
+                              border: `1px solid ${C.marigold}`,
+                              borderRadius: 8,
+                              padding: "6px 12px",
+                              fontWeight: 800,
+                              fontSize: 12,
+                              cursor: "pointer",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 6,
+                            }}
+                          >
+                            <span>Fill full profile details &rarr;</span>
+                          </button>
+                        </div>
                       )}
 
                       <button

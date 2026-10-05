@@ -6,11 +6,15 @@ const metaEnv: Record<string, any> = {
   ...((import.meta as any).env || {}),
 };
 
+const DEFAULT_SUPABASE_URL = "https://ryamchjjwoaimwrmurry.supabase.co";
+const DEFAULT_SUPABASE_ANON_KEY =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ5YW1jaGpqd29haW13cm11cnJ5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAwMTIwOTYsImV4cCI6MjEwNTU4ODA5Nn0.6r-qcinkytxEzCxb4jhRjXNZ0-g4_YTKdsnhUG3De6A";
+
 const supabaseUrl: string =
   metaEnv.VITE_SUPABASE_URL ||
   metaEnv.NEXT_PUBLIC_SUPABASE_URL ||
   metaEnv.SUPABASE_URL ||
-  "https://placeholder-project.supabase.co";
+  DEFAULT_SUPABASE_URL;
 
 function getValidAnonKey(): string {
   const candidates = [
@@ -42,8 +46,8 @@ function getValidAnonKey(): string {
     }
   }
 
-  // Safe dummy anon token placeholder if unconfigured (does not grant any access)
-  return "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.placeholder_anon_key";
+  // Real Supabase anon key configured for project
+  return DEFAULT_SUPABASE_ANON_KEY;
 }
 
 const supabaseAnonKey = getValidAnonKey();
