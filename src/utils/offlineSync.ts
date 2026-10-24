@@ -39,7 +39,10 @@ export function getOfflineQueue(): OfflineMutation[] {
     const raw = localStorage.getItem(OFFLINE_QUEUE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    if (Array.isArray(parsed)) {
+      return parsed.filter((m) => m && m.id && (m.retryCount || 0) < 3);
+    }
+    return [];
   } catch (err) {
     console.warn("Failed to load offline queue:", err);
     return [];
@@ -126,11 +129,42 @@ export function setLastSyncTime(isoDate?: string): void {
 }
 
 /**
- * Directly executes a single mutation against Supabase.
+ * Directly executes a single mutation against the backend database / Supabase.
  */
 async function executeMutation(mutation: OfflineMutation): Promise<void> {
   const { type, tripId, payload } = mutation;
 
+  // 1. First attempt to sync via backend API which connects directly to PostgreSQL
+  try {
+    let authHeader = "";
+    if (typeof localStorage !== "undefined") {
+      const token = localStorage.getItem("trip_expense_splitter_auth_token_v1");
+      if (token) {
+        authHeader = `Bearer ${token}`;
+      }
+    }
+
+    if (authHeader) {
+      const res = await fetch("/api/sync/mutation", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: authHeader,
+        },
+        body: JSON.stringify({ type, tripId, payload }),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success) {
+          return;
+        }
+      }
+    }
+  } catch (apiErr) {
+    // If API route is not available or network error, proceed to Supabase client fallback
+  }
+
+  // 2. Supabase direct fallback
   switch (type) {
     case "SAVE_TRIP_SNAPSHOT": {
       const trip: Trip = payload;
@@ -181,24 +215,49 @@ async function executeMutation(mutation: OfflineMutation): Promise<void> {
     }
 
     case "DELETE_EXPENSE": {
-      const expenseId: string = payload.expenseId;
-      const { error } = await supabase.from("expenses").delete().eq("id", expenseId);
-      if (error) throw new Error(error.message);
+      const expenseId: string = payload?.expenseId || payload?.id;
+      if (expenseId) {
+        const { error } = await supabase.from("expenses").delete().eq("id", expenseId);
+        if (error) throw new Error(error.message);
+      }
       break;
     }
 
     case "RECORD_PAYMENT": {
-      const payment: Payment = payload;
-      const row = mapPaymentToRow(tripId, payment);
+      const payment: any = payload;
+      if (!payment || !payment.id) break;
+
+      // Handle partial status update (e.g. from confirmPaymentAtomic)
+      if (payment.status && (!payment.amount || !payment.from)) {
+        const updatePayload: Record<string, any> = {
+          status: payment.status,
+          updated_at: new Date().toISOString(),
+        };
+        if (payment.confirmedBy) {
+          updatePayload.confirmed_by = payment.confirmedBy;
+          updatePayload.confirmed_at = new Date().toISOString();
+        }
+        if (payment.cancelledBy) {
+          updatePayload.cancelled_by = payment.cancelledBy;
+          updatePayload.cancelled_at = new Date().toISOString();
+        }
+        const { error } = await supabase.from("payments").update(updatePayload).eq("id", payment.id);
+        if (error) throw new Error(error.message);
+        break;
+      }
+
+      const row = mapPaymentToRow(tripId, payment as Payment);
       const { error } = await supabase.from("payments").upsert(row);
       if (error) throw new Error(error.message);
       break;
     }
 
     case "DELETE_PAYMENT": {
-      const paymentId: string = payload.paymentId;
-      const { error } = await supabase.from("payments").delete().eq("id", paymentId);
-      if (error) throw new Error(error.message);
+      const paymentId: string = payload?.paymentId || payload?.id;
+      if (paymentId) {
+        const { error } = await supabase.from("payments").delete().eq("id", paymentId);
+        if (error) throw new Error(error.message);
+      }
       break;
     }
 
@@ -211,9 +270,11 @@ async function executeMutation(mutation: OfflineMutation): Promise<void> {
     }
 
     case "DELETE_MEMBER": {
-      const memberId: string = payload.memberId;
-      const { error } = await supabase.from("trip_members").delete().eq("id", memberId);
-      if (error) throw new Error(error.message);
+      const memberId: string = payload?.memberId || payload?.id;
+      if (memberId) {
+        const { error } = await supabase.from("trip_members").delete().eq("id", memberId);
+        if (error) throw new Error(error.message);
+      }
       break;
     }
 
@@ -244,18 +305,41 @@ export async function processOfflineQueue(): Promise<{
   let successCount = 0;
   let failedCount = 0;
   const remaining: OfflineMutation[] = [];
+  let isCloudUnreachable = false;
 
   for (const mutation of queue) {
+    if (isCloudUnreachable) {
+      remaining.push(mutation);
+      continue;
+    }
+
     try {
-      await executeMutation(mutation);
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("Failed to fetch: Connection timeout")), 3000)
+      );
+      await Promise.race([executeMutation(mutation), timeoutPromise]);
       successCount++;
-    } catch (err) {
-      console.error(`Failed to process mutation ${mutation.id} (${mutation.type}):`, err);
+    } catch (err: any) {
+      const errMsg = err?.message || String(err);
+      const isNetworkErr =
+        errMsg.toLowerCase().includes("failed to fetch") ||
+        errMsg.toLowerCase().includes("networkerror") ||
+        errMsg.toLowerCase().includes("timeout") ||
+        errMsg.toLowerCase().includes("abort") ||
+        errMsg.toLowerCase().includes("load failed") ||
+        errMsg.toLowerCase().includes("enotfound");
+
+      if (isNetworkErr) {
+        console.warn(`Sync deferred for mutation ${mutation.id} (${mutation.type}): Cloud backend currently unreachable.`);
+        isCloudUnreachable = true;
+      } else {
+        console.warn(`Notice processing mutation ${mutation.id} (${mutation.type}):`, errMsg);
+      }
+
       failedCount++;
-      // Increment retry count
       mutation.retryCount = (mutation.retryCount || 0) + 1;
-      // Retain up to 5 retries before dropping corrupt items
-      if (mutation.retryCount <= 5) {
+      // Retain up to 3 retries before dropping
+      if (mutation.retryCount < 3) {
         remaining.push(mutation);
       }
     }

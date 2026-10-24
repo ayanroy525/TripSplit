@@ -496,36 +496,24 @@ export function subscribeToUserTrips(
 
   const loadTrips = async () => {
     try {
-      const [tripsRes, memberRes] = await Promise.all([
+      // Fast timeout: If Supabase doesn't respond in 2.5s, fall back to local/server cache
+      const fetchPromise = Promise.all([
         supabase.from("trips").select("*").order("created_at", { ascending: false }),
         supabase.from("trip_members").select("trip_id").eq("user_id", userId),
       ]);
 
-      const tripRows = tripsRes.data;
-      if (tripsRes.error || !tripRows) {
-        return;
-      }
+      const timeoutPromise = new Promise<{ data: null; error: Error }>((resolve) =>
+        setTimeout(() => resolve({ data: null, error: new Error("Supabase timeout") }), 2500)
+      );
 
-      const myMemberTripIds = new Set((memberRes.data || []).map((r) => r.trip_id));
+      const [tripsRes, memberRes] = (await Promise.race([
+        fetchPromise,
+        timeoutPromise.then((t) => [t, t]),
+      ])) as [any, any];
 
-      const matchingRows = tripRows.filter((row) => {
-        const isOwner = row.owner_id === userId;
-        const inMembers =
-          Array.isArray(row.member_user_ids) && row.member_user_ids.includes(userId);
-        const inMemberRows = myMemberTripIds.has(row.id);
-        return isOwner || inMembers || inMemberRows;
-      });
-
-      const fullTrips: Trip[] = [];
-      for (const row of matchingRows) {
-        const trip = await getTripFromDatabase(row.id);
-        if (trip) fullTrips.push(trip);
-      }
-
-      if (fullTrips.length > 0) {
-        onTripsUpdate(fullTrips);
-      } else {
-        // Direct database API fallback
+      const tripRows = tripsRes?.data;
+      if (tripsRes?.error || !tripRows || tripRows.length === 0) {
+        // Fall back to server API or local storage
         try {
           const apiRes = await fetch(`/api/user-trips`, {
             headers: getAuthHeaders(),
@@ -542,35 +530,82 @@ export function subscribeToUserTrips(
                   (t.activities || []).map(mapActivityRowToActivity)
                 )
               );
+              if (mapped.length > 0) {
+                onTripsUpdate(mapped);
+                return;
+              }
+            }
+          }
+        } catch (e) {}
+
+        const cached = loadUserLocalState(userId);
+        if (cached.trips && cached.trips.length > 0) {
+          onTripsUpdate(cached.trips);
+        }
+        return;
+      }
+
+      const myMemberTripIds = new Set((memberRes?.data || []).map((r: any) => r.trip_id));
+
+      const matchingRows = tripRows.filter((row: any) => {
+        const isOwner = row.owner_id === userId;
+        const inMembers =
+          Array.isArray(row.member_user_ids) && row.member_user_ids.includes(userId);
+        const inMemberRows = myMemberTripIds.has(row.id);
+        return isOwner || inMembers || inMemberRows;
+      });
+
+      // Fetch trips concurrently in parallel
+      const fullTrips: Trip[] = (
+        await Promise.all(
+          matchingRows.map(async (row: any) => {
+            try {
+              return await getTripFromDatabase(row.id);
+            } catch {
+              return null;
+            }
+          })
+        )
+      ).filter(Boolean) as Trip[];
+
+      if (fullTrips.length > 0) {
+        onTripsUpdate(fullTrips);
+      } else {
+        try {
+          const apiRes = await fetch(`/api/user-trips`, {
+            headers: getAuthHeaders(),
+          });
+          if (apiRes.ok) {
+            const apiData = await apiRes.json();
+            if (apiData.success && Array.isArray(apiData.trips) && apiData.trips.length > 0) {
+              const mapped = apiData.trips.map((t: any) =>
+                mapTripRowToTrip(
+                  t,
+                  (t.members || []).map(mapMemberRowToMember),
+                  (t.expenses || []).map(mapExpenseRowToExpense),
+                  (t.payments || []).map(mapPaymentRowToPayment),
+                  (t.activities || []).map(mapActivityRowToActivity)
+                )
+              );
               onTripsUpdate(mapped);
               return;
             }
           }
         } catch (e) {}
-        onTripsUpdate([]);
+
+        const cached = loadUserLocalState(userId);
+        if (cached.trips && cached.trips.length > 0) {
+          onTripsUpdate(cached.trips);
+        } else {
+          onTripsUpdate([]);
+        }
       }
     } catch (err) {
-      console.warn("Error fetching user trips from Supabase, attempting API fallback:", err);
-      try {
-        const apiRes = await fetch(`/api/user-trips`, {
-          headers: getAuthHeaders(),
-        });
-        if (apiRes.ok) {
-          const apiData = await apiRes.json();
-          if (apiData.success && Array.isArray(apiData.trips)) {
-            const mapped = apiData.trips.map((t: any) =>
-              mapTripRowToTrip(
-                t,
-                (t.members || []).map(mapMemberRowToMember),
-                (t.expenses || []).map(mapExpenseRowToExpense),
-                (t.payments || []).map(mapPaymentRowToPayment),
-                (t.activities || []).map(mapActivityRowToActivity)
-              )
-            );
-            onTripsUpdate(mapped);
-          }
-        }
-      } catch (e) {}
+      console.warn("Notice in subscribeToUserTrips, using local cache:", err);
+      const cached = loadUserLocalState(userId);
+      if (cached.trips && cached.trips.length > 0) {
+        onTripsUpdate(cached.trips);
+      }
     }
   };
 

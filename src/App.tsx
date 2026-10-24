@@ -93,6 +93,7 @@ export default function App() {
   // 1. Data Layer Hook
   const {
     isHydrated,
+    setIsHydrated,
     trips,
     setTrips,
     activeTripId,
@@ -202,12 +203,19 @@ export default function App() {
   // 4. Loading State
   if (!isHydrated) {
     return (
-      <div className="min-h-screen bg-[var(--c-paper,#0F172A)] text-[var(--c-ink,#F8FAFC)] flex flex-col items-center justify-center p-6">
+      <div className="min-h-screen bg-[var(--c-paper,#0F172A)] text-[var(--c-ink,#F8FAFC)] flex flex-col items-center justify-center p-6 text-center">
         <div className="w-14 h-14 rounded-2xl bg-[var(--c-teal,#2DD4BF)] text-[var(--c-teal-contrast-text,#0F172A)] flex items-center justify-center shadow-lg animate-pulse mb-4">
           <Compass size={28} />
         </div>
         <div className="text-base font-bold">Trip Expense Splitter</div>
         <div className="text-xs text-[var(--c-inkSoft,#94A3B8)] mt-1">Loading saved trip state...</div>
+        <button
+          type="button"
+          onClick={() => setIsHydrated(true)}
+          className="mt-4 px-3 py-1.5 text-xs font-semibold rounded-lg bg-[var(--c-paperDark,#1E293B)] border border-[var(--c-line,#334155)] hover:border-teal-400 text-teal-400 transition-colors cursor-pointer"
+        >
+          Open App Now &rarr;
+        </button>
       </div>
     );
   }

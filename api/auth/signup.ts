@@ -6,6 +6,11 @@ import {
   parseBody,
   sendJson,
 } from "../_shared.ts";
+import {
+  findLocalUser,
+  saveLocalUser,
+  LocalUserRecord,
+} from "../../src/serverDb.js";
 
 export default async function handler(req: any, res: any) {
   setCorsHeaders(res);
@@ -37,57 +42,82 @@ export default async function handler(req: any, res: any) {
     return sendJson(res, 400, { success: false, error: "Password must be at least 6 characters long." });
   }
 
-  if (!pool) {
-    return sendJson(res, 503, { success: false, error: "Database connection not initialized." });
+  // Check if account already exists in local store
+  const existingLocal = findLocalUser(trimmedEmail) || (cleanDigits.length >= 7 ? findLocalUser(cleanDigits) : null);
+  if (existingLocal) {
+    return sendJson(res, 409, {
+      success: false,
+      error: "An account with this email or phone already exists. Please log in with your password.",
+    });
   }
 
-  try {
-    const existingRes = await pool.query(
-      `SELECT id, email, phone FROM public.users
-       WHERE LOWER(TRIM(email)) = $1
-          OR ($2 <> '' AND regexp_replace(COALESCE(phone, ''), '\\D', '', 'g') = $2)
-       LIMIT 1;`,
-      [trimmedEmail, cleanDigits.length >= 7 ? cleanDigits : ""]
-    );
+  if (pool) {
+    try {
+      const existingRes = await pool.query(
+        `SELECT id, email, phone FROM public.users
+         WHERE LOWER(TRIM(email)) = $1
+            OR ($2 <> '' AND regexp_replace(COALESCE(phone, ''), '\\D', '', 'g') = $2)
+         LIMIT 1;`,
+        [trimmedEmail, cleanDigits.length >= 7 ? cleanDigits : ""]
+      );
 
-    if (existingRes.rows.length > 0) {
-      return sendJson(res, 409, {
-        success: false,
-        error: "An account with this email or phone already exists. Please log in with your password.",
-      });
+      if (existingRes.rows.length > 0) {
+        return sendJson(res, 409, {
+          success: false,
+          error: "An account with this email or phone already exists. Please log in with your password.",
+        });
+      }
+    } catch (err) {
+      console.warn("Notice: PostgreSQL check during signup:", err);
     }
-
-    const userId = `u_${Math.random().toString(36).substring(2, 9)}_${Date.now().toString(36)}`;
-    const hashedPassword = hashPasswordNode(inputPassword);
-
-    await pool.query(
-      `INSERT INTO public.users (id, email, name, phone, avatar_color, bio, password_hash, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW());`,
-      [
-        userId,
-        trimmedEmail,
-        trimmedName,
-        rawPhone || null,
-        avatarColor || "#E39A2D",
-        bio || "Travel Enthusiast",
-        hashedPassword,
-      ]
-    );
-
-    const userAccount = {
-      id: userId,
-      name: trimmedName,
-      email: trimmedEmail,
-      phone: rawPhone || undefined,
-      avatarColor: avatarColor || "#E39A2D",
-      bio: bio || "Travel Enthusiast",
-      createdAt: new Date().toISOString(),
-    };
-
-    const sessionToken = generateSessionToken(userId, trimmedEmail, trimmedName);
-    return sendJson(res, 200, { success: true, token: sessionToken, user: userAccount });
-  } catch (err: any) {
-    console.error("Error in /api/auth/signup:", err);
-    return sendJson(res, 500, { success: false, error: "Unable to create account. Please try again." });
   }
+
+  const userId = `u_${Math.random().toString(36).substring(2, 9)}_${Date.now().toString(36)}`;
+  const hashedPassword = hashPasswordNode(inputPassword);
+
+  const localUserRecord: LocalUserRecord = {
+    id: userId,
+    email: trimmedEmail,
+    name: trimmedName,
+    phone: rawPhone || null,
+    avatar_color: avatarColor || "#E39A2D",
+    bio: bio || "Travel Enthusiast",
+    password_hash: hashedPassword,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  saveLocalUser(localUserRecord);
+
+  if (pool) {
+    try {
+      await pool.query(
+        `INSERT INTO public.users (id, email, name, phone, avatar_color, bio, password_hash, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW());`,
+        [
+          userId,
+          trimmedEmail,
+          trimmedName,
+          rawPhone || null,
+          avatarColor || "#E39A2D",
+          bio || "Travel Enthusiast",
+          hashedPassword,
+        ]
+      );
+    } catch (err) {
+      console.warn("Notice: PostgreSQL insert during signup deferred:", err);
+    }
+  }
+
+  const userAccount = {
+    id: userId,
+    name: trimmedName,
+    email: trimmedEmail,
+    phone: rawPhone || undefined,
+    avatarColor: avatarColor || "#E39A2D",
+    bio: bio || "Travel Enthusiast",
+    createdAt: localUserRecord.created_at,
+  };
+
+  const sessionToken = generateSessionToken(userId, trimmedEmail, trimmedName);
+  return sendJson(res, 200, { success: true, token: sessionToken, user: userAccount });
 }

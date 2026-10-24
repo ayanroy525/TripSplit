@@ -63,7 +63,7 @@ export function OfflineSyncProvider({ children }: { children: React.ReactNode })
       await processOfflineQueue();
       refreshPendingCount();
     } catch (err) {
-      console.error("Auto sync failed:", err);
+      console.warn("Auto sync notice:", err);
     } finally {
       setIsSyncing(false);
     }

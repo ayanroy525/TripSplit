@@ -4,7 +4,7 @@ import crypto from "crypto";
 const rawConn = (
   process.env.POSTGRES_URL_NON_POOLING ||
   process.env.POSTGRES_URL ||
-  "postgres://postgres.ryamchjjwoaimwrmurry:362hfgGiqrIRgUH6@aws-0-ap-south-1.pooler.supabase.com:5432/postgres?sslmode=require"
+  ""
 ).replace(/\?.*$/, "");
 
 export const pool = rawConn
@@ -13,6 +13,7 @@ export const pool = rawConn
       ssl: { rejectUnauthorized: false },
       max: 5,
       idleTimeoutMillis: 10000,
+      connectionTimeoutMillis: 3000,
     })
   : null;
 

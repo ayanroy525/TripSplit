@@ -29,6 +29,14 @@ export function useTripData({ authUser, onNotify }: UseTripDataOptions) {
   const [initialJoinCode, setInitialJoinCode] = useState<string>("");
   const [autoOpenJoinModal, setAutoOpenJoinModal] = useState<boolean>(false);
 
+  // Safety fallback: Ensure hydration is never stuck
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setIsHydrated(true);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, []);
+
   // Keep refs to the latest trips array and callbacks so listeners never capture stale closures
   const tripsRef = useRef<Trip[]>(trips);
   tripsRef.current = trips;
@@ -68,6 +76,9 @@ export function useTripData({ authUser, onNotify }: UseTripDataOptions) {
       setTrips([]);
       setActiveTripId("");
     }
+
+    // Immediately hydrate from local storage so the dashboard renders instantly without waiting for network
+    setIsHydrated(true);
 
     // Parse URL deep links & invite links
     const handleUrlRouting = (currentAuthorizedTrips: Trip[]) => {
@@ -333,6 +344,7 @@ export function useTripData({ authUser, onNotify }: UseTripDataOptions) {
 
   return {
     isHydrated,
+    setIsHydrated,
     trips,
     setTrips,
     activeTripId,

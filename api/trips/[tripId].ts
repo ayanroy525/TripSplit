@@ -38,8 +38,15 @@ export default async function handler(req: any, res: any) {
 
     if (!isMember) {
       const memberRes = await pool.query(
-        `SELECT role FROM public.trip_members
-         WHERE trip_id = $1 AND (user_id = $2 OR id = $2)
+        `SELECT tm.role FROM public.trip_members tm
+         LEFT JOIN public.users u ON u.id = $2
+         WHERE tm.trip_id = $1 AND (
+           tm.user_id = $2
+           OR tm.id = $2
+           OR (u.email IS NOT NULL AND u.email <> '' AND LOWER(TRIM(tm.email)) = LOWER(TRIM(u.email)))
+           OR (u.phone IS NOT NULL AND LENGTH(regexp_replace(u.phone, '\\D', '', 'g')) >= 7
+               AND regexp_replace(COALESCE(tm.phone, ''), '\\D', '', 'g') LIKE '%' || regexp_replace(u.phone, '\\D', '', 'g') || '%')
+         )
          LIMIT 1;`,
         [tripId, userId]
       );
