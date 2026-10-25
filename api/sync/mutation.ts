@@ -1,5 +1,12 @@
-import { pool, verifySessionToken, setCorsHeaders, sendJson, parseBody } from "../_shared.ts";
-import { getLocalStore, saveLocalStore } from "../../src/serverDb.js";
+import {
+  pool,
+  verifySessionToken,
+  setCorsHeaders,
+  sendJson,
+  parseBody,
+  getLocalStore,
+  saveLocalStore,
+} from "../_shared.ts";
 
 export default async function handler(req: any, res: any) {
   setCorsHeaders(res);

@@ -207,6 +207,27 @@ export async function getTripFromDatabase(tripId: string): Promise<Trip | null> 
           }
         }
       } catch (e) {}
+
+      try {
+        if (typeof localStorage !== "undefined") {
+          const storedUser = localStorage.getItem("trip_expense_splitter_auth_user_v3");
+          const userId = storedUser ? JSON.parse(storedUser)?.id : "";
+          if (userId) {
+            const { data: rpcTrips } = await supabase.rpc("get_user_trips_data", { p_user_id: userId });
+            const found = Array.isArray(rpcTrips) ? rpcTrips.find((t: any) => t.id === tripId) : null;
+            if (found) {
+              return mapTripRowToTrip(
+                found,
+                (found.members || []).map(mapMemberRowToMember),
+                (found.expenses || []).map(mapExpenseRowToExpense),
+                (found.payments || []).map(mapPaymentRowToPayment),
+                (found.activities || []).map(mapActivityRowToActivity)
+              );
+            }
+          }
+        }
+      } catch (e) {}
+
       return null;
     }
 
@@ -513,7 +534,7 @@ export function subscribeToUserTrips(
 
       const tripRows = tripsRes?.data;
       if (tripsRes?.error || !tripRows || tripRows.length === 0) {
-        // Fall back to server API or local storage
+        // 1. Fall back to server API (for Node / Vercel serverless)
         try {
           const apiRes = await fetch(`/api/user-trips`, {
             headers: getAuthHeaders(),
@@ -537,6 +558,26 @@ export function subscribeToUserTrips(
             }
           }
         } catch (e) {}
+
+        // 2. Fall back to direct Supabase RPC (for Cloudflare Pages / static hosting)
+        try {
+          const { data: rpcTrips, error: rpcErr } = await supabase.rpc("get_user_trips_data", {
+            p_user_id: userId,
+          });
+          if (!rpcErr && Array.isArray(rpcTrips) && rpcTrips.length > 0) {
+            const mapped = rpcTrips.map((t: any) =>
+              mapTripRowToTrip(
+                t,
+                (t.members || []).map(mapMemberRowToMember),
+                (t.expenses || []).map(mapExpenseRowToExpense),
+                (t.payments || []).map(mapPaymentRowToPayment),
+                (t.activities || []).map(mapActivityRowToActivity)
+              )
+            );
+            onTripsUpdate(mapped);
+            return;
+          }
+        } catch (rpcErr) {}
 
         const cached = loadUserLocalState(userId);
         if (cached.trips && cached.trips.length > 0) {

@@ -433,32 +433,46 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     }
 
-    // 2. Query users from Supabase database table (public.users)
+    // 2. Query user via direct secure RPC (bypasses RLS safely on Vercel, Cloudflare, etc.)
     let foundDbUser: any = null;
     try {
-      const { data: usersList, error: queryErr } = await supabase
-        .from("users")
-        .select("*");
+      const { data: rpcUsers, error: rpcErr } = await supabase.rpc("lookup_user_for_auth", {
+        p_identifier: rawInput,
+      });
 
-      if (!queryErr && Array.isArray(usersList)) {
-        foundDbUser = usersList.find((u) => {
-          if (!u) return false;
-          if (u.email && u.email.trim().toLowerCase() === trimmedInput) return true;
-          if (cleanDigits.length >= 7 && u.phone) {
-            const userPhoneDigits = u.phone.replace(/\D/g, "");
-            if (
-              userPhoneDigits.endsWith(cleanDigits) ||
-              cleanDigits.endsWith(userPhoneDigits)
-            ) {
-              return true;
-            }
-          }
-          if (u.name && u.name.trim().toLowerCase() === trimmedInput) return true;
-          return false;
-        });
+      if (!rpcErr && Array.isArray(rpcUsers) && rpcUsers.length > 0) {
+        foundDbUser = rpcUsers[0];
       }
-    } catch (e) {
-      console.warn("Notice querying users table:", e);
+    } catch (rpcErr) {
+      console.warn("Notice calling lookup_user_for_auth RPC:", rpcErr);
+    }
+
+    if (!foundDbUser) {
+      try {
+        const { data: usersList, error: queryErr } = await supabase
+          .from("users")
+          .select("*");
+
+        if (!queryErr && Array.isArray(usersList)) {
+          foundDbUser = usersList.find((u) => {
+            if (!u) return false;
+            if (u.email && u.email.trim().toLowerCase() === trimmedInput) return true;
+            if (cleanDigits.length >= 7 && u.phone) {
+              const userPhoneDigits = u.phone.replace(/\D/g, "");
+              if (
+                userPhoneDigits.endsWith(cleanDigits) ||
+                cleanDigits.endsWith(userPhoneDigits)
+              ) {
+                return true;
+              }
+            }
+            if (u.name && u.name.trim().toLowerCase() === trimmedInput) return true;
+            return false;
+          });
+        }
+      } catch (e) {
+        console.warn("Notice querying users table:", e);
+      }
     }
 
     // If account was found in database

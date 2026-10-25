@@ -1,9 +1,14 @@
 import { Pool } from "pg";
 import crypto from "crypto";
+import fs from "fs";
+import path from "path";
 
 const rawConn = (
   process.env.POSTGRES_URL_NON_POOLING ||
   process.env.POSTGRES_URL ||
+  process.env.DATABASE_URL ||
+  process.env.SUPABASE_DATABASE_URL ||
+  process.env.POSTGRESQL_URL ||
   ""
 ).replace(/\?.*$/, "");
 
@@ -113,4 +118,138 @@ export function sendJson(res: any, statusCode: number, data: any) {
     res.statusCode = statusCode;
     res.end(JSON.stringify(data));
   }
+}
+
+// In-memory fallback for serverless environments (Vercel/Cloudflare)
+export interface LocalUserRecord {
+  id: string;
+  email: string | null;
+  name: string;
+  phone: string | null;
+  avatar_color: string;
+  avatar_url?: string;
+  bio?: string;
+  password_hash: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LocalMemberRecord {
+  id: string;
+  trip_id: string;
+  user_id?: string;
+  name: string;
+  email?: string;
+  phone?: string;
+  avatar_color?: string;
+  role?: string;
+  joined_at?: string;
+}
+
+export interface ServerStoreSchema {
+  users: LocalUserRecord[];
+  trips: any[];
+  trip_members: LocalMemberRecord[];
+  expenses: any[];
+  payments: any[];
+  activities: any[];
+}
+
+let inMemoryStore: ServerStoreSchema = {
+  users: [],
+  trips: [],
+  trip_members: [],
+  expenses: [],
+  payments: [],
+  activities: [],
+};
+
+function getStoragePath(): string | null {
+  try {
+    const candidate = path.resolve(process.cwd(), "data", "server_store.json");
+    return candidate;
+  } catch {
+    return null;
+  }
+}
+
+export function getLocalStore(): ServerStoreSchema {
+  try {
+    const filePath = getStoragePath();
+    if (filePath && fs.existsSync(filePath)) {
+      const raw = fs.readFileSync(filePath, "utf-8");
+      const parsed = JSON.parse(raw);
+      return {
+        users: Array.isArray(parsed.users) ? parsed.users : inMemoryStore.users,
+        trips: Array.isArray(parsed.trips) ? parsed.trips : inMemoryStore.trips,
+        trip_members: Array.isArray(parsed.trip_members) ? parsed.trip_members : inMemoryStore.trip_members,
+        expenses: Array.isArray(parsed.expenses) ? parsed.expenses : inMemoryStore.expenses,
+        payments: Array.isArray(parsed.payments) ? parsed.payments : inMemoryStore.payments,
+        activities: Array.isArray(parsed.activities) ? parsed.activities : inMemoryStore.activities,
+      };
+    }
+  } catch {}
+  return inMemoryStore;
+}
+
+export function saveLocalStore(data: ServerStoreSchema): void {
+  inMemoryStore = data;
+  try {
+    const filePath = getStoragePath();
+    if (filePath) {
+      const dir = path.dirname(filePath);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
+    }
+  } catch {}
+}
+
+export function findLocalUser(identifier: string): LocalUserRecord | null {
+  const store = getLocalStore();
+  const trimmed = identifier.trim().toLowerCase();
+  const cleanDigits = identifier.replace(/\D/g, "");
+
+  let found = store.users.find(
+    (u) =>
+      (u.email && u.email.trim().toLowerCase() === trimmed) ||
+      (u.name && u.name.trim().toLowerCase() === trimmed)
+  );
+
+  if (!found && cleanDigits.length >= 7) {
+    found = store.users.find((u) => {
+      const phoneDigits = (u.phone || "").replace(/\D/g, "");
+      return phoneDigits.length >= 7 && (phoneDigits.endsWith(cleanDigits) || cleanDigits.endsWith(phoneDigits));
+    });
+  }
+
+  return found || null;
+}
+
+export function findLocalMember(identifier: string): LocalMemberRecord | null {
+  const store = getLocalStore();
+  const trimmed = identifier.trim().toLowerCase();
+  const cleanDigits = identifier.replace(/\D/g, "");
+
+  let found = store.trip_members.find(
+    (m) =>
+      (m.email && m.email.trim().toLowerCase() === trimmed) ||
+      (m.name && m.name.trim().toLowerCase() === trimmed)
+  );
+
+  if (!found && cleanDigits.length >= 7) {
+    found = store.trip_members.find((m) => {
+      const phoneDigits = (m.phone || "").replace(/\D/g, "");
+      return phoneDigits.length >= 7 && (phoneDigits.endsWith(cleanDigits) || cleanDigits.endsWith(phoneDigits));
+    });
+  }
+
+  return found || null;
+}
+
+export function saveLocalUser(user: LocalUserRecord): void {
+  const store = getLocalStore();
+  const idx = store.users.findIndex((u) => u.id === user.id);
+  if (idx >= 0) store.users[idx] = user;
+  else store.users.push(user);
+  saveLocalStore(store);
 }

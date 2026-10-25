@@ -6,13 +6,11 @@ import {
   setCorsHeaders,
   parseBody,
   sendJson,
-} from "../_shared.ts";
-import {
   findLocalUser,
   findLocalMember,
   saveLocalUser,
-  LocalUserRecord,
-} from "../../src/serverDb.js";
+  type LocalUserRecord,
+} from "../_shared.ts";
 
 export default async function handler(req: any, res: any) {
   setCorsHeaders(res);
