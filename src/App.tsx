@@ -6,6 +6,7 @@ import {
   Banknote,
   Compass,
   Plus,
+  Activity,
 } from "lucide-react";
 import {
   Member,
@@ -82,6 +83,9 @@ const JoinTripModal = React.lazy(() =>
 const ResetPasswordModal = React.lazy(() =>
   import("./components/ResetPasswordModal").then((m) => ({ default: m.ResetPasswordModal }))
 );
+const SystemHealthModal = React.lazy(() =>
+  import("./components/SystemHealthModal").then((m) => ({ default: m.SystemHealthModal }))
+);
 
 export default function App() {
   const {
@@ -147,6 +151,9 @@ export default function App() {
 
   // 3. UI Presentation States
   const [activeTab, setActiveTab] = useState<NavTab>("home");
+  const isAdmin = Boolean(
+    authUser?.email && authUser.email.toLowerCase() === "ayanroy525@gmail.com"
+  );
   const permissions = React.useMemo(
     () => getTripPermissions(trip, currentUser, authUser?.id),
     [trip, currentUser, authUser?.id]
@@ -167,6 +174,7 @@ export default function App() {
   const [isWhatsAppModalOpen, setIsWhatsAppModalOpen] = useState(false);
   const [whatsAppPayload, setWhatsAppPayload] = useState<WhatsAppNotificationPayload | null>(null);
   const [isJoinTripModalOpen, setIsJoinTripModalOpen] = useState(false);
+  const [isHealthModalOpen, setIsHealthModalOpen] = useState(false);
 
   // Sync autoOpenJoinModal from deep-link routing
   React.useEffect(() => {
@@ -767,6 +775,22 @@ export default function App() {
               setIsMoreMenuOpen(false);
               setIsTripsHubModalOpen(true);
             }}
+            onOpenHealthModal={
+              isAdmin
+                ? () => {
+                    setIsMoreMenuOpen(false);
+                    setIsHealthModalOpen(true);
+                  }
+                : undefined
+            }
+            onNavigateToAnalytics={() => {
+              setIsMoreMenuOpen(false);
+              setActiveTab("analytics");
+            }}
+            onNavigateToActivity={() => {
+              setIsMoreMenuOpen(false);
+              setActiveTab("activity");
+            }}
           />
         )}
 
@@ -827,6 +851,13 @@ export default function App() {
         )}
 
         <ResetPasswordModal />
+
+        {isAdmin && isHealthModalOpen && (
+          <SystemHealthModal
+            isOpen={isHealthModalOpen}
+            onClose={() => setIsHealthModalOpen(false)}
+          />
+        )}
       </React.Suspense>
     </div>
   );

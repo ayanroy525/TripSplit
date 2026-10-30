@@ -14,6 +14,14 @@ import {
   getFullTripsForUser,
   LocalUserRecord,
 } from "./src/serverDb.js";
+import { runDiagnosticSweep } from "./api/health/_runner.ts";
+import telegramSettingsHandler from "./api/telegram/settings.ts";
+import telegramTestHandler from "./api/telegram/test.ts";
+import telegramWebhookHandler from "./api/telegram/webhook.ts";
+import telegramDetectChatHandler from "./api/telegram/detect-chat.ts";
+import { startTelegramPoller } from "./api/telegram/_poller.ts";
+import rateLimit from "express-rate-limit";
+import { pool, hashPasswordNode, verifyPasswordMatchNode } from "./api/_shared.ts";
 
 dotenv.config();
 
@@ -23,23 +31,54 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// CORS Whitelist Protection
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  const isAllowed =
+    !origin ||
+    origin.includes("run.app") ||
+    origin.includes("localhost") ||
+    origin.includes("127.0.0.1") ||
+    origin.includes("google.com");
+
+  if (isAllowed && origin) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+  } else if (!origin) {
+    // Direct or server-to-server request
+  } else {
+    res.setHeader("Access-Control-Allow-Origin", "null");
+  }
+
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-Telegram-Bot-Api-Secret-Token");
+
+  if (req.method === "OPTIONS") {
+    return res.status(204).end();
+  }
+  next();
+});
+
 // Body parser
 app.use(express.json({ limit: "25mb" }));
 app.use(express.urlencoded({ extended: true, limit: "25mb" }));
 
-const rawConn = (
-  process.env.POSTGRES_URL_NON_POOLING ||
-  process.env.POSTGRES_URL ||
-  ""
-).replace(/\?.*$/, "");
+// Brute-force & credential stuffing defense rate limiter
+const authRateLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1-minute window
+  max: 10, // Max 10 attempts per minute per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: "Too many authentication attempts from this IP. Please wait a minute before trying again.",
+  },
+});
 
-const pool = rawConn
-  ? new Pool({
-      connectionString: rawConn,
-      ssl: { rejectUnauthorized: false },
-      connectionTimeoutMillis: 3000,
-    })
-  : null;
+app.use("/api/auth/login", authRateLimiter);
+app.use("/api/auth/signup", authRateLimiter);
+
+
 
 const PASSWORD_SALT = process.env.PASSWORD_SALT || process.env.AUTH_SECRET || "";
 const SESSION_SECRET = process.env.SESSION_SECRET || process.env.AUTH_SECRET || "tripsplit_session_secret_dev";
@@ -48,15 +87,17 @@ interface SessionPayload {
   userId: string;
   email?: string;
   name?: string;
+  tokenVersion?: number;
   iat: number;
   exp: number;
 }
 
-function generateSessionToken(userId: string, email?: string, name?: string): string {
+function generateSessionToken(userId: string, email?: string, name?: string, tokenVersion: number = 1): string {
   const payload: SessionPayload = {
     userId,
     email,
     name,
+    tokenVersion,
     iat: Math.floor(Date.now() / 1000),
     exp: Math.floor(Date.now() / 1000) + 86400,
   };
@@ -97,7 +138,7 @@ interface AuthRequest extends Request {
   session?: SessionPayload;
 }
 
-function authMiddleware(req: AuthRequest, res: Response, next: NextFunction) {
+async function authMiddleware(req: AuthRequest, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization || "";
   const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
 
@@ -110,9 +151,48 @@ function authMiddleware(req: AuthRequest, res: Response, next: NextFunction) {
     return res.status(401).json({ success: false, error: "Invalid or expired token" });
   }
 
+  // Token version verification (instant revocation check)
+  if (session.tokenVersion !== undefined) {
+    if (pool) {
+      try {
+        const uRes = await pool.query("SELECT token_version FROM public.users WHERE id = $1 LIMIT 1;", [session.userId]);
+        const currentVersion = uRes.rows[0]?.token_version ?? 1;
+        if (session.tokenVersion < currentVersion) {
+          return res.status(401).json({ success: false, error: "Session has been revoked. Please log in again." });
+        }
+      } catch {}
+    } else {
+      const localStore = getLocalStore();
+      const localUser = localStore.users.find((u) => u.id === session.userId);
+      const currentVersion = (localUser as any)?.token_version ?? 1;
+      if (session.tokenVersion < currentVersion) {
+        return res.status(401).json({ success: false, error: "Session has been revoked. Please log in again." });
+      }
+    }
+  }
+
   req.userId = session.userId;
   req.session = session;
   next();
+}
+
+const ADMIN_EMAILS = [
+  "ayanroy525@gmail.com",
+  (process.env.ADMIN_EMAIL || "").trim().toLowerCase(),
+].filter(Boolean);
+
+async function adminOnlyMiddleware(req: AuthRequest, res: Response, next: NextFunction) {
+  await authMiddleware(req, res, () => {
+    const userEmail = (req.session?.email || "").trim().toLowerCase();
+    const isOwner = ADMIN_EMAILS.some((adm) => adm && userEmail === adm);
+    if (!isOwner) {
+      return res.status(403).json({
+        success: false,
+        error: "Access Denied: Database telemetry and system diagnostics are restricted to the application administrator.",
+      });
+    }
+    next();
+  });
 }
 
 interface TripAuthCheck {
@@ -181,40 +261,30 @@ async function checkTripAuthorization(tripId: string, userId: string | undefined
   return { isOwner: false, isMember: false, canAccess: false };
 }
 
-function hashPasswordNode(password: string): string {
-  const salt = PASSWORD_SALT || "_tripsplit_salt_v1";
-  return crypto.createHash("sha256").update(password + salt).digest("hex");
-}
 
-function verifyPasswordMatchNode(inputPassword: string, storedHashOrPassword?: string | null): boolean {
-  if (!storedHashOrPassword || storedHashOrPassword.trim() === "") return true;
-  if (storedHashOrPassword === inputPassword || storedHashOrPassword.trim() === inputPassword.trim()) return true;
-
-  if (PASSWORD_SALT) {
-    const envSalted = crypto.createHash("sha256").update(inputPassword + PASSWORD_SALT).digest("hex");
-    if (storedHashOrPassword === envSalted) return true;
+export function sanitizeReceiptUrl(rawUrl: any): string {
+  if (!rawUrl || typeof rawUrl !== "string") return "";
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return "";
+  // Safe base64 image data URIs (JPEG, PNG, WEBP, GIF)
+  if (/^data:image\/(jpeg|png|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(trimmed)) {
+    return trimmed;
   }
-
-  const legacySalted = crypto.createHash("sha256").update(inputPassword + "_tripsplit_salt_v1").digest("hex");
-  if (storedHashOrPassword === legacySalted) return true;
-
-  const unsalted = crypto.createHash("sha256").update(inputPassword).digest("hex");
-  if (storedHashOrPassword === unsalted) return true;
-
-  let simpleHash = 0;
-  for (let i = 0; i < inputPassword.length; i++) {
-    simpleHash = ((simpleHash << 5) - simpleHash + inputPassword.charCodeAt(i)) | 0;
-  }
-  if (storedHashOrPassword === `fb_${Math.abs(simpleHash)}`) return true;
-
-  return false;
+  // Safe web URLs (HTTP / HTTPS only, strictly disallowing javascript:, data:text/html, vbscript:, etc.)
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return trimmed;
+    }
+  } catch {}
+  return "";
 }
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
 });
 
-app.get("/api/db/status", async (_req, res) => {
+app.get("/api/db/status", adminOnlyMiddleware, async (_req, res) => {
   if (!pool) {
     const localStore = getLocalStore();
     return res.json({
@@ -246,19 +316,24 @@ app.get("/api/db/status", async (_req, res) => {
     `);
 
     const tableCounts: Record<string, number> = {};
-    for (const row of tablesRes.rows) {
-      try {
-        const countRes = await pool.query(`SELECT COUNT(*) FROM "${row.table_name}";`);
-        tableCounts[row.table_name] = parseInt(countRes.rows[0].count, 10);
-      } catch {
-        tableCounts[row.table_name] = -1;
-      }
-    }
+    await Promise.all(
+      tablesRes.rows.map(async (row) => {
+        try {
+          const countRes = await pool.query(`SELECT COUNT(*) FROM "${row.table_name}";`);
+          tableCounts[row.table_name] = parseInt(countRes.rows[0].count, 10);
+        } catch {
+          tableCounts[row.table_name] = -1;
+        }
+      })
+    );
+
+    // Filter out internal system/config tables from public statistics
+    delete tableCounts.health_checks_config;
 
     return res.json({
       connected: true,
       latencyMs,
-      version: verRes.rows[0]?.version,
+      engine: "PostgreSQL",
       tables: tableCounts,
       checkedAt: new Date().toISOString(),
     });
@@ -299,7 +374,7 @@ app.post("/api/auth/login", async (req, res) => {
   if (pool) {
     try {
       const usersQuery = `
-        SELECT id, email, name, phone, avatar_color, avatar_url, bio, password_hash, created_at
+        SELECT id, email, name, phone, avatar_color, avatar_url, bio, password_hash, token_version, created_at
         FROM public.users
         WHERE LOWER(TRIM(COALESCE(email, ''))) = $1
            OR ($2 <> '' AND regexp_replace(COALESCE(phone, ''), '\\D', '', 'g') LIKE '%' || $2 || '%')
@@ -311,7 +386,7 @@ app.post("/api/auth/login", async (req, res) => {
 
       if (!foundUser && cleanDigits.length >= 7) {
         const allUsersRes = await pool.query(
-          "SELECT id, email, name, phone, avatar_color, avatar_url, bio, password_hash, created_at FROM public.users LIMIT 200;"
+          "SELECT id, email, name, phone, avatar_color, avatar_url, bio, password_hash, token_version, created_at FROM public.users LIMIT 200;"
         );
         foundUser = allUsersRes.rows.find((u) => {
           const uPhone = (u.phone || "").replace(/\D/g, "");
@@ -331,35 +406,10 @@ app.post("/api/auth/login", async (req, res) => {
           );
           const foundMember = memberRes.rows[0];
           if (foundMember) {
-            const newUserId = foundMember.user_id || foundMember.id || `u_${Date.now()}`;
-            const newHashed = hashPasswordNode(inputPassword);
-            await pool.query(
-              `INSERT INTO public.users (id, email, name, phone, avatar_color, password_hash, created_at, updated_at)
-               VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
-               ON CONFLICT (id) DO UPDATE SET password_hash = $6;`,
-              [
-                newUserId,
-                foundMember.email || (trimmedLower.includes("@") ? trimmedLower : null),
-                foundMember.name || "Traveler",
-                foundMember.phone || (cleanDigits.length >= 7 ? rawInput : null),
-                foundMember.avatar_color || "#E39A2D",
-                newHashed,
-              ]
-            );
-
-            const sessionToken = generateSessionToken(newUserId, foundMember.email, foundMember.name);
-            return res.json({
-              success: true,
-              token: sessionToken,
-              user: {
-                id: newUserId,
-                name: foundMember.name || "Traveler",
-                email: foundMember.email || (trimmedLower.includes("@") ? trimmedLower : ""),
-                phone: foundMember.phone || undefined,
-                avatarColor: foundMember.avatar_color || "#E39A2D",
-                bio: "Travel Enthusiast",
-                createdAt: foundMember.joined_at || new Date().toISOString(),
-              },
+            return res.status(401).json({
+              success: false,
+              invitedMember: true,
+              error: `You were invited to a trip as "${foundMember.name || "Member"}"! Please click 'Create Account' to set your password and claim your profile.`,
             });
           }
         } catch (e) {
@@ -381,33 +431,10 @@ app.post("/api/auth/login", async (req, res) => {
     } else {
       const localMember = findLocalMember(rawInput);
       if (localMember) {
-        const newUserId = localMember.user_id || localMember.id || `u_${Date.now()}`;
-        const newHashed = hashPasswordNode(inputPassword);
-        const createdUser: LocalUserRecord = {
-          id: newUserId,
-          email: localMember.email || (trimmedLower.includes("@") ? trimmedLower : null),
-          name: localMember.name || "Traveler",
-          phone: localMember.phone || (cleanDigits.length >= 7 ? rawInput : null),
-          avatar_color: localMember.avatar_color || "#E39A2D",
-          bio: "Travel Enthusiast",
-          password_hash: newHashed,
-          created_at: localMember.joined_at || new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        };
-        saveLocalUser(createdUser);
-        const sessionToken = generateSessionToken(newUserId, createdUser.email || undefined, createdUser.name);
-        return res.json({
-          success: true,
-          token: sessionToken,
-          user: {
-            id: newUserId,
-            name: createdUser.name,
-            email: createdUser.email || "",
-            phone: createdUser.phone || undefined,
-            avatarColor: createdUser.avatar_color,
-            bio: createdUser.bio,
-            createdAt: createdUser.created_at,
-          },
+        return res.status(401).json({
+          success: false,
+          invitedMember: true,
+          error: `You were invited to a trip as "${localMember.name || "Member"}"! Please click 'Create Account' to set your password and claim your profile.`,
         });
       }
     }
@@ -453,7 +480,7 @@ app.post("/api/auth/login", async (req, res) => {
     createdAt: foundUser.created_at || new Date().toISOString(),
   };
 
-  const sessionToken = generateSessionToken(foundUser.id, foundUser.email, foundUser.name);
+  const sessionToken = generateSessionToken(foundUser.id, foundUser.email, foundUser.name, foundUser.token_version || 1);
   return res.json({ success: true, token: sessionToken, user: userAccount });
 });
 
@@ -551,8 +578,32 @@ app.post("/api/auth/signup", async (req, res) => {
     createdAt: localUserRecord.created_at,
   };
 
-  const sessionToken = generateSessionToken(userId, trimmedEmail, trimmedName);
+  const sessionToken = generateSessionToken(userId, trimmedEmail, trimmedName, 1);
   return res.json({ success: true, token: sessionToken, user: userAccount });
+});
+
+app.post("/api/auth/revoke-all-sessions", authMiddleware, async (req: AuthRequest, res: Response) => {
+  const userId = req.userId;
+  if (!userId) {
+    return res.status(401).json({ success: false, error: "Unauthorized" });
+  }
+
+  if (pool) {
+    try {
+      await pool.query("UPDATE public.users SET token_version = token_version + 1, updated_at = NOW() WHERE id = $1;", [userId]);
+    } catch (err: any) {
+      console.warn("Notice updating token_version in pool:", err?.message || err);
+    }
+  }
+
+  const store = getLocalStore();
+  const u = store.users.find((u) => u.id === userId);
+  if (u) {
+    (u as any).token_version = ((u as any).token_version || 1) + 1;
+    saveLocalStore(store);
+  }
+
+  return res.json({ success: true, message: "All existing sessions have been revoked. Please log in again with new credentials." });
 });
 
 app.get("/api/trips/invite/:code", async (req, res) => {
@@ -696,6 +747,338 @@ app.get("/api/user-trips", authMiddleware, async (req: AuthRequest, res) => {
   return res.json({ success: true, trips: userTrips });
 });
 
+// Robust Invite Code Lookup & Preview (Publicly accessible for joining trips)
+app.post("/api/trips/invite/lookup", async (req, res) => {
+  let { inviteCode } = req.body || {};
+  let raw = String(inviteCode || "").trim();
+
+  // Normalize: if user pasted URL or query string
+  if (raw.includes("code=")) {
+    const match = raw.match(/code=([^&?#]+)/);
+    if (match && match[1]) raw = decodeURIComponent(match[1]);
+  } else if (raw.includes("tripId=")) {
+    const match = raw.match(/tripId=([^&?#]+)/);
+    if (match && match[1]) raw = decodeURIComponent(match[1]);
+  } else if (raw.startsWith("#join?")) {
+    raw = raw.replace("#join?", "");
+  }
+
+  const clean = raw.trim().toUpperCase();
+  if (!clean) {
+    return res.status(400).json({ success: false, error: "Please enter an invite code." });
+  }
+
+  // 1. Try PostgreSQL
+  if (pool) {
+    try {
+      const tripRes = await pool.query(
+        `SELECT * FROM public.trips
+         WHERE UPPER(TRIM(invite_code)) = $1
+            OR UPPER(TRIM(invite_code)) = 'TRIP-' || $1
+            OR UPPER(TRIM(REPLACE(invite_code, 'TRIP-', ''))) = $1
+            OR id = $2
+         LIMIT 1;`,
+        [clean, raw.trim()]
+      );
+
+      const trip = tripRes.rows[0];
+      if (trip) {
+        if (trip.invite_expires_at && new Date(trip.invite_expires_at) < new Date()) {
+          return res.status(410).json({
+            success: false,
+            error: "This invite code has expired. Please ask the trip organizer for a new one.",
+          });
+        }
+
+        const membersRes = await pool.query(
+          "SELECT id, user_id, name, role, avatar_color, joined_at FROM public.trip_members WHERE trip_id = $1;",
+          [trip.id]
+        );
+
+        return res.json({
+          success: true,
+          trip: {
+            id: trip.id,
+            title: trip.title,
+            location: trip.location || trip.destination || "",
+            destination: trip.destination || trip.location || "",
+            startDate: trip.start_date,
+            endDate: trip.end_date,
+            currency: trip.currency || "INR",
+            status: trip.status || "ACTIVE",
+            ownerId: trip.owner_id,
+            ownerName: trip.owner_name,
+            inviteCode: trip.invite_code,
+            inviteExpiresAt: trip.invite_expires_at,
+            memberUserIds: Array.isArray(trip.member_user_ids) ? trip.member_user_ids : [],
+            createdAt: trip.created_at,
+            members: membersRes.rows.map((m: any) => ({
+              id: m.id,
+              userId: m.user_id || m.id,
+              name: m.name || "Traveler",
+              role: m.role || "participant",
+              avatarColor: m.avatar_color || "#0F6B65",
+              joinedAt: m.joined_at,
+            })),
+            expenses: [],
+            payments: [],
+            activities: [],
+          },
+        });
+      }
+    } catch (err: any) {
+      console.warn("PostgreSQL invite lookup notice:", err?.message || err);
+    }
+  }
+
+  // 2. Try local store
+  const store = getLocalStore();
+  const trip = store.trips.find(
+    (t: any) =>
+      (t.inviteCode && t.inviteCode.trim().toUpperCase() === clean) ||
+      (t.inviteCode && t.inviteCode.trim().toUpperCase() === `TRIP-${clean}`) ||
+      (t.inviteCode && t.inviteCode.replace("TRIP-", "").trim().toUpperCase() === clean) ||
+      t.id === raw.trim()
+  );
+
+  if (trip) {
+    const members = store.trip_members.filter((m: any) => m.trip_id === trip.id);
+    return res.json({
+      success: true,
+      trip: {
+        ...trip,
+        members,
+        expenses: [],
+        payments: [],
+        activities: [],
+      },
+    });
+  }
+
+  return res.status(404).json({
+    success: false,
+    error: `Invite code '${clean}' is invalid or expired. Please check with your trip organizer.`,
+  });
+});
+
+// Atomic Join Trip by Invite Code
+app.post("/api/trips/invite/join", async (req, res) => {
+  let { inviteCode, user } = req.body || {};
+  let raw = String(inviteCode || "").trim();
+
+  // Normalize code
+  if (raw.includes("code=")) {
+    const match = raw.match(/code=([^&?#]+)/);
+    if (match && match[1]) raw = decodeURIComponent(match[1]);
+  } else if (raw.includes("tripId=")) {
+    const match = raw.match(/tripId=([^&?#]+)/);
+    if (match && match[1]) raw = decodeURIComponent(match[1]);
+  } else if (raw.startsWith("#join?")) {
+    raw = raw.replace("#join?", "");
+  }
+
+  const clean = raw.trim().toUpperCase();
+  const userId = user?.id || user?.userId;
+  const userName = (user?.name || "Traveler").trim();
+  const userEmail = (user?.email || "").trim().toLowerCase();
+  const userPhone = (user?.phone || "").trim();
+  const userAvatar = user?.avatarColor || "#0F6B65";
+
+  if (!clean) {
+    return res.status(400).json({ success: false, error: "Invite code is required." });
+  }
+  if (!userId) {
+    return res.status(400).json({ success: false, error: "Please log in before joining a trip." });
+  }
+
+  if (pool) {
+    try {
+      const tripRes = await pool.query(
+        `SELECT * FROM public.trips
+         WHERE UPPER(TRIM(invite_code)) = $1
+            OR UPPER(TRIM(invite_code)) = 'TRIP-' || $1
+            OR UPPER(TRIM(REPLACE(invite_code, 'TRIP-', ''))) = $1
+            OR id = $2
+         LIMIT 1;`,
+        [clean, raw.trim()]
+      );
+
+      const trip = tripRes.rows[0];
+      if (!trip) {
+        return res.status(404).json({
+          success: false,
+          error: `Invite code '${clean}' is invalid or expired. Please check with your trip organizer.`,
+        });
+      }
+
+      // Check if already a member
+      const existingMemberRes = await pool.query(
+        "SELECT * FROM public.trip_members WHERE trip_id = $1 AND (user_id = $2 OR id = $2) LIMIT 1;",
+        [trip.id, userId]
+      );
+
+      let memberId = userId;
+      let alreadyMember = false;
+
+      if (existingMemberRes.rows.length > 0) {
+        alreadyMember = true;
+        memberId = existingMemberRes.rows[0].id;
+      } else {
+        // Check for invited placeholder member with matching email or phone
+        let placeholderRes: any = { rows: [] };
+        if (userEmail || userPhone) {
+          placeholderRes = await pool.query(
+            `SELECT * FROM public.trip_members
+             WHERE trip_id = $1 AND (
+               ($2 <> '' AND LOWER(email) = $2)
+               OR ($3 <> '' AND phone IS NOT NULL AND RIGHT(REGEXP_REPLACE(phone, '\\D', '', 'g'), 10) = RIGHT(REGEXP_REPLACE($3, '\\D', '', 'g'), 10))
+             ) LIMIT 1;`,
+            [trip.id, userEmail, userPhone]
+          );
+        }
+
+        if (placeholderRes.rows.length > 0) {
+          const ph = placeholderRes.rows[0];
+          memberId = ph.id;
+          await pool.query(
+            `UPDATE public.trip_members
+             SET user_id = $1,
+                 name = COALESCE(NULLIF(name, 'Traveler'), $2),
+                 avatar_color = COALESCE(avatar_color, $3),
+                 phone = COALESCE(phone, $4),
+                 email = COALESCE(email, $5),
+                 status = 'active'
+             WHERE id = $6;`,
+            [userId, userName, userAvatar, userPhone || null, userEmail || null, ph.id]
+          );
+        } else {
+          // Insert new member
+          await pool.query(
+            `INSERT INTO public.trip_members (
+              id, trip_id, user_id, name, role, avatar_color, phone, email, joined_at, status
+            ) VALUES ($1, $2, $3, $4, 'participant', $5, $6, $7, NOW(), 'active')
+            ON CONFLICT (id) DO UPDATE SET
+              user_id = EXCLUDED.user_id,
+              name = EXCLUDED.name,
+              avatar_color = EXCLUDED.avatar_color,
+              phone = COALESCE(EXCLUDED.phone, trip_members.phone),
+              email = COALESCE(EXCLUDED.email, trip_members.email);`,
+            [memberId, trip.id, userId, userName, userAvatar, userPhone || null, userEmail || null]
+          );
+        }
+
+        // Atomically update trips.member_user_ids array
+        const currentIds: string[] = Array.isArray(trip.member_user_ids) ? trip.member_user_ids : [];
+        const updatedIds = Array.from(new Set([...currentIds, userId, trip.owner_id].filter(Boolean)));
+        await pool.query("UPDATE public.trips SET member_user_ids = $1, updated_at = NOW() WHERE id = $2;", [
+          JSON.stringify(updatedIds),
+          trip.id,
+        ]);
+
+        // Insert audit log
+        await pool.query(
+          `INSERT INTO public.activities (id, trip_id, ts, user_name, action, detail, actor_id, created_at)
+           VALUES ($1, $2, 'Just now', $3, 'joined', $4, $5, NOW());`,
+          [
+            `act_${Date.now()}`,
+            trip.id,
+            userName,
+            `${userName} joined the trip via invite code`,
+            userId,
+          ]
+        );
+      }
+
+      // Fetch updated full trip
+      const [membersRes, expensesRes, paymentsRes, activitiesRes] = await Promise.all([
+        pool.query("SELECT * FROM public.trip_members WHERE trip_id = $1 ORDER BY joined_at ASC;", [trip.id]),
+        pool.query("SELECT * FROM public.expenses WHERE trip_id = $1 AND COALESCE(deleted, false) = false ORDER BY created_at DESC;", [trip.id]),
+        pool.query("SELECT * FROM public.payments WHERE trip_id = $1 ORDER BY created_at DESC;", [trip.id]),
+        pool.query("SELECT * FROM public.activities WHERE trip_id = $1 ORDER BY created_at DESC LIMIT 50;", [trip.id]),
+      ]);
+
+      return res.json({
+        success: true,
+        alreadyMember,
+        trip: {
+          id: trip.id,
+          title: trip.title,
+          location: trip.location || trip.destination || "",
+          destination: trip.destination || trip.location || "",
+          startDate: trip.start_date,
+          endDate: trip.end_date,
+          currency: trip.currency || "INR",
+          status: trip.status || "ACTIVE",
+          ownerId: trip.owner_id,
+          ownerName: trip.owner_name,
+          inviteCode: trip.invite_code,
+          inviteExpiresAt: trip.invite_expires_at,
+          memberUserIds: Array.isArray(trip.member_user_ids) ? trip.member_user_ids : [],
+          createdAt: trip.created_at,
+          members: membersRes.rows,
+          expenses: expensesRes.rows,
+          payments: paymentsRes.rows,
+          activities: activitiesRes.rows,
+        },
+      });
+    } catch (err: any) {
+      console.warn("PostgreSQL join error, falling back to local store:", err?.message || err);
+    }
+  }
+
+  // Local fallback
+  const store = getLocalStore();
+  const trip = store.trips.find(
+    (t: any) =>
+      (t.inviteCode && t.inviteCode.trim().toUpperCase() === clean) ||
+      (t.inviteCode && t.inviteCode.trim().toUpperCase() === `TRIP-${clean}`) ||
+      (t.inviteCode && t.inviteCode.replace("TRIP-", "").trim().toUpperCase() === clean) ||
+      t.id === raw.trim()
+  );
+
+  if (!trip) {
+    return res.status(404).json({
+      success: false,
+      error: `Invite code '${clean}' is invalid or expired. Please check with your trip organizer.`,
+    });
+  }
+
+  const isAlready = store.trip_members.some((m: any) => m.trip_id === trip.id && (m.user_id === userId || m.id === userId));
+  if (!isAlready) {
+    store.trip_members.push({
+      id: userId,
+      trip_id: trip.id,
+      user_id: userId,
+      name: userName,
+      role: "participant",
+      avatar_color: userAvatar,
+      phone: userPhone,
+      email: userEmail,
+      joined_at: new Date().toISOString(),
+      status: "active",
+    });
+    if (!trip.memberUserIds) trip.memberUserIds = [];
+    if (!trip.memberUserIds.includes(userId)) trip.memberUserIds.push(userId);
+  }
+
+  const members = store.trip_members.filter((m: any) => m.trip_id === trip.id);
+  const expenses = store.expenses.filter((e: any) => e.trip_id === trip.id);
+  const payments = store.payments.filter((p: any) => p.trip_id === trip.id);
+  const activities = store.activities.filter((a: any) => a.trip_id === trip.id);
+
+  return res.json({
+    success: true,
+    alreadyMember: isAlready,
+    trip: {
+      ...trip,
+      members,
+      expenses,
+      payments,
+      activities,
+    },
+  });
+});
+
 app.get("/api/trips/:tripId", authMiddleware, async (req: AuthRequest, res) => {
   const tripId = (req.params.tripId || "").trim();
   const userId = req.userId;
@@ -759,6 +1142,19 @@ app.post("/api/sync/mutation", authMiddleware, async (req: AuthRequest, res) => 
   const { type, tripId, payload } = req.body || {};
   if (!type || !tripId) {
     return res.status(400).json({ success: false, error: "type and tripId are required" });
+  }
+
+  // Authorization check: Verify user is a member of this trip (or creating a new trip where they are owner)
+  if (type === "SAVE_TRIP_SNAPSHOT" && (payload?.ownerId === req.userId || !payload?.id)) {
+    // Authorized new trip creation
+  } else {
+    const authCheck = await checkTripAuthorization(tripId, req.userId, pool);
+    if (!authCheck.canAccess) {
+      return res.status(403).json({ success: false, error: "Access denied: You are not an authorized member of this trip." });
+    }
+    if (type === "DELETE_TRIP" && !authCheck.isOwner) {
+      return res.status(403).json({ success: false, error: "Access denied: Only the trip owner can delete this trip." });
+    }
   }
 
   if (pool) {
@@ -877,7 +1273,7 @@ app.post("/api/sync/mutation", authMiddleware, async (req: AuthRequest, res) => 
                 JSON.stringify(expense.splitPercentages || null),
                 JSON.stringify(expense.splitShares || null),
                 expense.notes || "",
-                expense.receiptUrl || "",
+                sanitizeReceiptUrl(expense.receiptUrl),
                 expense.originalAmount != null ? Number(expense.originalAmount) : null,
                 expense.currency || null,
                 expense.exchangeRate != null ? Number(expense.exchangeRate) : null,
@@ -1000,9 +1396,10 @@ app.post("/api/sync/mutation", authMiddleware, async (req: AuthRequest, res) => 
     if (idx >= 0) store.payments[idx] = { ...store.payments[idx], ...payload };
     else store.payments.push({ ...payload, trip_id: tripId });
   } else if (type === "SAVE_EXPENSE" && payload?.id) {
-    const idx = store.expenses.findIndex((e: any) => e.id === payload.id);
-    if (idx >= 0) store.expenses[idx] = { ...store.expenses[idx], ...payload };
-    else store.expenses.push({ ...payload, trip_id: tripId });
+    const safePayload = { ...payload, receiptUrl: sanitizeReceiptUrl(payload.receiptUrl) };
+    const idx = store.expenses.findIndex((e: any) => e.id === safePayload.id);
+    if (idx >= 0) store.expenses[idx] = { ...store.expenses[idx], ...safePayload };
+    else store.expenses.push({ ...safePayload, trip_id: tripId });
   }
   saveLocalStore(store);
 
@@ -1013,6 +1410,131 @@ app.get("/api/download-audit-pdf", (_req, res) => {
   const filePath = path.resolve(__dirname, "public", "Spliito_Application_Review.pdf");
   res.download(filePath, "Spliito_Application_Review.pdf");
 });
+
+app.get("/api/cron/daily-check", async (_req, res) => {
+  try {
+    const result = await runDiagnosticSweep("scheduled_2am");
+    return res.json({ success: true, diagnostic: result });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message });
+  }
+});
+
+app.post("/api/health/run-check", adminOnlyMiddleware, async (_req, res) => {
+  try {
+    const result = await runDiagnosticSweep("manual_trigger");
+    return res.json({ success: true, diagnostic: result });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message });
+  }
+});
+
+app.get("/api/health/history", adminOnlyMiddleware, async (_req, res) => {
+  if (pool) {
+    try {
+      const result = await pool.query(`
+        SELECT id, status, latency_ms, table_counts, auth_ok, rpc_ok, check_type, error_details, executed_at
+        FROM public.health_checks
+        ORDER BY executed_at DESC
+        LIMIT 30;
+      `);
+      return res.json({ success: true, source: "postgres", history: result.rows });
+    } catch (err: any) {
+      console.warn("Notice querying health_checks in PostgreSQL:", err?.message || err);
+    }
+  }
+
+  const filePath = path.resolve(__dirname, "data", "health_checks.json");
+  if (fs.existsSync(filePath)) {
+    try {
+      const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+      return res.json({
+        success: true,
+        source: "local_store",
+        history: Array.isArray(data) ? data.slice(-30).reverse() : [],
+      });
+    } catch {}
+  }
+  return res.json({ success: true, source: "empty", history: [] });
+});
+
+// Telegram Alerts & Webhook Endpoints (Admin Protected)
+app.all("/api/telegram/settings", adminOnlyMiddleware, (req, res) => telegramSettingsHandler(req, res));
+app.all("/api/telegram/test", adminOnlyMiddleware, (req, res) => telegramTestHandler(req, res));
+app.all("/api/telegram/webhook", (req, res) => telegramWebhookHandler(req, res));
+app.all("/api/telegram/detect-chat", adminOnlyMiddleware, (req, res) => telegramDetectChatHandler(req, res));
+
+async function checkAndRunMissedDailyCheck() {
+  try {
+    const todayStr = new Date().toISOString().split("T")[0];
+    const now = new Date();
+    if (now.getHours() >= 2) {
+      let alreadyRanToday = false;
+      if (pool) {
+        try {
+          const res = await pool.query(
+            `SELECT id FROM public.health_checks WHERE check_type = 'scheduled_2am' AND executed_at::date = $1 LIMIT 1;`,
+            [todayStr]
+          );
+          if (res.rows.length > 0) alreadyRanToday = true;
+        } catch {}
+      }
+      const filePath = path.resolve(__dirname, "data", "health_checks.json");
+      if (!alreadyRanToday && fs.existsSync(filePath)) {
+        try {
+          const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+          if (Array.isArray(data)) {
+            const found = data.some((d: any) => d.check_type === "scheduled_2am" && d.executed_at && d.executed_at.startsWith(todayStr));
+            if (found) alreadyRanToday = true;
+          }
+        } catch {}
+      }
+
+      if (!alreadyRanToday) {
+        console.log("[Scheduler] Missed daily 2 AM health check detected for today. Executing now...");
+        await runDiagnosticSweep("scheduled_2am");
+      }
+    }
+  } catch (err) {
+    console.warn("[Scheduler] Error checking missed daily check:", err);
+  }
+}
+
+function scheduleDailyNightCheck() {
+  setTimeout(() => {
+    checkAndRunMissedDailyCheck();
+  }, 10000);
+
+  const now = new Date();
+  const next2am = new Date(now);
+  next2am.setHours(2, 0, 0, 0);
+  if (now >= next2am) {
+    next2am.setDate(next2am.getDate() + 1);
+  }
+  const delay = next2am.getTime() - now.getTime();
+  console.log(`[Scheduler] Daily 2:00 AM health check scheduled in ${Math.round(delay / 60000)} minutes (at ${next2am.toISOString()})`);
+
+  setTimeout(async () => {
+    try {
+      console.log("[Scheduler] Executing scheduled daily 2:00 AM health check sweep...");
+      await runDiagnosticSweep("scheduled_2am");
+    } catch (err) {
+      console.error("[Scheduler] Error in daily 2:00 AM health check:", err);
+    }
+    setInterval(async () => {
+      try {
+        console.log("[Scheduler] Executing scheduled daily 2:00 AM health check sweep...");
+        await runDiagnosticSweep("scheduled_2am");
+      } catch (err) {
+        console.error("[Scheduler] Error in daily 2:00 AM health check:", err);
+      }
+    }, 24 * 60 * 60 * 1000);
+  }, delay);
+
+  setInterval(() => {
+    checkAndRunMissedDailyCheck();
+  }, 60 * 60 * 1000);
+}
 
 async function setupServer() {
   if (process.env.NODE_ENV !== "production") {
@@ -1099,6 +1621,8 @@ async function setupServer() {
 
   app.listen(PORT, () => {
     console.log(`TripSplit server running on http://localhost:${PORT}`);
+    scheduleDailyNightCheck();
+    startTelegramPoller();
   });
 }
 

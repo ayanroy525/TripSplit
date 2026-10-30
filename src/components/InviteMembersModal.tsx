@@ -56,7 +56,7 @@ export function InviteMembersModal({
   const currentInviteCode = trip.inviteCode || `TRIP-${trip.id.slice(-6).toUpperCase()}`;
   const inviteLink = isRevoked
     ? ""
-    : `${window.location.origin}${window.location.pathname}#join?tripId=${trip.id}`;
+    : `${window.location.origin}${window.location.pathname}#join?code=${encodeURIComponent(currentInviteCode)}&tripId=${trip.id}`;
 
   const whatsAppMsg = generateTripInviteWhatsAppMsg(
     trip,

@@ -102,9 +102,9 @@ async function verifyPasswordMatch(
   inputPassword: string,
   storedHashOrPassword?: string | null
 ): Promise<boolean> {
-  // If account was created in a version without password set
-  if (!storedHashOrPassword || storedHashOrPassword.trim() === "") {
-    return true;
+  // If account has no password set or missing input
+  if (!storedHashOrPassword || storedHashOrPassword.trim() === "" || !inputPassword) {
+    return false;
   }
   // Plain text match
   if (storedHashOrPassword === inputPassword || storedHashOrPassword.trim() === inputPassword.trim()) {
@@ -528,32 +528,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         });
 
         if (foundMember) {
-          const userAccount: UserAccount = {
-            id: foundMember.user_id || foundMember.id || `u_${Date.now()}`,
-            name: foundMember.name || "Traveler",
-            email: foundMember.email || (trimmedInput.includes("@") ? trimmedInput : ""),
-            phone: foundMember.phone || (cleanDigits.length >= 7 ? rawInput : undefined),
-            avatarColor: foundMember.avatar_color || "#E39A2D",
-            bio: "Travel Enthusiast",
-            createdAt: foundMember.joined_at || new Date().toISOString(),
+          return {
+            success: false,
+            error: `You were invited to a trip as "${foundMember.name || "Member"}"! Please click 'Create Account' to set your password and claim your profile.`,
           };
-
-          // Also register in users table
-          try {
-            await supabase.from("users").upsert({
-              id: userAccount.id,
-              email: userAccount.email,
-              name: userAccount.name,
-              phone: userAccount.phone || null,
-              avatar_color: userAccount.avatarColor,
-              password_hash: hashedPassword,
-              updated_at: new Date().toISOString(),
-            });
-          } catch (e) {}
-
-          persistUser(userAccount);
-          setAccounts((prev) => [userAccount, ...prev.filter((a) => a.id !== userAccount.id)]);
-          return { success: true, user: userAccount };
         }
       }
     } catch (e) {

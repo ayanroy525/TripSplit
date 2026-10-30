@@ -10,6 +10,9 @@ import {
   ChevronRight,
   Plus,
   LogOut,
+  Activity,
+  TrendingUp,
+  Clock,
 } from "lucide-react";
 import { Trip, Member, UserAccount } from "../types";
 import { Avatar } from "./Atoms";
@@ -35,6 +38,9 @@ interface TripMoreMenuModalProps {
   onOpenShareModal: () => void;
   onOpenNotificationsModal: () => void;
   onOpenTripsHub: () => void;
+  onOpenHealthModal?: () => void;
+  onNavigateToAnalytics?: () => void;
+  onNavigateToActivity?: () => void;
 }
 
 export function TripMoreMenuModal({
@@ -55,6 +61,9 @@ export function TripMoreMenuModal({
   onOpenShareModal,
   onOpenNotificationsModal,
   onOpenTripsHub,
+  onOpenHealthModal,
+  onNavigateToAnalytics,
+  onNavigateToActivity,
 }: TripMoreMenuModalProps) {
   const { logout } = useAuth();
 
@@ -784,6 +793,7 @@ export function TripMoreMenuModal({
                   padding: "14px 16px",
                   background: "transparent",
                   border: "none",
+                  borderBottom: onOpenHealthModal ? "1px solid var(--c-line, #E5E7EB)" : "none",
                   cursor: "pointer",
                   textAlign: "left",
                   transition: "background 0.15s ease",
@@ -828,6 +838,211 @@ export function TripMoreMenuModal({
 
                 <ChevronRight size={16} color="var(--c-inkSoft, #6B7280)" />
               </button>
+
+              {/* Row 3: Spending Analytics */}
+              {onNavigateToAnalytics && (
+                <button
+                  id="btn-menu-open-analytics"
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onNavigateToAnalytics();
+                  }}
+                  style={{
+                    width: "100%",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    padding: "14px 16px",
+                    background: "transparent",
+                    border: "none",
+                    borderBottom: "1px solid var(--c-line, #E5E7EB)",
+                    cursor: "pointer",
+                    textAlign: "left",
+                    transition: "background 0.15s ease",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <div
+                      style={{
+                        width: 36,
+                        height: 36,
+                        borderRadius: 10,
+                        background: "rgba(99, 102, 241, 0.12)",
+                        color: "#6366F1",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        flexShrink: 0,
+                      }}
+                    >
+                      <TrendingUp size={18} />
+                    </div>
+                    <div>
+                      <div
+                        style={{
+                          fontSize: 14,
+                          fontWeight: 700,
+                          color: "var(--c-ink, #17202A)",
+                        }}
+                      >
+                        Spending Analytics
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 12,
+                          color: "var(--c-inkSoft, #6B7280)",
+                        }}
+                      >
+                        Category breakdown & spending charts
+                      </div>
+                    </div>
+                  </div>
+                  <ChevronRight size={16} color="var(--c-inkSoft, #6B7280)" />
+                </button>
+              )}
+
+              {/* Row 4: Activity Audit Trail */}
+              {onNavigateToActivity && (
+                <button
+                  id="btn-menu-open-activity"
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onNavigateToActivity();
+                  }}
+                  style={{
+                    width: "100%",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    padding: "14px 16px",
+                    background: "transparent",
+                    border: "none",
+                    borderBottom: onOpenHealthModal ? "1px solid var(--c-line, #E5E7EB)" : "none",
+                    cursor: "pointer",
+                    textAlign: "left",
+                    transition: "background 0.15s ease",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <div
+                      style={{
+                        width: 36,
+                        height: 36,
+                        borderRadius: 10,
+                        background: "rgba(234, 179, 8, 0.12)",
+                        color: "#EAB308",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        flexShrink: 0,
+                      }}
+                    >
+                      <Clock size={18} />
+                    </div>
+                    <div>
+                      <div
+                        style={{
+                          fontSize: 14,
+                          fontWeight: 700,
+                          color: "var(--c-ink, #17202A)",
+                        }}
+                      >
+                        Activity Audit Trail
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 12,
+                          color: "var(--c-inkSoft, #6B7280)",
+                        }}
+                      >
+                        Chronological record of edits and payments
+                      </div>
+                    </div>
+                  </div>
+                  <ChevronRight size={16} color="var(--c-inkSoft, #6B7280)" />
+                </button>
+              )}
+
+              {/* Row 5: System Health & 2 AM Diagnostics */}
+              {onOpenHealthModal && (
+                <button
+                  id="btn-menu-open-system-health"
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onOpenHealthModal();
+                  }}
+                  style={{
+                    width: "100%",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    padding: "14px 16px",
+                    background: "transparent",
+                    border: "none",
+                    cursor: "pointer",
+                    textAlign: "left",
+                    transition: "background 0.15s ease",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <div
+                      style={{
+                        width: 36,
+                        height: 36,
+                        borderRadius: 10,
+                        background: "rgba(45, 212, 191, 0.12)",
+                        color: "#14B8A6",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        flexShrink: 0,
+                      }}
+                    >
+                      <Activity size={18} />
+                    </div>
+                    <div>
+                      <div
+                        style={{
+                          fontSize: 14,
+                          fontWeight: 700,
+                          color: "var(--c-ink, #17202A)",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 6,
+                        }}
+                      >
+                        <span>System Health & DB</span>
+                        <span
+                          style={{
+                            fontSize: 10,
+                            padding: "1px 6px",
+                            borderRadius: 6,
+                            background: "rgba(16, 185, 129, 0.15)",
+                            color: "#10B981",
+                            fontWeight: 700,
+                            letterSpacing: "0.02em",
+                          }}
+                        >
+                          2 AM Cron
+                        </span>
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 12,
+                          color: "var(--c-inkSoft, #6B7280)",
+                        }}
+                      >
+                        Automated checks, DB tables & live status
+                      </div>
+                    </div>
+                  </div>
+
+                  <ChevronRight size={16} color="var(--c-inkSoft, #6B7280)" />
+                </button>
+              )}
             </div>
           </div>
 

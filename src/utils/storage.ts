@@ -1325,6 +1325,28 @@ export async function getTripByInviteCode(
     return { success: false, error: "Please enter an invite code." };
   }
 
+  // 1. Primary: Same-Origin API lookup (reliable in all network and iframe environments)
+  try {
+    const baseUrl = typeof window !== "undefined" ? "" : "http://localhost:3000";
+    const apiRes = await fetch(`${baseUrl}/api/trips/invite/lookup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ inviteCode: code }),
+    });
+    if (apiRes.ok) {
+      const data = await apiRes.json();
+      if (data.success && data.trip) {
+        return { success: true, trip: data.trip };
+      }
+      if (data.error) {
+        return { success: false, error: data.error };
+      }
+    }
+  } catch (apiErr) {
+    console.warn("API invite lookup notice, falling back to Supabase RPC:", apiErr);
+  }
+
+  // 2. Secondary: Direct Supabase RPC stored procedure fallback
   try {
     const { data, error } = await supabase.rpc("get_trip_by_invite_code", {
       p_invite_code: code,
@@ -1417,6 +1439,42 @@ export async function joinTripByInviteCode(
     return { success: false, error: "Please log in before joining a trip." };
   }
 
+  // 1. Primary: Same-Origin API join (reliable in all network and iframe environments)
+  try {
+    const baseUrl = typeof window !== "undefined" ? "" : "http://localhost:3000";
+    const apiRes = await fetch(`${baseUrl}/api/trips/invite/join`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        inviteCode: code,
+        user: {
+          id: user.id,
+          userId: user.id,
+          name: user.name || "Traveler",
+          email: user.email || "",
+          phone: user.phone || "",
+          avatarColor: user.avatarColor || "#0F6B65",
+        },
+      }),
+    });
+    if (apiRes.ok) {
+      const data = await apiRes.json();
+      if (data.success && data.trip) {
+        return {
+          success: true,
+          trip: data.trip,
+          alreadyMember: Boolean(data.alreadyMember),
+        };
+      }
+      if (data.error) {
+        return { success: false, error: data.error };
+      }
+    }
+  } catch (apiErr) {
+    console.warn("API invite join notice, falling back to Supabase RPC:", apiErr);
+  }
+
+  // 2. Secondary: Direct Supabase RPC stored procedure fallback
   try {
     const { data, error } = await supabase.rpc("join_trip_by_invite_code", {
       p_invite_code: code,

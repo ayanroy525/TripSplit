@@ -3,6 +3,7 @@ import { useAuth } from "../context/AuthContext";
 import { C, PRESET_AVATAR_PALETTE } from "../utils/constants";
 import { ThemeToggle } from "./ThemeToggle";
 import { ResetPasswordModal } from "./ResetPasswordModal";
+import { SystemHealthModal } from "./SystemHealthModal";
 import {
   Compass,
   Mail,
@@ -25,6 +26,7 @@ import {
   Loader2,
   RefreshCw,
   Send,
+  Activity,
 } from "lucide-react";
 
 interface LoginPageProps {
@@ -37,6 +39,7 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
   const [activeTab, setActiveTab] = useState<"login" | "signup" | "reset">("login");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isHealthModalOpen, setIsHealthModalOpen] = useState(false);
 
   // Login form state
   const [loginEmail, setLoginEmail] = useState("");
@@ -1342,11 +1345,40 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
           <span>Supabase Cloud Database & Real-Time Sync</span>
         </div>
         <span>•</span>
+        <button
+          id="btn-login-system-health"
+          type="button"
+          onClick={() => setIsHealthModalOpen(true)}
+          style={{
+            background: "transparent",
+            border: "none",
+            color: "var(--c-teal, #0F9F86)",
+            fontSize: 12,
+            fontWeight: 700,
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 5,
+            cursor: "pointer",
+          }}
+          title="Inspect database connectivity, table integrity & 2 AM automated check results"
+        >
+          <Activity size={14} />
+          <span>System Health & 2 AM Logs</span>
+        </button>
+        <span>•</span>
         <span>Version 2.4</span>
       </footer>
 
       {/* Password Recovery Modal */}
       <ResetPasswordModal />
+
+      {/* System Health & 2 AM Diagnostics Modal */}
+      {isHealthModalOpen && (
+        <SystemHealthModal
+          isOpen={isHealthModalOpen}
+          onClose={() => setIsHealthModalOpen(false)}
+        />
+      )}
     </div>
   );
 }

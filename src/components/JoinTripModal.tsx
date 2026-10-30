@@ -39,8 +39,26 @@ export function JoinTripModal({ currentTrip, initialCode = "", onJoinTripSuccess
     }
   }, [initialCode]);
 
+  const extractCode = (raw: string): string => {
+    let s = (raw || "").trim();
+    if (s.includes("code=")) {
+      const match = s.match(/code=([^&?#]+)/);
+      if (match && match[1]) s = decodeURIComponent(match[1]);
+    } else if (s.includes("tripId=")) {
+      const match = s.match(/tripId=([^&?#]+)/);
+      if (match && match[1]) s = decodeURIComponent(match[1]);
+    } else if (s.startsWith("#join?")) {
+      s = s.replace("#join?", "");
+    }
+    return s.trim().toUpperCase();
+  };
+
   const handleValidateCode = async (codeToVerify?: string) => {
-    const code = (codeToVerify || inviteCode).trim().toUpperCase();
+    const raw = codeToVerify || inviteCode;
+    const code = extractCode(raw);
+    if (code && code !== inviteCode) {
+      setInviteCode(code);
+    }
     setErrorMsg("");
     setValidatedTrip(null);
 
@@ -84,7 +102,7 @@ export function JoinTripModal({ currentTrip, initialCode = "", onJoinTripSuccess
 
   const handleJoinSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const code = inviteCode.trim().toUpperCase();
+    const code = extractCode(inviteCode);
 
     if (!validatedTrip || !validatedTrip.id) {
       await handleValidateCode(code);

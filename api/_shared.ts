@@ -2,11 +2,12 @@ import { Pool } from "pg";
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
+import bcrypt from "bcryptjs";
 
 const rawConn = (
-  process.env.POSTGRES_URL_NON_POOLING ||
   process.env.POSTGRES_URL ||
   process.env.DATABASE_URL ||
+  process.env.POSTGRES_URL_NON_POOLING ||
   process.env.SUPABASE_DATABASE_URL ||
   process.env.POSTGRESQL_URL ||
   ""
@@ -16,11 +17,23 @@ export const pool = rawConn
   ? new Pool({
       connectionString: rawConn,
       ssl: { rejectUnauthorized: false },
-      max: 5,
-      idleTimeoutMillis: 10000,
-      connectionTimeoutMillis: 3000,
+      max: 6,
+      min: 1,
+      idleTimeoutMillis: 60000,
+      connectionTimeoutMillis: 5000,
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 10000,
     })
   : null;
+
+// Keep-alive warm ping to prevent cold disconnects and TCP/TLS renegotiation overhead
+if (pool) {
+  setInterval(async () => {
+    try {
+      await pool.query("SELECT 1;");
+    } catch {}
+  }, 25000);
+}
 
 export const PASSWORD_SALT = process.env.PASSWORD_SALT || process.env.AUTH_SECRET || "";
 export const SESSION_SECRET = process.env.SESSION_SECRET || process.env.AUTH_SECRET || "tripsplit_session_secret_dev";
@@ -47,39 +60,87 @@ export function generateSessionToken(userId: string, email?: string, name?: stri
 export function verifySessionToken(token: string): SessionPayload | null {
   if (!token || typeof token !== "string") return null;
   const parts = token.split(".");
-  if (parts.length !== 2) return null;
-  const [data, sig] = parts;
-  const expectedSig = crypto.createHmac("sha256", SESSION_SECRET).update(data).digest("base64url");
-  if (sig !== expectedSig) return null;
-  try {
-    const payload = JSON.parse(Buffer.from(data, "base64url").toString("utf8")) as SessionPayload;
-    if (payload.exp && Date.now() > payload.exp) return null;
-    return payload;
-  } catch {
-    return null;
+
+  // 1. Standard 3-part JWT: header.payload.signature
+  if (parts.length === 3) {
+    const [headerBase64, payloadBase64, signatureBase64] = parts;
+    const signature = crypto
+      .createHmac("sha256", SESSION_SECRET)
+      .update(`${headerBase64}.${payloadBase64}`)
+      .digest("base64url");
+    if (signature !== signatureBase64) return null;
+    try {
+      const payload: SessionPayload = JSON.parse(Buffer.from(payloadBase64, "base64url").toString("utf8"));
+      const nowSec = Math.floor(Date.now() / 1000);
+      // Support both second and millisecond timestamps
+      const expVal = payload.exp > 1e11 ? payload.exp / 1000 : payload.exp;
+      if (expVal && expVal < nowSec) return null;
+      return payload;
+    } catch {
+      return null;
+    }
   }
+
+  // 2. Legacy 2-part token: data.signature
+  if (parts.length === 2) {
+    const [data, sig] = parts;
+    const expectedSig = crypto.createHmac("sha256", SESSION_SECRET).update(data).digest("base64url");
+    if (sig !== expectedSig) return null;
+    try {
+      const payload = JSON.parse(Buffer.from(data, "base64url").toString("utf8")) as SessionPayload;
+      if (payload.exp && Date.now() > payload.exp) return null;
+      return payload;
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
 }
 
 export function hashPasswordNode(password: string): string {
-  const salt = PASSWORD_SALT || "_tripsplit_salt_v1";
-  return crypto.createHash("sha256").update(password + salt).digest("hex");
+  try {
+    return bcrypt.hashSync(password, 10);
+  } catch {
+    const salt = PASSWORD_SALT || "_tripsplit_salt_v1";
+    return crypto.createHash("sha256").update(password + salt).digest("hex");
+  }
 }
 
 export function verifyPasswordMatchNode(inputPassword: string, storedHashOrPassword?: string | null): boolean {
-  if (!storedHashOrPassword || storedHashOrPassword.trim() === "") return true;
+  if (!storedHashOrPassword || storedHashOrPassword.trim() === "" || !inputPassword) return false;
+
+  // 1. Bcrypt hash check ($2a$, $2b$, $2y$)
+  if (
+    storedHashOrPassword.startsWith("$2a$") ||
+    storedHashOrPassword.startsWith("$2b$") ||
+    storedHashOrPassword.startsWith("$2y$")
+  ) {
+    try {
+      return bcrypt.compareSync(inputPassword, storedHashOrPassword);
+    } catch {
+      return false;
+    }
+  }
+
+  // 2. Exact match (legacy plain text migration fallback)
   if (storedHashOrPassword === inputPassword || storedHashOrPassword.trim() === inputPassword.trim()) return true;
 
+  // 3. Salted SHA-256 with custom env salt
   if (PASSWORD_SALT) {
     const envSalted = crypto.createHash("sha256").update(inputPassword + PASSWORD_SALT).digest("hex");
     if (storedHashOrPassword === envSalted) return true;
   }
 
+  // 4. Salted SHA-256 legacy default
   const legacySalted = crypto.createHash("sha256").update(inputPassword + "_tripsplit_salt_v1").digest("hex");
   if (storedHashOrPassword === legacySalted) return true;
 
+  // 5. Unsalted SHA-256
   const unsalted = crypto.createHash("sha256").update(inputPassword).digest("hex");
   if (storedHashOrPassword === unsalted) return true;
 
+  // 6. Simple hash
   let simpleHash = 0;
   for (let i = 0; i < inputPassword.length; i++) {
     simpleHash = ((simpleHash << 5) - simpleHash + inputPassword.charCodeAt(i)) | 0;
@@ -89,10 +150,26 @@ export function verifyPasswordMatchNode(inputPassword: string, storedHashOrPassw
   return false;
 }
 
-export function setCorsHeaders(res: any) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
+export function setCorsHeaders(res: any, req?: any) {
+  const origin = req?.headers?.origin || "";
+  const isAllowed =
+    !origin ||
+    origin.includes("run.app") ||
+    origin.includes("localhost") ||
+    origin.includes("127.0.0.1") ||
+    origin.includes("google.com");
+
+  if (isAllowed && origin) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+  } else if (!origin) {
+    // Direct or server-side call
+  } else {
+    res.setHeader("Access-Control-Allow-Origin", "null");
+  }
+
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-Telegram-Bot-Api-Secret-Token");
 }
 
 export function parseBody(req: any): any {

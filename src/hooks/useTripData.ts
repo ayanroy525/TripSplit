@@ -90,10 +90,10 @@ export function useTripData({ authUser, onNotify }: UseTripDataOptions) {
       let detectedInviteCode = "";
       if (hash.includes("join?")) {
         const params = new URLSearchParams(hash.split("join?")[1]);
-        detectedInviteCode = params.get("code") || "";
+        detectedInviteCode = params.get("code") || params.get("join") || "";
         const tripIdParam = params.get("tripId");
         if (!detectedInviteCode && tripIdParam) {
-          detectedInviteCode = `TRIP-${tripIdParam.slice(-6).toUpperCase()}`;
+          detectedInviteCode = tripIdParam;
         }
       } else if (search.includes("code=") || search.includes("join=")) {
         const params = new URLSearchParams(search);
