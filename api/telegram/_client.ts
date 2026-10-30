@@ -82,17 +82,18 @@ export async function saveTelegramConfig(config: Partial<TelegramConfig>): Promi
     } catch (err: any) {
       console.warn("Notice saving telegram config to DB:", err?.message);
     }
+  } else {
+    // Only write to local file if database pool is unavailable
+    try {
+      const dir = path.resolve(process.cwd(), "data");
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.resolve(dir, "telegram_config.json"),
+        JSON.stringify(updated, null, 2),
+        "utf-8"
+      );
+    } catch {}
   }
-
-  try {
-    const dir = path.resolve(process.cwd(), "data");
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(
-      path.resolve(dir, "telegram_config.json"),
-      JSON.stringify(updated, null, 2),
-      "utf-8"
-    );
-  } catch {}
 
   return updated;
 }

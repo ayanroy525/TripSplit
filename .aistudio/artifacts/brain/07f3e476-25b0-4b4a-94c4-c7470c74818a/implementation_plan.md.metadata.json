@@ -1,6 +1,6 @@
 {
-  "summary":  "Architectural implementation plan for Telegram daily diagnostic reports with interactive inline buttons to approve or reject automated database and endpoint self-healing.",
-  "updatedAt":  "2026-10-27T17:27:27.369108191Z",
+  "summary":  "Comprehensive end-to-end security review and hardening specification covering credential isolation, database Row Level Security (RLS), API IDOR prevention, session revocation, and admin telemetry lockdown.",
+  "updatedAt":  "2026-10-30T18:46:22.225380493Z",
   "requestFeedback":  true,
   "userFacing":  true
 }
