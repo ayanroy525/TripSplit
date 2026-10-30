@@ -10,7 +10,12 @@ async function runDaemon() {
   console.log("[Telegram Daemon] Initializing continuous background bot listener...");
 
   const config = await getTelegramConfig();
-  const token = config.botToken || "9015395099:AAGwac8hrD0yAzmr_K_8dmokp1qIU2X3zZw";
+  const token = config.botToken || process.env.TELEGRAM_BOT_TOKEN;
+
+  if (!token) {
+    console.error("[Telegram Daemon Error] TELEGRAM_BOT_TOKEN is not configured. Exiting daemon.");
+    process.exit(1);
+  }
 
   // 1. Reset webhook so long-polling is unlocked
   try {
