@@ -10,6 +10,7 @@ import {
   findLocalMember,
   saveLocalUser,
   type LocalUserRecord,
+  rateLimitRequest,
 } from "../_shared.ts";
 
 export default async function handler(req: any, res: any) {
@@ -28,12 +29,18 @@ export default async function handler(req: any, res: any) {
   const { emailOrPhone, password } = body;
   const rawInput = (emailOrPhone || "").trim();
   const inputPassword = password || "";
+  const clientIp = (req.headers?.["x-forwarded-for"] || req.socket?.remoteAddress || "unknown").toString();
 
   if (!rawInput) {
     return sendJson(res, 400, { success: false, error: "Please enter your email or phone number." });
   }
   if (!inputPassword) {
     return sendJson(res, 400, { success: false, error: "Please enter your password." });
+  }
+
+  const rateKey = `login:${clientIp}:${rawInput.toLowerCase()}`;
+  if (rateLimitRequest(rateKey, 5, 60_000)) {
+    return sendJson(res, 429, { success: false, error: "Too many attempts. Please try again later." });
   }
 
   const cleanDigits = rawInput.replace(/\D/g, "");
@@ -119,7 +126,6 @@ export default async function handler(req: any, res: any) {
     }
   }
 
-  // Local fallback
   if (!foundUser) {
     const localUser = findLocalUser(rawInput);
     if (localUser) {

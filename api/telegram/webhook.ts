@@ -1,4 +1,4 @@
-import { setCorsHeaders, sendJson } from "../_shared.ts";
+import { setCorsHeaders, sendJson, rateLimitRequest } from "../_shared.ts";
 import { registerTelegramWebhook } from "./_client.ts";
 import { processTelegramUpdate } from "./_processor.ts";
 
@@ -9,7 +9,6 @@ export default async function handler(req: any, res: any) {
     return res.end();
   }
 
-  // Webhook info check
   if (req.method === "GET") {
     return sendJson(res, 200, {
       status: "active",
@@ -20,6 +19,18 @@ export default async function handler(req: any, res: any) {
 
   if (req.method !== "POST") {
     return sendJson(res, 405, { success: false, error: "Method not allowed" });
+  }
+
+  const clientIp = (req.headers?.["x-forwarded-for"] || req.socket?.remoteAddress || "unknown").toString();
+  if (rateLimitRequest(`telegram:${clientIp}`, 20, 60_000)) {
+    return sendJson(res, 429, { success: false, error: "Too many requests. Please try again later." });
+  }
+
+  const secret = req.headers?.["x-telegram-bot-api-secret-token"];
+  const expectedSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
+
+  if (!expectedSecret || !secret || secret !== expectedSecret) {
+    return sendJson(res, 401, { success: false, error: "Unauthorized webhook request" });
   }
 
   try {

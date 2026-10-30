@@ -8,6 +8,7 @@ import {
   findLocalUser,
   saveLocalUser,
   type LocalUserRecord,
+  rateLimitRequest,
 } from "../_shared.ts";
 
 export default async function handler(req: any, res: any) {
@@ -29,6 +30,7 @@ export default async function handler(req: any, res: any) {
   const rawPhone = (phone || "").trim();
   const cleanDigits = rawPhone.replace(/\D/g, "");
   const inputPassword = password || "";
+  const clientIp = (req.headers?.["x-forwarded-for"] || req.socket?.remoteAddress || "unknown").toString();
 
   if (!trimmedName) {
     return sendJson(res, 400, { success: false, error: "Please enter your full name." });
@@ -40,7 +42,10 @@ export default async function handler(req: any, res: any) {
     return sendJson(res, 400, { success: false, error: "Password must be at least 6 characters long." });
   }
 
-  // Check if account already exists in local store
+  if (rateLimitRequest(`signup:${clientIp}:${trimmedEmail}`, 5, 60_000)) {
+    return sendJson(res, 429, { success: false, error: "Too many attempts. Please try again later." });
+  }
+
   const existingLocal = findLocalUser(trimmedEmail) || (cleanDigits.length >= 7 ? findLocalUser(cleanDigits) : null);
   if (existingLocal) {
     return sendJson(res, 409, {

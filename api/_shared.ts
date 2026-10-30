@@ -4,6 +4,8 @@ import fs from "fs";
 import path from "path";
 import bcrypt from "bcryptjs";
 
+const isProduction = process.env.NODE_ENV === "production";
+
 const rawConn = (
   process.env.POSTGRES_URL ||
   process.env.DATABASE_URL ||
@@ -13,10 +15,17 @@ const rawConn = (
   ""
 ).replace(/\?.*$/, "");
 
+const allowInsecureLocalDbTls = process.env.ALLOW_INSECURE_LOCAL_DB_TLS === "true";
+
 export const pool = rawConn
   ? new Pool({
       connectionString: rawConn,
-      ssl: { rejectUnauthorized: false },
+      ssl:
+        isProduction && !allowInsecureLocalDbTls
+          ? { rejectUnauthorized: true }
+          : allowInsecureLocalDbTls
+            ? { rejectUnauthorized: false }
+            : false,
       max: 6,
       min: 1,
       idleTimeoutMillis: 60000,
@@ -26,7 +35,6 @@ export const pool = rawConn
     })
   : null;
 
-// Keep-alive warm ping to prevent cold disconnects and TCP/TLS renegotiation overhead
 if (pool) {
   setInterval(async () => {
     try {
@@ -35,8 +43,21 @@ if (pool) {
   }, 25000);
 }
 
-export const PASSWORD_SALT = process.env.PASSWORD_SALT || process.env.AUTH_SECRET || "";
-export const SESSION_SECRET = process.env.SESSION_SECRET || process.env.AUTH_SECRET || "tripsplit_session_secret_dev";
+export const PASSWORD_SALT =
+  process.env.PASSWORD_SALT || process.env.AUTH_SECRET || (isProduction ? "" : "_trip_split_dev_salt");
+
+export const SESSION_SECRET =
+  process.env.SESSION_SECRET ||
+  process.env.AUTH_SECRET ||
+  (isProduction ? "" : "trip_split_dev_session_secret");
+
+if (isProduction && !SESSION_SECRET) {
+  throw new Error("Missing SESSION_SECRET in production environment.");
+}
+
+if (isProduction && !PASSWORD_SALT) {
+  throw new Error("Missing PASSWORD_SALT in production environment.");
+}
 
 export interface SessionPayload {
   userId: string;
@@ -45,7 +66,41 @@ export interface SessionPayload {
   exp: number;
 }
 
+const rateLimitStore = new Map<string, { count: number; resetAt: number }>();
+
+export function rateLimitRequest(key: string, maxAttempts = 5, windowMs = 60_000): boolean {
+  const now = Date.now();
+  const existing = rateLimitStore.get(key);
+
+  if (!existing || now > existing.resetAt) {
+    rateLimitStore.set(key, { count: 1, resetAt: now + windowMs });
+    return false;
+  }
+
+  existing.count += 1;
+  if (existing.count > maxAttempts) {
+    rateLimitStore.set(key, existing);
+    return true;
+  }
+
+  rateLimitStore.set(key, existing);
+  return false;
+}
+
+export function isAllowedCorsOrigin(origin: string): boolean {
+  if (!origin) return true;
+
+  const normalized = origin.toLowerCase();
+  const allowList = ["localhost", "127.0.0.1", "run.app", "vercel.app", "google.com"];
+
+  return allowList.some((entry) => normalized.includes(entry));
+}
+
 export function generateSessionToken(userId: string, email?: string, name?: string): string {
+  if (!SESSION_SECRET) {
+    throw new Error("SESSION_SECRET is not configured");
+  }
+
   const payload: SessionPayload = {
     userId,
     email,
@@ -59,9 +114,10 @@ export function generateSessionToken(userId: string, email?: string, name?: stri
 
 export function verifySessionToken(token: string): SessionPayload | null {
   if (!token || typeof token !== "string") return null;
+  if (!SESSION_SECRET) return null;
+
   const parts = token.split(".");
 
-  // 1. Standard 3-part JWT: header.payload.signature
   if (parts.length === 3) {
     const [headerBase64, payloadBase64, signatureBase64] = parts;
     const signature = crypto
@@ -72,7 +128,6 @@ export function verifySessionToken(token: string): SessionPayload | null {
     try {
       const payload: SessionPayload = JSON.parse(Buffer.from(payloadBase64, "base64url").toString("utf8"));
       const nowSec = Math.floor(Date.now() / 1000);
-      // Support both second and millisecond timestamps
       const expVal = payload.exp > 1e11 ? payload.exp / 1000 : payload.exp;
       if (expVal && expVal < nowSec) return null;
       return payload;
@@ -81,7 +136,6 @@ export function verifySessionToken(token: string): SessionPayload | null {
     }
   }
 
-  // 2. Legacy 2-part token: data.signature
   if (parts.length === 2) {
     const [data, sig] = parts;
     const expectedSig = crypto.createHmac("sha256", SESSION_SECRET).update(data).digest("base64url");
@@ -99,18 +153,12 @@ export function verifySessionToken(token: string): SessionPayload | null {
 }
 
 export function hashPasswordNode(password: string): string {
-  try {
-    return bcrypt.hashSync(password, 10);
-  } catch {
-    const salt = PASSWORD_SALT || "_tripsplit_salt_v1";
-    return crypto.createHash("sha256").update(password + salt).digest("hex");
-  }
+  return bcrypt.hashSync(password, 10);
 }
 
 export function verifyPasswordMatchNode(inputPassword: string, storedHashOrPassword?: string | null): boolean {
   if (!storedHashOrPassword || storedHashOrPassword.trim() === "" || !inputPassword) return false;
 
-  // 1. Bcrypt hash check ($2a$, $2b$, $2y$)
   if (
     storedHashOrPassword.startsWith("$2a$") ||
     storedHashOrPassword.startsWith("$2b$") ||
@@ -123,53 +171,50 @@ export function verifyPasswordMatchNode(inputPassword: string, storedHashOrPassw
     }
   }
 
-  // 2. Exact match (legacy plain text migration fallback)
-  if (storedHashOrPassword === inputPassword || storedHashOrPassword.trim() === inputPassword.trim()) return true;
+  const isLegacyAllowed = !isProduction || process.env.ALLOW_LEGACY_PASSWORD_CHECK === "true";
 
-  // 3. Salted SHA-256 with custom env salt
-  if (PASSWORD_SALT) {
-    const envSalted = crypto.createHash("sha256").update(inputPassword + PASSWORD_SALT).digest("hex");
-    if (storedHashOrPassword === envSalted) return true;
+  if (isLegacyAllowed) {
+    if (storedHashOrPassword === inputPassword || storedHashOrPassword.trim() === inputPassword.trim()) return true;
+
+    if (PASSWORD_SALT) {
+      const envSalted = crypto.createHash("sha256").update(inputPassword + PASSWORD_SALT).digest("hex");
+      if (storedHashOrPassword === envSalted) return true;
+    }
+
+    const legacySalted = crypto.createHash("sha256").update(inputPassword + "_tripsplit_salt_v1").digest("hex");
+    if (storedHashOrPassword === legacySalted) return true;
+
+    const unsalted = crypto.createHash("sha256").update(inputPassword).digest("hex");
+    if (storedHashOrPassword === unsalted) return true;
+
+    let simpleHash = 0;
+    for (let i = 0; i < inputPassword.length; i++) {
+      simpleHash = ((simpleHash << 5) - simpleHash + inputPassword.charCodeAt(i)) | 0;
+    }
+    if (storedHashOrPassword === `fb_${Math.abs(simpleHash)}`) return true;
   }
-
-  // 4. Salted SHA-256 legacy default
-  const legacySalted = crypto.createHash("sha256").update(inputPassword + "_tripsplit_salt_v1").digest("hex");
-  if (storedHashOrPassword === legacySalted) return true;
-
-  // 5. Unsalted SHA-256
-  const unsalted = crypto.createHash("sha256").update(inputPassword).digest("hex");
-  if (storedHashOrPassword === unsalted) return true;
-
-  // 6. Simple hash
-  let simpleHash = 0;
-  for (let i = 0; i < inputPassword.length; i++) {
-    simpleHash = ((simpleHash << 5) - simpleHash + inputPassword.charCodeAt(i)) | 0;
-  }
-  if (storedHashOrPassword === `fb_${Math.abs(simpleHash)}`) return true;
 
   return false;
 }
 
 export function setCorsHeaders(res: any, req?: any) {
   const origin = req?.headers?.origin || "";
-  const isAllowed =
-    !origin ||
-    origin.includes("run.app") ||
-    origin.includes("localhost") ||
-    origin.includes("127.0.0.1") ||
-    origin.includes("google.com");
+  const allowed = isAllowedCorsOrigin(origin);
 
-  if (isAllowed && origin) {
+  if (allowed && origin) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
   } else if (!origin) {
-    // Direct or server-side call
+    // direct or server-side calls are allowed
   } else {
     res.setHeader("Access-Control-Allow-Origin", "null");
   }
 
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-Telegram-Bot-Api-Secret-Token");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization, X-Requested-With, X-Telegram-Bot-Api-Secret-Token"
+  );
 }
 
 export function parseBody(req: any): any {
@@ -197,7 +242,6 @@ export function sendJson(res: any, statusCode: number, data: any) {
   }
 }
 
-// In-memory fallback for serverless environments (Vercel/Cloudflare)
 export interface LocalUserRecord {
   id: string;
   email: string | null;
@@ -250,6 +294,11 @@ function getStoragePath(): string | null {
   }
 }
 
+export function sanitizeLocalUserForStorage(user: LocalUserRecord) {
+  const { password_hash: _passwordHash, ...cleanUser } = user;
+  return cleanUser;
+}
+
 export function getLocalStore(): ServerStoreSchema {
   try {
     const filePath = getStoragePath();
@@ -276,7 +325,13 @@ export function saveLocalStore(data: ServerStoreSchema): void {
     if (filePath) {
       const dir = path.dirname(filePath);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
+
+      const sanitized: ServerStoreSchema = {
+        ...data,
+        users: data.users.map((user) => sanitizeLocalUserForStorage(user) as LocalUserRecord),
+      };
+
+      fs.writeFileSync(filePath, JSON.stringify(sanitized, null, 2), "utf-8");
     }
   } catch {}
 }
