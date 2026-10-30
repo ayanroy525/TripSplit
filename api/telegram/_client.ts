@@ -1,6 +1,7 @@
 import { pool } from "../_shared.ts";
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
 
 export interface TelegramConfig {
   botToken: string;
@@ -222,6 +223,16 @@ export async function answerCallbackQuery(
 }
 
 /**
+ * Get or derive secure Telegram Webhook secret token
+ */
+export function getTelegramWebhookSecret(): string {
+  if (process.env.TELEGRAM_WEBHOOK_SECRET) {
+    return process.env.TELEGRAM_WEBHOOK_SECRET.trim();
+  }
+  return crypto.createHmac("sha256", process.env.SESSION_SECRET || process.env.AUTH_SECRET || "tripsplit_auth_token_secret_seed").update("telegram_webhook_secret_token").digest("hex").slice(0, 32);
+}
+
+/**
  * Register public webhook URL with Telegram Bot API
  */
 export async function registerTelegramWebhook(
@@ -232,6 +243,7 @@ export async function registerTelegramWebhook(
   const token = customToken || config.botToken;
   if (!token) return { success: false, error: "No bot token configured" };
 
+  const secretToken = getTelegramWebhookSecret();
   const url = `https://api.telegram.org/bot${token}/setWebhook`;
   try {
     const res = await fetch(url, {
@@ -240,6 +252,7 @@ export async function registerTelegramWebhook(
       body: JSON.stringify({
         url: webhookUrl,
         allowed_updates: ["callback_query", "message"],
+        secret_token: secretToken,
       }),
     });
     const data = await res.json();

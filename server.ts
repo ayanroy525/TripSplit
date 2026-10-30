@@ -15,13 +15,23 @@ import {
   LocalUserRecord,
 } from "./src/serverDb.js";
 import { runDiagnosticSweep } from "./api/health/_runner.ts";
+import loginHandler from "./api/auth/login.ts";
+import signupHandler from "./api/auth/signup.ts";
 import telegramSettingsHandler from "./api/telegram/settings.ts";
 import telegramTestHandler from "./api/telegram/test.ts";
 import telegramWebhookHandler from "./api/telegram/webhook.ts";
 import telegramDetectChatHandler from "./api/telegram/detect-chat.ts";
 import { startTelegramPoller } from "./api/telegram/_poller.ts";
 import rateLimit from "express-rate-limit";
-import { pool, hashPasswordNode, verifyPasswordMatchNode } from "./api/_shared.ts";
+import {
+  pool,
+  hashPasswordNode,
+  verifyPasswordMatchNode,
+  setCorsHeaders,
+  isOriginAllowed,
+  SESSION_SECRET,
+  PASSWORD_SALT,
+} from "./api/_shared.ts";
 
 dotenv.config();
 
@@ -31,28 +41,9 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// CORS Whitelist Protection
+// CORS Whitelist Protection using shared strict policy
 app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  const isAllowed =
-    !origin ||
-    origin.includes("run.app") ||
-    origin.includes("localhost") ||
-    origin.includes("127.0.0.1") ||
-    origin.includes("google.com");
-
-  if (isAllowed && origin) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-    res.setHeader("Vary", "Origin");
-  } else if (!origin) {
-    // Direct or server-to-server request
-  } else {
-    res.setHeader("Access-Control-Allow-Origin", "null");
-  }
-
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-Telegram-Bot-Api-Secret-Token");
-
+  setCorsHeaders(res, req);
   if (req.method === "OPTIONS") {
     return res.status(204).end();
   }
@@ -80,8 +71,6 @@ app.use("/api/auth/signup", authRateLimiter);
 
 
 
-const PASSWORD_SALT = process.env.PASSWORD_SALT || process.env.AUTH_SECRET || "";
-const SESSION_SECRET = process.env.SESSION_SECRET || process.env.AUTH_SECRET || "tripsplit_session_secret_dev";
 
 interface SessionPayload {
   userId: string;
@@ -352,235 +341,8 @@ app.get("/api/db/status", adminOnlyMiddleware, async (_req, res) => {
   }
 });
 
-app.post("/api/auth/login", async (req, res) => {
-  const { emailOrPhone, password } = req.body || {};
-  const rawInput = (emailOrPhone || "").trim();
-  const inputPassword = password || "";
-
-  if (!rawInput) {
-    return res.status(400).json({ success: false, error: "Please enter your email or phone number." });
-  }
-  if (!inputPassword) {
-    return res.status(400).json({ success: false, error: "Please enter your password." });
-  }
-
-  const cleanDigits = rawInput.replace(/\D/g, "");
-  const trimmedLower = rawInput.toLowerCase();
-
-  let foundUser: any = null;
-  let usedPostgres = false;
-
-  // 1. Try PostgreSQL if pool is initialized
-  if (pool) {
-    try {
-      const usersQuery = `
-        SELECT id, email, name, phone, avatar_color, avatar_url, bio, password_hash, token_version, created_at
-        FROM public.users
-        WHERE LOWER(TRIM(COALESCE(email, ''))) = $1
-           OR ($2 <> '' AND regexp_replace(COALESCE(phone, ''), '\\D', '', 'g') LIKE '%' || $2 || '%')
-           OR LOWER(TRIM(COALESCE(name, ''))) = $1
-        LIMIT 1;
-      `;
-      const userRes = await pool.query(usersQuery, [trimmedLower, cleanDigits.length >= 7 ? cleanDigits : ""]);
-      foundUser = userRes.rows[0];
-
-      if (!foundUser && cleanDigits.length >= 7) {
-        const allUsersRes = await pool.query(
-          "SELECT id, email, name, phone, avatar_color, avatar_url, bio, password_hash, token_version, created_at FROM public.users LIMIT 200;"
-        );
-        foundUser = allUsersRes.rows.find((u) => {
-          const uPhone = (u.phone || "").replace(/\D/g, "");
-          return uPhone.length >= 7 && (uPhone.endsWith(cleanDigits) || cleanDigits.endsWith(uPhone));
-        });
-      }
-
-      if (!foundUser) {
-        try {
-          const memberRes = await pool.query(
-            `SELECT id, user_id, name, email, phone, avatar_color, joined_at
-             FROM public.trip_members
-             WHERE LOWER(TRIM(COALESCE(email, ''))) = $1
-                OR ($2 <> '' AND regexp_replace(COALESCE(phone, ''), '\\D', '', 'g') LIKE '%' || $2 || '%')
-             LIMIT 1;`,
-            [trimmedLower, cleanDigits.length >= 7 ? cleanDigits : ""]
-          );
-          const foundMember = memberRes.rows[0];
-          if (foundMember) {
-            return res.status(401).json({
-              success: false,
-              invitedMember: true,
-              error: `You were invited to a trip as "${foundMember.name || "Member"}"! Please click 'Create Account' to set your password and claim your profile.`,
-            });
-          }
-        } catch (e) {
-          console.warn("Notice querying trip_members in pool:", e);
-        }
-      }
-
-      usedPostgres = true;
-    } catch (dbErr: any) {
-      console.warn("Notice: PostgreSQL unavailable during login, switching to server local storage:", dbErr?.message || dbErr);
-    }
-  }
-
-  // 2. Local Server Store Fallback
-  if (!foundUser) {
-    const localUser = findLocalUser(rawInput);
-    if (localUser) {
-      foundUser = localUser;
-    } else {
-      const localMember = findLocalMember(rawInput);
-      if (localMember) {
-        return res.status(401).json({
-          success: false,
-          invitedMember: true,
-          error: `You were invited to a trip as "${localMember.name || "Member"}"! Please click 'Create Account' to set your password and claim your profile.`,
-        });
-      }
-    }
-  }
-
-  if (!foundUser) {
-    return res.status(404).json({
-      success: false,
-      error: "No account found matching this email or phone number. Please check your credentials or click 'Create Account' to sign up.",
-    });
-  }
-
-  const isPassValid = verifyPasswordMatchNode(inputPassword, foundUser.password_hash);
-  if (!isPassValid) {
-    return res.status(401).json({
-      success: false,
-      error: "Incorrect password for this account. Please verify your password or use 'Forgot Password?' to reset it.",
-    });
-  }
-
-  const modernHash = hashPasswordNode(inputPassword);
-  if (foundUser.password_hash !== modernHash) {
-    if (usedPostgres && pool) {
-      try {
-        await pool.query("UPDATE public.users SET password_hash = $1, updated_at = NOW() WHERE id = $2;", [
-          modernHash,
-          foundUser.id,
-        ]);
-      } catch (e) {}
-    }
-    foundUser.password_hash = modernHash;
-    saveLocalUser(foundUser);
-  }
-
-  const userAccount = {
-    id: foundUser.id,
-    name: foundUser.name || (foundUser.email ? foundUser.email.split("@")[0] : "Traveler"),
-    email: foundUser.email || (trimmedLower.includes("@") ? trimmedLower : ""),
-    phone: foundUser.phone || undefined,
-    avatarColor: foundUser.avatar_color || "#E39A2D",
-    avatarUrl: foundUser.avatar_url || undefined,
-    bio: foundUser.bio || "Travel Enthusiast",
-    createdAt: foundUser.created_at || new Date().toISOString(),
-  };
-
-  const sessionToken = generateSessionToken(foundUser.id, foundUser.email, foundUser.name, foundUser.token_version || 1);
-  return res.json({ success: true, token: sessionToken, user: userAccount });
-});
-
-app.post("/api/auth/signup", async (req, res) => {
-  const { name, email, phone, password, avatarColor, bio } = req.body || {};
-  const trimmedName = (name || "").trim();
-  const trimmedEmail = (email || "").trim().toLowerCase();
-  const rawPhone = (phone || "").trim();
-  const cleanDigits = rawPhone.replace(/\D/g, "");
-  const inputPassword = password || "";
-
-  if (!trimmedName) {
-    return res.status(400).json({ success: false, error: "Please enter your full name." });
-  }
-  if (!trimmedEmail || !trimmedEmail.includes("@")) {
-    return res.status(400).json({ success: false, error: "Please enter a valid email address." });
-  }
-  if (!inputPassword || inputPassword.length < 6) {
-    return res.status(400).json({ success: false, error: "Password must be at least 6 characters long." });
-  }
-
-  // Check if account already exists in local store
-  const existingLocal = findLocalUser(trimmedEmail) || (cleanDigits.length >= 7 ? findLocalUser(cleanDigits) : null);
-  if (existingLocal) {
-    return res.status(409).json({
-      success: false,
-      error: "An account with this email or phone already exists. Please log in with your password.",
-    });
-  }
-
-  if (pool) {
-    try {
-      const existingRes = await pool.query(
-        `SELECT id, email, phone FROM public.users
-         WHERE LOWER(TRIM(email)) = $1
-            OR ($2 <> '' AND regexp_replace(COALESCE(phone, ''), '\\D', '', 'g') = $2)
-         LIMIT 1;`,
-        [trimmedEmail, cleanDigits.length >= 7 ? cleanDigits : ""]
-      );
-
-      if (existingRes.rows.length > 0) {
-        return res.status(409).json({
-          success: false,
-          error: "An account with this email or phone already exists. Please log in with your password.",
-        });
-      }
-    } catch (err) {
-      console.warn("Notice: PostgreSQL check during signup:", err);
-    }
-  }
-
-  const userId = `u_${Math.random().toString(36).substring(2, 9)}_${Date.now().toString(36)}`;
-  const hashedPassword = hashPasswordNode(inputPassword);
-
-  const localUserRecord: LocalUserRecord = {
-    id: userId,
-    email: trimmedEmail,
-    name: trimmedName,
-    phone: rawPhone || null,
-    avatar_color: avatarColor || "#E39A2D",
-    bio: bio || "Travel Enthusiast",
-    password_hash: hashedPassword,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  };
-  saveLocalUser(localUserRecord);
-
-  if (pool) {
-    try {
-      await pool.query(
-        `INSERT INTO public.users (id, email, name, phone, avatar_color, bio, password_hash, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW());`,
-        [
-          userId,
-          trimmedEmail,
-          trimmedName,
-          rawPhone || null,
-          avatarColor || "#E39A2D",
-          bio || "Travel Enthusiast",
-          hashedPassword,
-        ]
-      );
-    } catch (err) {
-      console.warn("Notice: PostgreSQL insert during signup deferred:", err);
-    }
-  }
-
-  const userAccount = {
-    id: userId,
-    name: trimmedName,
-    email: trimmedEmail,
-    phone: rawPhone || undefined,
-    avatarColor: avatarColor || "#E39A2D",
-    bio: bio || "Travel Enthusiast",
-    createdAt: localUserRecord.created_at,
-  };
-
-  const sessionToken = generateSessionToken(userId, trimmedEmail, trimmedName, 1);
-  return res.json({ success: true, token: sessionToken, user: userAccount });
-});
+app.all("/api/auth/login", (req, res) => loginHandler(req, res));
+app.all("/api/auth/signup", (req, res) => signupHandler(req, res));
 
 app.post("/api/auth/revoke-all-sessions", authMiddleware, async (req: AuthRequest, res: Response) => {
   const userId = req.userId;

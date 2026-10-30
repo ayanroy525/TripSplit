@@ -6,51 +6,75 @@ const metaEnv: Record<string, any> = {
   ...((import.meta as any).env || {}),
 };
 
-const DEFAULT_SUPABASE_URL = "https://ryamchjjwoaimwrmurry.supabase.co";
-const DEFAULT_SUPABASE_ANON_KEY =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ5YW1jaGpqd29haW13cm11cnJ5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAwMTIwOTYsImV4cCI6MjEwNTU4ODA5Nn0.6r-qcinkytxEzCxb4jhRjXNZ0-g4_YTKdsnhUG3De6A";
+const isProduction =
+  metaEnv.PROD === true ||
+  metaEnv.NODE_ENV === "production" ||
+  metaEnv.MODE === "production";
 
-const supabaseUrl: string =
-  metaEnv.VITE_SUPABASE_URL ||
-  metaEnv.NEXT_PUBLIC_SUPABASE_URL ||
-  metaEnv.SUPABASE_URL ||
-  DEFAULT_SUPABASE_URL;
+export function resolveSupabaseConfig(overrides?: {
+  supabaseUrl?: string;
+  supabaseAnonKey?: string;
+  isProduction?: boolean;
+}): { url: string; anonKey: string } {
+  const isProd = overrides?.isProduction !== undefined ? overrides.isProduction : isProduction;
+  const urlCandidate =
+    overrides?.supabaseUrl !== undefined
+      ? overrides.supabaseUrl
+      : metaEnv.VITE_SUPABASE_URL ||
+        metaEnv.NEXT_PUBLIC_SUPABASE_URL ||
+        metaEnv.SUPABASE_URL;
 
-function getValidAnonKey(): string {
-  const candidates = [
-    metaEnv.VITE_SUPABASE_PUBLISHABLE_KEY,
-    metaEnv.SUPABASE_PUBLISHABLE_KEY,
-    metaEnv.VITE_SUPABASE_ANON_KEY,
-    metaEnv.SUPABASE_ANON_KEY,
-  ];
+  const keyCandidates =
+    overrides?.supabaseAnonKey !== undefined
+      ? [overrides.supabaseAnonKey]
+      : [
+          metaEnv.VITE_SUPABASE_PUBLISHABLE_KEY,
+          metaEnv.SUPABASE_PUBLISHABLE_KEY,
+          metaEnv.VITE_SUPABASE_ANON_KEY,
+          metaEnv.SUPABASE_ANON_KEY,
+        ];
 
-  for (const candidate of candidates) {
+  let resolvedKey = "";
+  for (const candidate of keyCandidates) {
     if (typeof candidate === "string" && candidate.trim()) {
       let cleanKey = candidate.trim().replace(/^["']|["']$/g, "");
-      // Handle malformed compound env strings containing multiple assignments
-      if (cleanKey.includes('"') || cleanKey.includes(" ") || cleanKey.includes("=")) {
-        const tokens = cleanKey.split(/[\s"'=]+/);
-        for (const token of tokens) {
-          if (token.startsWith("sb_publishable_")) {
-            return token;
-          }
-          if (token.startsWith("eyJ") && token.split(".").length === 3) {
-            return token;
-          }
+      // Discard secret / service_role keys immediately to prevent browser privilege leaks
+      if (
+        cleanKey.startsWith("sb_secret_") ||
+        cleanKey.toLowerCase().includes("service_role") ||
+        cleanKey.toLowerCase().includes("secret")
+      ) {
+        if (overrides) {
+          throw new Error("FATAL SECURITY ERROR: service_role or secret key detected in frontend configuration.");
         }
+        console.error("SECURITY ALERT: Attempted use of secret service_role key in frontend client rejected.");
+        continue;
       }
-      // Discard secret / service_role keys that cause "Forbidden use of secret API key in browser"
-      if (!cleanKey.startsWith("sb_secret_") && !cleanKey.toLowerCase().includes("secret")) {
-        return cleanKey;
+      if (
+        cleanKey.startsWith("sb_publishable_") ||
+        cleanKey.startsWith("eyJ")
+      ) {
+        resolvedKey = cleanKey;
+        break;
       }
     }
   }
 
-  // Real Supabase anon key configured for project
-  return DEFAULT_SUPABASE_ANON_KEY;
+  if (isProd && (!urlCandidate || !resolvedKey)) {
+    throw new Error(
+      "SECURITY ERROR: VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY are required in production. Fallback defaults are disabled."
+    );
+  }
+
+  return {
+    url: urlCandidate || "https://ryamchjjwoaimwrmurry.supabase.co",
+    anonKey:
+      resolvedKey ||
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ5YW1jaGpqd29haW13cm11cnJ5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAwMTIwOTYsImV4cCI6MjEwNTU4ODA5Nn0.6r-qcinkytxEzCxb4jhRjXNZ0-g4_YTKdsnhUG3De6A",
+  };
 }
 
-const supabaseAnonKey = getValidAnonKey();
+const { url: supabaseUrl, anonKey: supabaseAnonKey } = resolveSupabaseConfig();
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {

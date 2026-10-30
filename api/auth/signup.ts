@@ -7,6 +7,8 @@ import {
   sendJson,
   findLocalUser,
   saveLocalUser,
+  checkRateLimit,
+  getClientIp,
   type LocalUserRecord,
 } from "../_shared.ts";
 
@@ -20,6 +22,15 @@ export default async function handler(req: any, res: any) {
 
   if (req.method !== "POST") {
     return sendJson(res, 405, { success: false, error: "Method Not Allowed" });
+  }
+
+  const clientIp = getClientIp(req);
+  const ipRate = checkRateLimit(`signup_ip_${clientIp}`, 8, 10 * 60 * 1000);
+  if (!ipRate.allowed) {
+    return sendJson(res, 429, {
+      success: false,
+      error: `Too many registration attempts. Please wait ${Math.ceil(ipRate.retryAfterSec / 60)} minutes before trying again.`,
+    });
   }
 
   const body = parseBody(req);

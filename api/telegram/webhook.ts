@@ -1,9 +1,9 @@
 import { setCorsHeaders, sendJson } from "../_shared.ts";
-import { registerTelegramWebhook } from "./_client.ts";
+import { getTelegramWebhookSecret } from "./_client.ts";
 import { processTelegramUpdate } from "./_processor.ts";
 
 export default async function handler(req: any, res: any) {
-  setCorsHeaders(res);
+  setCorsHeaders(res, req);
   if (req.method === "OPTIONS") {
     res.statusCode = 204;
     return res.end();
@@ -22,6 +22,19 @@ export default async function handler(req: any, res: any) {
     return sendJson(res, 405, { success: false, error: "Method not allowed" });
   }
 
+  // Security: Enforce secret token header verification
+  const expectedSecret = getTelegramWebhookSecret();
+  const incomingSecret =
+    req.headers?.["x-telegram-bot-api-secret-token"] ||
+    req.headers?.["X-Telegram-Bot-Api-Secret-Token"];
+
+  if (!incomingSecret || incomingSecret !== expectedSecret) {
+    return sendJson(res, 403, {
+      success: false,
+      error: "Forbidden: Missing or invalid Telegram webhook secret token",
+    });
+  }
+
   try {
     let update = req.body;
     if (typeof update === "string") {
@@ -31,7 +44,7 @@ export default async function handler(req: any, res: any) {
     }
 
     const result = await processTelegramUpdate(update);
-    return sendJson(res, 200, result);
+    return sendJson(res, 200, { ok: true, ...result });
   } catch (err: any) {
     console.error("Error in webhook handler:", err);
     return sendJson(res, 500, { success: false, error: err?.message });

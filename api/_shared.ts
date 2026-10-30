@@ -13,10 +13,22 @@ const rawConn = (
   ""
 ).replace(/\?.*$/, "");
 
+export function getDatabaseSslConfig(): boolean | { rejectUnauthorized: boolean } {
+  const isLocalDB = rawConn.includes("localhost") || rawConn.includes("127.0.0.1");
+  if (isLocalDB) return false;
+  const isProd = process.env.NODE_ENV === "production";
+  const allowInsecureSSL = !isProd && process.env.DB_SSL_ALLOW_INSECURE === "true";
+  if (allowInsecureSSL) {
+    return { rejectUnauthorized: false };
+  }
+  // Default to secure TLS verification
+  return { rejectUnauthorized: true };
+}
+
 export const pool = rawConn
   ? new Pool({
       connectionString: rawConn,
-      ssl: { rejectUnauthorized: false },
+      ssl: getDatabaseSslConfig(),
       max: 6,
       min: 1,
       idleTimeoutMillis: 60000,
@@ -35,8 +47,46 @@ if (pool) {
   }, 25000);
 }
 
-export const PASSWORD_SALT = process.env.PASSWORD_SALT || process.env.AUTH_SECRET || "";
-export const SESSION_SECRET = process.env.SESSION_SECRET || process.env.AUTH_SECRET || "tripsplit_session_secret_dev";
+// Session & Auth secret resolution with strict validation
+export function getValidatedSessionSecret(): string {
+  if (process.env.SESSION_SECRET && process.env.SESSION_SECRET.trim() !== "") {
+    return process.env.SESSION_SECRET.trim();
+  }
+  if (process.env.AUTH_SECRET && process.env.AUTH_SECRET.trim() !== "") {
+    return process.env.AUTH_SECRET.trim();
+  }
+
+  // In production cloud environments without explicit SESSION_SECRET,
+  // securely derive high-entropy session secret from existing private infrastructure secrets
+  if (process.env.SUPABASE_SERVICE_ROLE_KEY && process.env.SUPABASE_SERVICE_ROLE_KEY.trim() !== "") {
+    return crypto
+      .createHmac("sha256", process.env.SUPABASE_SERVICE_ROLE_KEY.trim())
+      .update("tripsplit_auth_session_secret_seed")
+      .digest("hex");
+  }
+  if (process.env.POSTGRES_URL && process.env.POSTGRES_URL.trim() !== "") {
+    return crypto
+      .createHmac("sha256", process.env.POSTGRES_URL.trim())
+      .update("tripsplit_auth_session_secret_seed")
+      .digest("hex");
+  }
+
+  // If in production and NO secret or infrastructure credentials exist at all:
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("CRITICAL SECURITY ERROR: SESSION_SECRET or AUTH_SECRET environment variable is required in production.");
+  }
+
+  return "tripsplit_session_secret_dev";
+}
+
+export const getSessionSecret = getValidatedSessionSecret;
+export const SESSION_SECRET = getValidatedSessionSecret();
+export const PASSWORD_SALT =
+  process.env.PASSWORD_SALT ||
+  process.env.AUTH_SECRET ||
+  (process.env.SUPABASE_SERVICE_ROLE_KEY
+    ? crypto.createHash("sha256").update(process.env.SUPABASE_SERVICE_ROLE_KEY).digest("hex").slice(0, 32)
+    : "");
 
 export interface SessionPayload {
   userId: string;
@@ -52,9 +102,10 @@ export function generateSessionToken(userId: string, email?: string, name?: stri
     name,
     exp: Date.now() + 30 * 24 * 60 * 60 * 1000,
   };
-  const data = Buffer.from(JSON.stringify(payload)).toString("base64url");
-  const sig = crypto.createHmac("sha256", SESSION_SECRET).update(data).digest("base64url");
-  return `${data}.${sig}`;
+  const headerBase64 = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+  const payloadBase64 = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const sig = crypto.createHmac("sha256", SESSION_SECRET).update(`${headerBase64}.${payloadBase64}`).digest("base64url");
+  return `${headerBase64}.${payloadBase64}.${sig}`;
 }
 
 export function verifySessionToken(token: string): SessionPayload | null {
@@ -72,7 +123,6 @@ export function verifySessionToken(token: string): SessionPayload | null {
     try {
       const payload: SessionPayload = JSON.parse(Buffer.from(payloadBase64, "base64url").toString("utf8"));
       const nowSec = Math.floor(Date.now() / 1000);
-      // Support both second and millisecond timestamps
       const expVal = payload.exp > 1e11 ? payload.exp / 1000 : payload.exp;
       if (expVal && expVal < nowSec) return null;
       return payload;
@@ -99,77 +149,149 @@ export function verifySessionToken(token: string): SessionPayload | null {
 }
 
 export function hashPasswordNode(password: string): string {
-  try {
-    return bcrypt.hashSync(password, 10);
-  } catch {
-    const salt = PASSWORD_SALT || "_tripsplit_salt_v1";
-    return crypto.createHash("sha256").update(password + salt).digest("hex");
-  }
+  return bcrypt.hashSync(password, 10);
 }
 
-export function verifyPasswordMatchNode(inputPassword: string, storedHashOrPassword?: string | null): boolean {
-  if (!storedHashOrPassword || storedHashOrPassword.trim() === "" || !inputPassword) return false;
+export interface PasswordVerificationResult {
+  valid: boolean;
+  needsRehash: boolean;
+  method: "bcrypt" | "legacy_sha256" | "none";
+}
 
-  // 1. Bcrypt hash check ($2a$, $2b$, $2y$)
+export function verifyPasswordMatchNode(
+  inputPassword: string,
+  storedHashOrPassword?: string | null
+): PasswordVerificationResult {
+  if (!storedHashOrPassword || !inputPassword || storedHashOrPassword.trim() === "") {
+    return { valid: false, needsRehash: false, method: "none" };
+  }
+
+  const trimmedStored = storedHashOrPassword.trim();
+
+  // 1. Modern Bcrypt hash check ($2a$, $2b$, $2y$)
   if (
-    storedHashOrPassword.startsWith("$2a$") ||
-    storedHashOrPassword.startsWith("$2b$") ||
-    storedHashOrPassword.startsWith("$2y$")
+    trimmedStored.startsWith("$2a$") ||
+    trimmedStored.startsWith("$2b$") ||
+    trimmedStored.startsWith("$2y$")
   ) {
     try {
-      return bcrypt.compareSync(inputPassword, storedHashOrPassword);
+      const match = bcrypt.compareSync(inputPassword, trimmedStored);
+      return { valid: match, needsRehash: false, method: match ? "bcrypt" : "none" };
     } catch {
-      return false;
+      return { valid: false, needsRehash: false, method: "none" };
     }
   }
 
-  // 2. Exact match (legacy plain text migration fallback)
-  if (storedHashOrPassword === inputPassword || storedHashOrPassword.trim() === inputPassword.trim()) return true;
+  // 2. Reject exact plaintext passwords in all environments
+  // 3. Reject weak unsalted SHA-256 and simple hashes (e.g. fb_*)
+  if (trimmedStored === inputPassword || trimmedStored.startsWith("fb_")) {
+    return { valid: false, needsRehash: false, method: "none" };
+  }
 
-  // 3. Salted SHA-256 with custom env salt
+  // 4. Safe legacy migration path: Salted SHA-256 with custom env salt or legacy salt
   if (PASSWORD_SALT) {
     const envSalted = crypto.createHash("sha256").update(inputPassword + PASSWORD_SALT).digest("hex");
-    if (storedHashOrPassword === envSalted) return true;
+    if (trimmedStored === envSalted) {
+      return { valid: true, needsRehash: true, method: "legacy_sha256" };
+    }
   }
 
-  // 4. Salted SHA-256 legacy default
   const legacySalted = crypto.createHash("sha256").update(inputPassword + "_tripsplit_salt_v1").digest("hex");
-  if (storedHashOrPassword === legacySalted) return true;
-
-  // 5. Unsalted SHA-256
-  const unsalted = crypto.createHash("sha256").update(inputPassword).digest("hex");
-  if (storedHashOrPassword === unsalted) return true;
-
-  // 6. Simple hash
-  let simpleHash = 0;
-  for (let i = 0; i < inputPassword.length; i++) {
-    simpleHash = ((simpleHash << 5) - simpleHash + inputPassword.charCodeAt(i)) | 0;
+  if (trimmedStored === legacySalted) {
+    return { valid: true, needsRehash: true, method: "legacy_sha256" };
   }
-  if (storedHashOrPassword === `fb_${Math.abs(simpleHash)}`) return true;
 
-  return false;
+  return { valid: false, needsRehash: false, method: "none" };
 }
 
-export function setCorsHeaders(res: any, req?: any) {
-  const origin = req?.headers?.origin || "";
-  const isAllowed =
-    !origin ||
-    origin.includes("run.app") ||
-    origin.includes("localhost") ||
-    origin.includes("127.0.0.1") ||
-    origin.includes("google.com");
+export function isOriginAllowed(origin: string): boolean {
+  if (!origin) return false;
+  try {
+    const parsed = new URL(origin);
+    const hostname = parsed.hostname.toLowerCase();
+    // Allow local development ports
+    if (hostname === "localhost" || hostname === "127.0.0.1") return true;
 
-  if (isAllowed && origin) {
+    // Explicit configured allowed origins
+    const configuredAllowed = (process.env.ALLOWED_ORIGINS || "")
+      .split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+    if (configuredAllowed.includes(origin.toLowerCase()) || configuredAllowed.includes(hostname)) {
+      return true;
+    }
+
+    // Google Cloud Run application domains
+    if (hostname.endsWith(".run.app")) {
+      return true;
+    }
+
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+export function setCorsHeaders(res: any, req?: any): boolean {
+  const origin = typeof req === "string" ? req : req?.headers?.origin || "";
+  const allowed = isOriginAllowed(origin);
+
+  if (allowed && origin) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
+    res.setHeader("Access-Control-Allow-Credentials", "true");
   } else if (!origin) {
     // Direct or server-side call
   } else {
-    res.setHeader("Access-Control-Allow-Origin", "null");
+    res.setHeader("Vary", "Origin");
   }
 
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-Telegram-Bot-Api-Secret-Token");
+  return allowed;
+}
+
+// In-Memory Rate Limiter for Login/Signup Brute-Force Protection
+interface RateLimitRecord {
+  count: number;
+  resetAt: number;
+}
+const rateLimitBuckets = new Map<string, RateLimitRecord>();
+
+export function checkRateLimit(
+  key: string,
+  maxAttempts = 5,
+  windowMs = 5 * 60 * 1000
+): { allowed: boolean; remaining: number; retryAfterSec: number } {
+  const now = Date.now();
+  const record = rateLimitBuckets.get(key);
+
+  if (!record || now >= record.resetAt) {
+    rateLimitBuckets.set(key, { count: 1, resetAt: now + windowMs });
+    return { allowed: true, remaining: maxAttempts - 1, retryAfterSec: 0 };
+  }
+
+  if (record.count >= maxAttempts) {
+    const retryAfterSec = Math.ceil((record.resetAt - now) / 1000);
+    return { allowed: false, remaining: 0, retryAfterSec };
+  }
+
+  record.count += 1;
+  return { allowed: true, remaining: maxAttempts - record.count, retryAfterSec: 0 };
+}
+
+export function resetRateLimit(key: string): void {
+  rateLimitBuckets.delete(key);
+}
+
+export function getClientIp(req: any): string {
+  return (
+    req.headers?.["x-forwarded-for"]?.split(",")?.[0]?.trim() ||
+    req.headers?.["x-real-ip"] ||
+    req.connection?.remoteAddress ||
+    req.socket?.remoteAddress ||
+    "127.0.0.1"
+  );
 }
 
 export function parseBody(req: any): any {
@@ -256,8 +378,16 @@ export function getLocalStore(): ServerStoreSchema {
     if (filePath && fs.existsSync(filePath)) {
       const raw = fs.readFileSync(filePath, "utf-8");
       const parsed = JSON.parse(raw);
+      const diskUsers = Array.isArray(parsed.users) ? parsed.users : inMemoryStore.users;
+      const users = diskUsers.map((u: any) => {
+        const memUser = inMemoryStore.users.find((mu) => mu.id === u.id);
+        return {
+          ...u,
+          password_hash: memUser?.password_hash || "",
+        };
+      });
       return {
-        users: Array.isArray(parsed.users) ? parsed.users : inMemoryStore.users,
+        users,
         trips: Array.isArray(parsed.trips) ? parsed.trips : inMemoryStore.trips,
         trip_members: Array.isArray(parsed.trip_members) ? parsed.trip_members : inMemoryStore.trip_members,
         expenses: Array.isArray(parsed.expenses) ? parsed.expenses : inMemoryStore.expenses,
@@ -269,6 +399,8 @@ export function getLocalStore(): ServerStoreSchema {
   return inMemoryStore;
 }
 
+export const loadLocalStore = getLocalStore;
+
 export function saveLocalStore(data: ServerStoreSchema): void {
   inMemoryStore = data;
   try {
@@ -276,7 +408,15 @@ export function saveLocalStore(data: ServerStoreSchema): void {
     if (filePath) {
       const dir = path.dirname(filePath);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
+      // Security: Strip password_hash from JSON persistence so hashes are never stored on filesystem
+      const sanitizedData = {
+        ...data,
+        users: (data.users || []).map(({ password_hash, ...u }) => ({
+          ...u,
+          password_hash: "",
+        })),
+      };
+      fs.writeFileSync(filePath, JSON.stringify(sanitizedData, null, 2), "utf-8");
     }
   } catch {}
 }

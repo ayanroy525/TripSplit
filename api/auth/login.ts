@@ -9,6 +9,9 @@ import {
   findLocalUser,
   findLocalMember,
   saveLocalUser,
+  checkRateLimit,
+  resetRateLimit,
+  getClientIp,
   type LocalUserRecord,
 } from "../_shared.ts";
 
@@ -22,6 +25,15 @@ export default async function handler(req: any, res: any) {
 
   if (req.method !== "POST") {
     return sendJson(res, 405, { success: false, error: "Method Not Allowed" });
+  }
+
+  const clientIp = getClientIp(req);
+  const ipRate = checkRateLimit(`login_ip_${clientIp}`, 10, 5 * 60 * 1000);
+  if (!ipRate.allowed) {
+    return sendJson(res, 429, {
+      success: false,
+      error: `Too many login attempts. Please try again in ${Math.ceil(ipRate.retryAfterSec / 60)} minutes.`,
+    });
   }
 
   const body = parseBody(req);
@@ -38,6 +50,15 @@ export default async function handler(req: any, res: any) {
 
   const cleanDigits = rawInput.replace(/\D/g, "");
   const trimmedLower = rawInput.toLowerCase();
+
+  const accountKey = `login_acc_${trimmedLower || cleanDigits}`;
+  const accountRate = checkRateLimit(accountKey, 5, 5 * 60 * 1000);
+  if (!accountRate.allowed) {
+    return sendJson(res, 429, {
+      success: false,
+      error: `Too many failed login attempts. Please try again in ${Math.ceil(accountRate.retryAfterSec / 60)} minutes.`,
+    });
+  }
 
   let foundUser: any = null;
   let usedPostgres = false;
@@ -160,22 +181,26 @@ export default async function handler(req: any, res: any) {
   }
 
   if (!foundUser) {
-    return sendJson(res, 404, {
-      success: false,
-      error: "No account found matching this email or phone number. Please check your credentials or click 'Create Account' to sign up.",
-    });
-  }
-
-  const isPassValid = verifyPasswordMatchNode(inputPassword, foundUser.password_hash);
-  if (!isPassValid) {
     return sendJson(res, 401, {
       success: false,
-      error: "Incorrect password for this account. Please verify your password or use 'Forgot Password?' to reset it.",
+      error: "Invalid email/phone or password. Please verify your credentials or create an account.",
     });
   }
 
-  const modernHash = hashPasswordNode(inputPassword);
-  if (foundUser.password_hash !== modernHash) {
+  const passCheck = verifyPasswordMatchNode(inputPassword, foundUser.password_hash);
+  if (!passCheck.valid) {
+    return sendJson(res, 401, {
+      success: false,
+      error: "Invalid email/phone or password. Please verify your credentials or create an account.",
+    });
+  }
+
+  // Login succeeded: clear failed rate limit counter for this account
+  resetRateLimit(accountKey);
+
+  // Auto-upgrade legacy hash to modern bcrypt on successful login
+  if (passCheck.needsRehash || !foundUser.password_hash?.startsWith("$2")) {
+    const modernHash = hashPasswordNode(inputPassword);
     if (usedPostgres && pool) {
       try {
         await pool.query("UPDATE public.users SET password_hash = $1, updated_at = NOW() WHERE id = $2;", [

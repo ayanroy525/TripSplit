@@ -76,83 +76,6 @@ async function syncUserProfileToDatabase(user: any, extraProfile?: Partial<UserA
   }
 }
 
-const CLIENT_PASSWORD_SALT =
-  (import.meta as any).env?.VITE_PASSWORD_SALT ||
-  (import.meta as any).env?.PASSWORD_SALT ||
-  "";
-
-async function hashPassword(password: string): Promise<string> {
-  try {
-    const salt = CLIENT_PASSWORD_SALT || "_tripsplit_salt_v1";
-    const encoder = new TextEncoder();
-    const data = encoder.encode(password + salt);
-    const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
-  } catch (e) {
-    let hash = 0;
-    for (let i = 0; i < password.length; i++) {
-      hash = ((hash << 5) - hash + password.charCodeAt(i)) | 0;
-    }
-    return `fb_${Math.abs(hash)}`;
-  }
-}
-
-async function verifyPasswordMatch(
-  inputPassword: string,
-  storedHashOrPassword?: string | null
-): Promise<boolean> {
-  // If account has no password set or missing input
-  if (!storedHashOrPassword || storedHashOrPassword.trim() === "" || !inputPassword) {
-    return false;
-  }
-  // Plain text match
-  if (storedHashOrPassword === inputPassword || storedHashOrPassword.trim() === inputPassword.trim()) {
-    return true;
-  }
-
-  // 1. Current salted SHA-256
-  const saltedHash = await hashPassword(inputPassword);
-  if (storedHashOrPassword === saltedHash) {
-    return true;
-  }
-
-  // 2. Legacy salted SHA-256 for backward compatibility with previously created accounts
-  try {
-    const encoder = new TextEncoder();
-    const legacyData = encoder.encode(inputPassword + "_tripsplit_salt_v1");
-    const hashBuffer = await crypto.subtle.digest("SHA-256", legacyData);
-    const legacyHex = Array.from(new Uint8Array(hashBuffer))
-      .map((b) => b.toString(16).padStart(2, "0"))
-      .join("");
-    if (storedHashOrPassword === legacyHex) {
-      return true;
-    }
-  } catch (e) {}
-
-  // 3. Unsalted SHA-256
-  try {
-    const encoder = new TextEncoder();
-    const unsaltedBuffer = await crypto.subtle.digest("SHA-256", encoder.encode(inputPassword));
-    const unsaltedHex = Array.from(new Uint8Array(unsaltedBuffer))
-      .map((b) => b.toString(16).padStart(2, "0"))
-      .join("");
-    if (storedHashOrPassword === unsaltedHex) {
-      return true;
-    }
-  } catch (e) {}
-
-  // 4. Fallback string hash (fb_...)
-  let simpleHash = 0;
-  for (let i = 0; i < inputPassword.length; i++) {
-    simpleHash = ((simpleHash << 5) - simpleHash + inputPassword.charCodeAt(i)) | 0;
-  }
-  if (storedHashOrPassword === `fb_${Math.abs(simpleHash)}`) {
-    return true;
-  }
-
-  return false;
-}
 
 export interface LocalStoredUserRecord {
   id: string;
@@ -162,7 +85,6 @@ export interface LocalStoredUserRecord {
   avatarColor: string;
   avatarUrl?: string;
   bio?: string;
-  password_hash: string;
   createdAt: string;
 }
 
@@ -338,9 +260,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const trimmedInput = rawInput.toLowerCase();
     const cleanDigits = rawInput.replace(/\D/g, "");
-    const hashedPassword = await hashPassword(password);
 
-    // 1. Primary Auth: Server-side PostgreSQL login endpoint (bypasses client-side RLS)
+    // 1. Primary Auth: Secure Server-side PostgreSQL login endpoint
     try {
       const response = await fetch("/api/auth/login", {
         method: "POST",
@@ -364,25 +285,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           persistUser(userAccount);
           setAccounts((prev) => [userAccount, ...prev.filter((a) => a.id !== userAccount.id)]);
 
-          // Try Supabase auth in background if available
           if (trimmedInput.includes("@")) {
             supabase.auth.signInWithPassword({ email: trimmedInput, password }).catch(() => {});
           }
 
           return { success: true, user: userAccount };
-        } else if (response.status === 401) {
-          // Password mismatch detected by server
+        } else {
+          // Authoritative error from server (401, 429, 400, etc.)
           return {
             success: false,
-            error: resData.error || "Incorrect password for this account. Please verify your password or use 'Forgot Password?' to reset it.",
+            error: resData.error || "Invalid credentials. Please verify your email/phone and password.",
           };
         }
       }
     } catch (apiErr) {
-      console.warn("Backend auth endpoint notice, attempting client-side fallbacks:", apiErr);
+      console.warn("Backend auth endpoint unreachable, checking Supabase Auth:", apiErr);
     }
 
-    // 2. Secondary Auth: Attempt Supabase Auth signInWithPassword if input is an email
+    // 2. Secondary Auth: Attempt standard Supabase Auth signInWithPassword if server endpoint was unreachable
     if (trimmedInput.includes("@")) {
       try {
         const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
@@ -394,29 +314,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setTokenState(authData.session.access_token);
           await syncUserProfileToDatabase(authData.user);
 
-          let extraProfile: Partial<UserAccount> | undefined;
-          try {
-            const { data: profileRow } = await supabase
-              .from("users")
-              .select("*")
-              .eq("id", authData.user.id)
-              .maybeSingle();
-
-            if (profileRow) {
-              extraProfile = {
-                name: profileRow.name,
-                phone: profileRow.phone,
-                avatarColor: profileRow.avatar_color,
-                avatarUrl: profileRow.avatar_url,
-                bio: profileRow.bio,
-              };
-            }
-          } catch (e) {}
-
-          const userAccount = buildUserFromSupabase(authData.user, extraProfile);
+          const userAccount = buildUserFromSupabase(authData.user);
           persistUser(userAccount);
           setAccounts((prev) => [userAccount, ...prev.filter((a) => a.id !== userAccount.id)]);
-
           return { success: true, user: userAccount };
         } else if (authError) {
           const msg = authError.message?.toLowerCase() || "";
@@ -427,232 +327,78 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               error: "Please check your email and click the confirmation link before logging in.",
             };
           }
+          return {
+            success: false,
+            error: authError.message || "Invalid email or password.",
+          };
         }
       } catch (err) {
         console.warn("Supabase auth login notice:", err);
       }
     }
 
-    // 2. Query user via direct secure RPC (bypasses RLS safely on Vercel, Cloudflare, etc.)
-    let foundDbUser: any = null;
-    try {
-      const { data: rpcUsers, error: rpcErr } = await supabase.rpc("lookup_user_for_auth", {
-        p_identifier: rawInput,
-      });
-
-      if (!rpcErr && Array.isArray(rpcUsers) && rpcUsers.length > 0) {
-        foundDbUser = rpcUsers[0];
-      }
-    } catch (rpcErr) {
-      console.warn("Notice calling lookup_user_for_auth RPC:", rpcErr);
-    }
-
-    if (!foundDbUser) {
-      try {
-        const { data: usersList, error: queryErr } = await supabase
-          .from("users")
-          .select("*");
-
-        if (!queryErr && Array.isArray(usersList)) {
-          foundDbUser = usersList.find((u) => {
-            if (!u) return false;
-            if (u.email && u.email.trim().toLowerCase() === trimmedInput) return true;
-            if (cleanDigits.length >= 7 && u.phone) {
-              const userPhoneDigits = u.phone.replace(/\D/g, "");
-              if (
-                userPhoneDigits.endsWith(cleanDigits) ||
-                cleanDigits.endsWith(userPhoneDigits)
-              ) {
-                return true;
-              }
-            }
-            if (u.name && u.name.trim().toLowerCase() === trimmedInput) return true;
-            return false;
-          });
-        }
-      } catch (e) {
-        console.warn("Notice querying users table:", e);
-      }
-    }
-
-    // If account was found in database
-    if (foundDbUser) {
-      const isPassValid = await verifyPasswordMatch(password, foundDbUser.password_hash);
-      if (isPassValid) {
-        // Upgrade password_hash in DB if not currently hashed
-        if (foundDbUser.password_hash !== hashedPassword) {
-          try {
-            await supabase
-              .from("users")
-              .update({ password_hash: hashedPassword, updated_at: new Date().toISOString() })
-              .eq("id", foundDbUser.id);
-          } catch (e) {}
-        }
-
-        const targetEmail = (foundDbUser.email || trimmedInput).trim().toLowerCase();
-        const userAccount: UserAccount = {
-          id: foundDbUser.id,
-          name: foundDbUser.name || targetEmail.split("@")[0] || "Traveler",
-          email: foundDbUser.email || (trimmedInput.includes("@") ? trimmedInput : ""),
-          phone: foundDbUser.phone || undefined,
-          avatarColor: foundDbUser.avatar_color || "#E39A2D",
-          avatarUrl: foundDbUser.avatar_url || undefined,
-          bio: foundDbUser.bio || "Travel Enthusiast",
-          createdAt: foundDbUser.created_at || new Date().toISOString(),
-        };
-
-        persistUser(userAccount);
-        setAccounts((prev) => [userAccount, ...prev.filter((a) => a.id !== userAccount.id)]);
-
-        return { success: true, user: userAccount };
-      } else {
-        return {
-          success: false,
-          error: "Incorrect password for this account. Please verify your password or use 'Forgot Password?' to reset it.",
-        };
-      }
-    }
-
-    // 3. Check database members table for existing trip participants
-    try {
-      const { data: membersList } = await supabase.from("members").select("*");
-      if (Array.isArray(membersList)) {
-        const foundMember = membersList.find((m) => {
-          if (!m) return false;
-          if (m.email && m.email.trim().toLowerCase() === trimmedInput) return true;
-          if (cleanDigits.length >= 7 && m.phone) {
-            const memPhone = m.phone.replace(/\D/g, "");
-            return memPhone.endsWith(cleanDigits) || cleanDigits.endsWith(memPhone);
-          }
-          return false;
-        });
-
-        if (foundMember) {
-          return {
-            success: false,
-            error: `You were invited to a trip as "${foundMember.name || "Member"}"! Please click 'Create Account' to set your password and claim your profile.`,
-          };
-        }
-      }
-    } catch (e) {
-      console.warn("Notice querying members table:", e);
-    }
-
-    // 4. Local Registered Users Store check (works completely offline and on static hosts like Vercel)
-    try {
-      const localUsers = getLocalRegisteredUsers();
-      const foundLocal = localUsers.find((u) => {
-        if (!u) return false;
-        if (u.email && u.email.trim().toLowerCase() === trimmedInput) return true;
-        if (cleanDigits.length >= 7 && u.phone) {
-          const userPhoneDigits = u.phone.replace(/\D/g, "");
-          if (
-            userPhoneDigits.endsWith(cleanDigits) ||
-            cleanDigits.endsWith(userPhoneDigits)
-          ) {
-            return true;
-          }
-        }
-        if (u.name && u.name.trim().toLowerCase() === trimmedInput) return true;
-        return false;
-      });
-
-      if (foundLocal) {
-        const isPassValid = await verifyPasswordMatch(password, foundLocal.password_hash);
-        if (isPassValid) {
-          const userAccount: UserAccount = {
-            id: foundLocal.id,
-            name: foundLocal.name,
-            email: foundLocal.email,
-            phone: foundLocal.phone,
-            avatarColor: foundLocal.avatarColor || "#E39A2D",
-            avatarUrl: foundLocal.avatarUrl,
-            bio: foundLocal.bio || "Travel Enthusiast",
-            createdAt: foundLocal.createdAt || new Date().toISOString(),
-          };
-
-          persistUser(userAccount);
-          setAccounts((prev) => [userAccount, ...prev.filter((a) => a.id !== userAccount.id)]);
-          return { success: true, user: userAccount };
-        } else {
-          return {
-            success: false,
-            error: "Incorrect password for this account. Please verify your password or use 'Forgot Password?' to reset it.",
-          };
-        }
-      }
-    } catch (e) {
-      console.warn("Local registered users check notice:", e);
-    }
-
-    // 5. Fallback check active user / user storage from previous app versions
-    try {
-      if (typeof window !== "undefined") {
-        const previousStoredKeys = [
-          ACTIVE_USER_KEY,
-          "trip_expense_splitter_auth_user_v3",
-          "trip_expense_splitter_v3",
-          "trip_expense_splitter_v2",
-          "trip_expense_splitter_v1",
-        ];
-
-        for (const storageKey of previousStoredKeys) {
-          const rawItem = localStorage.getItem(storageKey);
-          if (rawItem) {
-            try {
-              const parsed = JSON.parse(rawItem);
-              const targetUser = parsed.authUser || (parsed.id && parsed.name ? parsed : null);
-              if (targetUser) {
-                const userEmail = (targetUser.email || "").toLowerCase();
-                const userPhone = (targetUser.phone || "").replace(/\D/g, "");
-                const isMatch =
-                  userEmail === trimmedInput ||
-                  (cleanDigits.length >= 7 &&
-                    (userPhone.endsWith(cleanDigits) || cleanDigits.endsWith(userPhone)));
-
-                if (isMatch) {
-                  persistUser(targetUser);
-                  setAccounts((prev) => [
-                    targetUser,
-                    ...prev.filter((a) => a.id !== targetUser.id),
-                  ]);
-                  return { success: true, user: targetUser };
-                }
-              }
-            } catch (e) {}
-          }
-        }
-      }
-    } catch (e) {
-      console.warn("Local credentials lookup notice:", e);
-    }
-
     return {
       success: false,
-      error: "No account found matching this email or phone number. Please check your credentials or click 'Create Account' to sign up.",
+      error: "Unable to sign in. Please verify your credentials or create an account.",
     };
   };
 
-  // Instant Account Creation - Check for Duplicate Email & Phone (Duplication Not Permitted)
+  // Instant Account Creation - Server-side authoritative signup with duplicate checks & rate limiting
   const signup = async (
     accountData: Omit<UserAccount, "id" | "createdAt">
   ): Promise<{ success: boolean; error?: string; requiresConfirmation?: boolean }> => {
     const trimmedEmail = accountData.email.trim().toLowerCase();
     const trimmedName = accountData.name.trim();
-    const cleanPhoneDigits = accountData.phone ? accountData.phone.replace(/\D/g, "") : "";
+    const rawPhone = accountData.phone ? accountData.phone.trim() : "";
+    const cleanPhoneDigits = rawPhone.replace(/\D/g, "");
 
     if (!trimmedName) {
       return { success: false, error: "Please enter your full name." };
     }
-    if (!trimmedEmail) {
+    if (!trimmedEmail || !trimmedEmail.includes("@")) {
       return { success: false, error: "Please enter a valid email address." };
     }
     if (!accountData.password || accountData.password.length < 6) {
       return { success: false, error: "Password must be at least 6 characters long." };
     }
 
-    // 1. DUPLICATION CHECK: Prevent creating an account if email or phone already exists
+    // 1. Primary Signup via secure server backend (/api/auth/signup)
+    // Server enforces IP rate limits, validates input, checks for email/phone duplication, and hashes password using bcrypt
+    let serverResData: any = null;
     try {
+      const serverRes = await fetch("/api/auth/signup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: trimmedName,
+          email: trimmedEmail,
+          phone: rawPhone || undefined,
+          password: accountData.password,
+          avatarColor: accountData.avatarColor,
+          bio: accountData.bio,
+        }),
+      });
+
+      const contentType = serverRes.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        serverResData = await serverRes.json();
+      }
+
+      if (!serverRes.ok) {
+        return {
+          success: false,
+          error:
+            serverResData?.error ||
+            (serverRes.status === 409
+              ? "An account with this email or phone already exists. Please log in with your password."
+              : serverRes.status === 429
+              ? "Too many registration attempts. Please wait before trying again."
+              : "Registration failed. Please verify your details and try again."),
+        };
+      }
+    } catch (apiErr) {
+      console.warn("Backend auth signup endpoint unreachable, checking offline store:", apiErr);
+      // Offline fallback: check local storage only
       const localUsers = getLocalRegisteredUsers();
       const existingLocalEmail = localUsers.find((u) => u && isEmailMatch(u.email, trimmedEmail));
       if (existingLocalEmail) {
@@ -663,7 +409,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       if (cleanPhoneDigits.length >= 7) {
         const existingLocalPhone = localUsers.find(
-          (u) => u && u.phone && isPhoneMatch(u.phone, accountData.phone)
+          (u) => u && u.phone && isPhoneMatch(u.phone, rawPhone)
         );
         if (existingLocalPhone) {
           return {
@@ -672,45 +418,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           };
         }
       }
-
-      const { data: usersList, error: queryErr } = await supabase
-        .from("users")
-        .select("*");
-
-      if (!queryErr && Array.isArray(usersList)) {
-        // A. Check for existing account with the same email
-        const existingEmailUser = usersList.find(
-          (u) => u && isEmailMatch(u.email, trimmedEmail)
-        );
-        if (existingEmailUser) {
-          return {
-            success: false,
-            error: "An account with this email already exists. Please log in with your password.",
-          };
-        }
-
-        // B. Check for existing account with the same phone number
-        if (cleanPhoneDigits.length >= 7) {
-          const existingPhoneUser = usersList.find((u) => {
-            if (!u || !u.phone) return false;
-            return isPhoneMatch(u.phone, accountData.phone);
-          });
-          if (existingPhoneUser) {
-            return {
-              success: false,
-              error: "An account with this phone number already exists. Please log in with your password.",
-            };
-          }
-        }
-      }
-    } catch (e) {
-      console.warn("Notice checking existing users during signup:", e);
     }
 
-    const hashedPassword = await hashPassword(accountData.password);
+    // Best-effort Supabase Auth registration if configured (does not block if fails)
     let supabaseUserId: string | null = null;
     let supabaseSessionToken: string | null = null;
-
     try {
       const { data, error } = await supabase.auth.signUp({
         email: trimmedEmail,
@@ -718,25 +430,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         options: {
           data: {
             name: trimmedName,
-            phone: accountData.phone || "",
+            phone: rawPhone || "",
             avatarColor: accountData.avatarColor || "#E39A2D",
             bio: accountData.bio || "Travel Enthusiast",
           },
         },
       });
-
-      if (error) {
-        if (
-          error.message?.toLowerCase().includes("already registered") ||
-          error.message?.toLowerCase().includes("user already exists")
-        ) {
-          return {
-            success: false,
-            error: "An account with this email already exists. Please log in with your password.",
-          };
-        }
-      }
-
       if (!error && data?.user) {
         supabaseUserId = data.user.id;
         if (data.session) {
@@ -748,6 +447,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     const userId =
+      serverResData?.user?.id ||
       supabaseUserId ||
       `u_${Math.random().toString(36).substring(2, 9)}_${Date.now().toString(36)}`;
 
@@ -755,71 +455,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       id: userId,
       name: trimmedName,
       email: trimmedEmail,
-      phone: accountData.phone,
+      phone: rawPhone || undefined,
       avatarColor: accountData.avatarColor || "#E39A2D",
       bio: accountData.bio || "Travel Enthusiast",
-      createdAt: new Date().toISOString(),
+      createdAt: serverResData?.user?.createdAt || new Date().toISOString(),
     };
 
-    // Save to PostgreSQL via server endpoint and Supabase
-    try {
-      const serverRes = await fetch("/api/auth/signup", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: trimmedName,
-          email: trimmedEmail,
-          phone: accountData.phone,
-          password: accountData.password,
-          avatarColor: accountData.avatarColor,
-          bio: accountData.bio,
-        }),
-      });
-      if (serverRes.ok) {
-        const sData = await serverRes.json();
-        if (sData.token) {
-          setTokenState(sData.token);
-          if (typeof window !== "undefined") {
-            try {
-              localStorage.setItem("trip_expense_splitter_auth_token_v1", sData.token);
-            } catch {}
-          }
-        }
+    if (serverResData?.token) {
+      setTokenState(serverResData.token);
+      if (typeof window !== "undefined") {
+        try {
+          localStorage.setItem("trip_expense_splitter_auth_token_v1", serverResData.token);
+        } catch {}
       }
-    } catch (e) {}
-
-    // Save directly to Supabase public.users table with password_hash!
-    try {
-      await supabase.from("users").insert({
-        id: userId,
-        email: trimmedEmail,
-        name: trimmedName,
-        phone: accountData.phone || null,
-        avatar_color: accountData.avatarColor || "#E39A2D",
-        bio: accountData.bio || "Travel Enthusiast",
-        password_hash: hashedPassword,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      });
-    } catch (e) {
-      console.warn("Notice inserting user to users table:", e);
+    } else if (supabaseSessionToken) {
+      setTokenState(supabaseSessionToken);
     }
 
-    // Save to local registered users store (works completely offline and across logins)
+    // Save to local registered users store (NO sensitive password hashes stored on client)
     saveLocalRegisteredUser({
       id: userId,
       name: trimmedName,
       email: trimmedEmail,
-      phone: accountData.phone,
+      phone: rawPhone || undefined,
       avatarColor: accountData.avatarColor || "#E39A2D",
       bio: accountData.bio || "Travel Enthusiast",
-      password_hash: hashedPassword,
-      createdAt: new Date().toISOString(),
+      createdAt: newAccount.createdAt,
     });
-
-    if (supabaseSessionToken) {
-      setTokenState(supabaseSessionToken);
-    }
 
     // Persist active session and update state
     persistUser(newAccount);
@@ -904,31 +566,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return { success: false, error: "Password must be at least 6 characters long." };
     }
 
-    const newHashed = await hashPassword(newPassword);
-    if (currentUser?.id || currentUser?.email) {
-      try {
-        const users = getLocalRegisteredUsers();
-        const idx = users.findIndex(
-          (u) =>
-            (currentUser.id && u.id === currentUser.id) ||
-            (currentUser.email && u.email && u.email.toLowerCase() === currentUser.email.toLowerCase())
-        );
-        if (idx >= 0) {
-          users[idx].password_hash = newHashed;
-          localStorage.setItem(LOCAL_USERS_DB_KEY, JSON.stringify(users));
-        }
-      } catch (e) {}
-    }
-
     try {
       const { error } = await supabase.auth.updateUser({
         password: newPassword,
       });
 
       if (error) {
-        console.warn("Supabase updateUser notice:", error.message);
+        return { success: false, error: error.message };
       }
-    } catch (e) {}
+    } catch (err: any) {
+      return { success: false, error: err?.message || "Failed to update password." };
+    }
 
     setIsPasswordRecovery(false);
     // Clean up URL hash
