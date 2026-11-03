@@ -1,6 +1,7 @@
-import { setCorsHeaders, sendJson } from "../_shared.ts";
-import { getTelegramWebhookSecret } from "./_client.ts";
+import { setCorsHeaders, sendJson, verifyAdminRequest } from "../_shared.ts";
+import { getTelegramWebhookSecret, registerTelegramWebhook, saveTelegramConfig } from "./_client.ts";
 import { processTelegramUpdate } from "./_processor.ts";
+import { startTelegramPoller } from "./_poller.ts";
 
 export default async function handler(req: any, res: any) {
   setCorsHeaders(res, req);
@@ -9,9 +10,44 @@ export default async function handler(req: any, res: any) {
     return res.end();
   }
 
-  // Webhook info check
+  // Webhook info check or registration via ?url= (Strictly Admin Protected)
   if (req.method === "GET") {
+    const adminAuth = await verifyAdminRequest(req);
+    if (!adminAuth.authorized) {
+      return sendJson(res, adminAuth.statusCode || 403, {
+        success: false,
+        error: adminAuth.error || "Access Denied: Restricted to application administrator.",
+      });
+    }
+    const queryUrl = req.query?.url || "";
+    if (queryUrl && typeof queryUrl === "string") {
+      try {
+        await saveTelegramConfig({ webhookUrl: queryUrl.trim() });
+        if (process.env.VERCEL) {
+          const reg = await registerTelegramWebhook(queryUrl.trim());
+          return sendJson(res, reg.success ? 200 : 400, {
+            success: reg.success,
+            status: "active",
+            description: reg.description,
+            error: reg.error,
+          });
+        } else {
+          // In persistent server mode, keep long-polling active so callbacks & commands work through any proxy
+          startTelegramPoller().catch(() => {});
+          return sendJson(res, 200, {
+            success: true,
+            status: "active",
+            endpoint: "/api/telegram/webhook",
+            description: "Telegram webhook URL saved and active listener verified!",
+          });
+        }
+      } catch (err: any) {
+        return sendJson(res, 500, { success: false, error: err?.message });
+      }
+    }
+
     return sendJson(res, 200, {
+      success: true,
       status: "active",
       endpoint: "/api/telegram/webhook",
       info: "Telegram Bot Webhook endpoint is listening for verified callback queries and messages",

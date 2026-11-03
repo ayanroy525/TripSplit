@@ -1,11 +1,19 @@
-import { setCorsHeaders, sendJson, verifySessionToken } from "../_shared.ts";
+import { setCorsHeaders, sendJson, verifyAdminRequest } from "../_shared.ts";
 import { getTelegramConfig, saveTelegramConfig } from "./_client.ts";
 
 export default async function handler(req: any, res: any) {
-  setCorsHeaders(res);
+  setCorsHeaders(res, req);
   if (req.method === "OPTIONS") {
     res.statusCode = 204;
     return res.end();
+  }
+
+  const adminAuth = await verifyAdminRequest(req);
+  if (!adminAuth.authorized) {
+    return sendJson(res, adminAuth.statusCode || 403, {
+      success: false,
+      error: adminAuth.error || "Access Denied: Restricted to application administrator.",
+    });
   }
 
   if (req.method === "GET") {
@@ -32,15 +40,6 @@ export default async function handler(req: any, res: any) {
   }
 
   if (req.method === "POST") {
-    // Authentication guard: prevent unauthorized users from changing bot config
-    const authHeader = req.headers?.authorization || req.headers?.Authorization || "";
-    const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-    if (!token || !verifySessionToken(token)) {
-      return sendJson(res, 401, {
-        success: false,
-        error: "Unauthorized: You must be logged in to modify Telegram notification settings.",
-      });
-    }
 
     try {
       let body = req.body;

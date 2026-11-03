@@ -65,19 +65,26 @@ export const SystemHealthModal: React.FC<SystemHealthModalProps> = ({ isOpen, on
   const [isDetectingChat, setIsDetectingChat] = useState(false);
   const [telegramFeedback, setTelegramFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
 
-  const { token } = useAuth();
+  const { token, currentUser } = useAuth();
 
   const getAuthHeaders = useCallback((): Record<string, string> => {
-    const activeToken =
-      token ||
-      (typeof window !== "undefined"
+    const storedServerToken =
+      typeof window !== "undefined"
         ? localStorage.getItem("trip_expense_splitter_auth_token_v1") ||
           localStorage.getItem("tripsplit_auth_token") ||
           localStorage.getItem("token") ||
           ""
-        : "");
-    return activeToken ? { Authorization: `Bearer ${activeToken}` } : {};
-  }, [token]);
+        : "";
+    const activeToken = storedServerToken || token || "";
+    const headers: Record<string, string> = {};
+    if (activeToken) {
+      headers.Authorization = `Bearer ${activeToken}`;
+    }
+    if (currentUser?.email) {
+      headers["X-Admin-Email"] = currentUser.email;
+    }
+    return headers;
+  }, [token, currentUser?.email]);
 
   const fetchHealthData = useCallback(async () => {
     try {
@@ -146,6 +153,17 @@ export const SystemHealthModal: React.FC<SystemHealthModalProps> = ({ isOpen, on
         if (data.success && data.diagnostic) {
           setLatestCheck(data.diagnostic);
           setHistory((prev) => [data.diagnostic, ...prev.filter((h) => h.id !== data.diagnostic.id)]);
+          if (data.diagnostic.telegram_sent) {
+            setTelegramFeedback({
+              type: "success",
+              message: "Diagnostic sweep complete! Live report delivered to your Telegram chat.",
+            });
+          } else if (data.diagnostic.telegram_error) {
+            setTelegramFeedback({
+              type: "error",
+              message: `Diagnostic ran, but Telegram delivery failed: ${data.diagnostic.telegram_error}`,
+            });
+          }
         }
       }
     } catch (err) {
@@ -219,12 +237,14 @@ export const SystemHealthModal: React.FC<SystemHealthModalProps> = ({ isOpen, on
     setIsRegisteringWebhook(true);
     setTelegramFeedback(null);
     try {
-      const res = await fetch(`/api/telegram/webhook?url=${encodeURIComponent(webhookUrl)}`);
+      const res = await fetch(`/api/telegram/webhook?url=${encodeURIComponent(webhookUrl)}`, {
+        headers: getAuthHeaders(),
+      });
       const data = await res.json();
       if (data.success) {
         setTelegramFeedback({
           type: "success",
-          message: "Telegram Webhook registered successfully! Interactive inline buttons are active.",
+          message: data.description || "Telegram Webhook registered successfully! Interactive inline buttons are active.",
         });
       } else {
         setTelegramFeedback({

@@ -2,6 +2,26 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "rewrites": [
     {
+      "source": "/api/telegram/settings",
+      "destination": "/api/telegram/admin?action=settings"
+    },
+    {
+      "source": "/api/telegram/test",
+      "destination": "/api/telegram/admin?action=test"
+    },
+    {
+      "source": "/api/telegram/detect-chat",
+      "destination": "/api/telegram/admin?action=detect-chat"
+    },
+    {
+      "source": "/api/health/history",
+      "destination": "/api/health?action=history"
+    },
+    {
+      "source": "/api/health/run-check",
+      "destination": "/api/health?action=run-check"
+    },
+    {
       "source": "/((?!api/).*)",
       "destination": "/index.html"
     }

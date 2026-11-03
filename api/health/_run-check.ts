@@ -1,11 +1,19 @@
-import { setCorsHeaders, sendJson } from "../_shared.ts";
+import { setCorsHeaders, sendJson, verifyAdminRequest } from "../_shared.ts";
 import { runDiagnosticSweep } from "./_runner.ts";
 
 export default async function handler(req: any, res: any) {
-  setCorsHeaders(res);
+  setCorsHeaders(res, req);
   if (req.method === "OPTIONS") {
     res.statusCode = 204;
     return res.end();
+  }
+
+  const adminAuth = await verifyAdminRequest(req);
+  if (!adminAuth.authorized) {
+    return sendJson(res, adminAuth.statusCode || 403, {
+      success: false,
+      error: adminAuth.error || "Access Denied: Restricted to application administrator.",
+    });
   }
 
   try {

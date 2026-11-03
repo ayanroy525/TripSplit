@@ -13,13 +13,45 @@ const rawConn = (
   ""
 ).replace(/\?.*$/, "");
 
-export function getDatabaseSslConfig(): boolean | { rejectUnauthorized: boolean } {
+export const SUPABASE_ROOT_CA = `-----BEGIN CERTIFICATE-----
+MIIDxDCCAqygAwIBAgIUbLxMod62P2ktCiAkxnKJwtE9VPYwDQYJKoZIhvcNAQEL
+BQAwazELMAkGA1UEBhMCVVMxEDAOBgNVBAgMB0RlbHdhcmUxEzARBgNVBAcMCk5l
+dyBDYXN0bGUxFTATBgNVBAoMDFN1cGFiYXNlIEluYzEeMBwGA1UEAwwVU3VwYWJh
+c2UgUm9vdCAyMDIxIENBMB4XDTIxMDQyODEwNTY1M1oXDTMxMDQyNjEwNTY1M1ow
+azELMAkGA1UEBhMCVVMxEDAOBgNVBAgMB0RlbHdhcmUxEzARBgNVBAcMCk5ldyBD
+YXN0bGUxFTATBgNVBAoMDFN1cGFiYXNlIEluYzEeMBwGA1UEAwwVU3VwYWJhc2Ug
+Um9vdCAyMDIxIENBMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqQXW
+QyHOB+qR2GJobCq/CBmQ40G0oDmCC3mzVnn8sv4XNeWtE5XcEL0uVih7Jo4Dkx1Q
+DmGHBH1zDfgs2qXiLb6xpw/CKQPypZW1JssOTMIfQppNQ87K75Ya0p25Y3ePS2t2
+GtvHxNjUV6kjOZjEn2yWEcBdpOVCUYBVFBNMB4YBHkNRDa/+S4uywAoaTWnCJLUi
+cvTlHmMw6xSQQn1UfRQHk50DMCEJ7Cy1RxrZJrkXXRP3LqQL2ijJ6F4yMfh+Gyb4
+O4XajoVj/+R4GwywKYrrS8PrSNtwxr5StlQO8zIQUSMiq26wM8mgELFlS/32Uclt
+NaQ1xBRizkzpZct9DwIDAQABo2AwXjALBgNVHQ8EBAMCAQYwHQYDVR0OBBYEFKjX
+uXY32CztkhImng4yJNUtaUYsMB8GA1UdIwQYMBaAFKjXuXY32CztkhImng4yJNUta
+UYsMA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZIhvcNAQELBQADggEBAB8spzNn+4VU
+tVxbdMaX+39Z50sc7uATmus16jmmHjhIHz+l/9GlJ5KqAMOx26mPZgfzG7oneL2b
+VW+WgYUkTT3XEPFWnTp2RJwQao8/tYPXWEJDc0WVQHrpmnWOFKU/d3MqBgBm5y+6
+jB81TU/RG2rVerPDWP+1MMcNNy0491CTL5XQZ7JfDJJ9CCmXSdtTl4uUQnSuv/Qx
+Cea13BX2ZgJc7Au30vihLhub52De4P/4gonKsNHYdbWjg7OWKwNv/zitGDVDB9Y2
+CMTyZKG3XEu5Ghl1LEnI3QmEKsqaCLv12BnVjbkSeZsMnevJPs1Ye6TjjJwdik5P
+o/bKiIz+Fq8=
+-----END CERTIFICATE-----`;
+
+export function getDatabaseSslConfig(): boolean | { rejectUnauthorized: boolean; ca?: string } {
   const isLocalDB = rawConn.includes("localhost") || rawConn.includes("127.0.0.1");
   if (isLocalDB) return false;
   const isProd = process.env.NODE_ENV === "production";
   const allowInsecureSSL = !isProd && process.env.DB_SSL_ALLOW_INSECURE === "true";
   if (allowInsecureSSL) {
     return { rejectUnauthorized: false };
+  }
+  // For Supabase databases, provide the official Supabase Root CA for strict verification
+  const isSupabase = rawConn.includes("supabase.co") || rawConn.includes("supabase.com");
+  if (isSupabase) {
+    return {
+      rejectUnauthorized: true,
+      ca: process.env.SUPABASE_CA_CERT || SUPABASE_ROOT_CA,
+    };
   }
   // Default to secure TLS verification
   return { rejectUnauthorized: true };
@@ -88,18 +120,27 @@ export const PASSWORD_SALT =
     ? crypto.createHash("sha256").update(process.env.SUPABASE_SERVICE_ROLE_KEY).digest("hex").slice(0, 32)
     : "");
 
+export const ADMIN_EMAILS = [
+  "ayanroy525@gmail.com",
+  (process.env.ADMIN_EMAIL || "").trim().toLowerCase(),
+].filter(Boolean);
+
 export interface SessionPayload {
   userId: string;
   email?: string;
   name?: string;
+  tokenVersion?: number;
+  iat?: number;
   exp: number;
 }
 
-export function generateSessionToken(userId: string, email?: string, name?: string): string {
+export function generateSessionToken(userId: string, email?: string, name?: string, tokenVersion: number = 1): string {
   const payload: SessionPayload = {
     userId,
     email,
     name,
+    tokenVersion,
+    iat: Math.floor(Date.now() / 1000),
     exp: Date.now() + 30 * 24 * 60 * 60 * 1000,
   };
   const headerBase64 = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
@@ -112,16 +153,26 @@ export function verifySessionToken(token: string): SessionPayload | null {
   if (!token || typeof token !== "string") return null;
   const parts = token.split(".");
 
+  const candidateSecrets = [SESSION_SECRET];
+  if (process.env.NODE_ENV !== "production") {
+    candidateSecrets.push("tripsplit_session_secret_dev", "tripsplit_auth_token_secret_seed");
+  }
+
   // 1. Standard 3-part JWT: header.payload.signature
   if (parts.length === 3) {
     const [headerBase64, payloadBase64, signatureBase64] = parts;
-    const signature = crypto
-      .createHmac("sha256", SESSION_SECRET)
-      .update(`${headerBase64}.${payloadBase64}`)
-      .digest("base64url");
-    if (signature !== signatureBase64) return null;
+    const isValidSig = candidateSecrets.some((sec) => {
+      if (!sec) return false;
+      const expected = crypto
+        .createHmac("sha256", sec)
+        .update(`${headerBase64}.${payloadBase64}`)
+        .digest("base64url");
+      return expected === signatureBase64;
+    });
+    if (!isValidSig) return null;
     try {
       const payload: SessionPayload = JSON.parse(Buffer.from(payloadBase64, "base64url").toString("utf8"));
+      if (!payload || typeof payload !== "object" || !payload.userId) return null;
       const nowSec = Math.floor(Date.now() / 1000);
       const expVal = payload.exp > 1e11 ? payload.exp / 1000 : payload.exp;
       if (expVal && expVal < nowSec) return null;
@@ -134,10 +185,15 @@ export function verifySessionToken(token: string): SessionPayload | null {
   // 2. Legacy 2-part token: data.signature
   if (parts.length === 2) {
     const [data, sig] = parts;
-    const expectedSig = crypto.createHmac("sha256", SESSION_SECRET).update(data).digest("base64url");
-    if (sig !== expectedSig) return null;
+    const isValidSig = candidateSecrets.some((sec) => {
+      if (!sec) return false;
+      const expected = crypto.createHmac("sha256", sec).update(data).digest("base64url");
+      return expected === sig;
+    });
+    if (!isValidSig) return null;
     try {
       const payload = JSON.parse(Buffer.from(data, "base64url").toString("utf8")) as SessionPayload;
+      if (!payload || typeof payload !== "object" || !payload.userId) return null;
       if (payload.exp && Date.now() > payload.exp) return null;
       return payload;
     } catch {
@@ -146,6 +202,295 @@ export function verifySessionToken(token: string): SessionPayload | null {
   }
 
   return null;
+}
+
+export async function verifyBearerTokenAsync(token: string): Promise<{
+  session: SessionPayload | null;
+  revoked?: boolean;
+}> {
+  if (!token || typeof token !== "string") {
+    return { session: null };
+  }
+
+  // 1. Primary: Verify server-signed HMAC session token
+  let session = verifySessionToken(token);
+
+  // 2. Secondary: If token is a Supabase Auth JWT, verify it against Supabase Auth API
+  if (!session && token.split(".").length === 3) {
+    try {
+      const payloadRaw = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString("utf8"));
+      const iss = String(payloadRaw?.iss || "");
+      const supabaseUrl = (process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || "").trim();
+      const supabaseKey = (
+        process.env.VITE_SUPABASE_ANON_KEY ||
+        process.env.SUPABASE_ANON_KEY ||
+        process.env.SUPABASE_SERVICE_ROLE_KEY ||
+        ""
+      ).trim();
+
+      if (
+        iss.includes(".supabase.co/auth/v1") &&
+        supabaseUrl &&
+        supabaseKey &&
+        payloadRaw?.sub
+      ) {
+        const res = await fetch(`${supabaseUrl.replace(/\/$/, "")}/auth/v1/user`, {
+          headers: {
+            apikey: supabaseKey,
+            Authorization: `Bearer ${token}`,
+          },
+        });
+        if (res.ok) {
+          const userData = await res.json();
+          if (userData && userData.id) {
+            session = {
+              userId: userData.id,
+              email: userData.email || payloadRaw.email || "",
+              name: userData.user_metadata?.name || "",
+              iat: payloadRaw.iat || Math.floor(Date.now() / 1000),
+              exp: payloadRaw.exp || Math.floor(Date.now() / 1000) + 3600,
+            };
+          }
+        }
+      }
+    } catch {}
+  }
+
+  if (!session) {
+    return { session: null };
+  }
+
+  // 3. Check token_version revocation
+  if (session.tokenVersion !== undefined) {
+    if (pool) {
+      try {
+        const uRes = await pool.query("SELECT token_version FROM public.users WHERE id = $1 LIMIT 1;", [session.userId]);
+        const currentVersion = uRes.rows[0]?.token_version ?? 1;
+        if (session.tokenVersion < currentVersion) {
+          return { session: null, revoked: true };
+        }
+      } catch {}
+    } else {
+      const localStore = getLocalStore();
+      const localUser = localStore.users.find((u) => u.id === session!.userId);
+      const currentVersion = (localUser as any)?.token_version ?? 1;
+      if (session.tokenVersion < currentVersion) {
+        return { session: null, revoked: true };
+      }
+    }
+  }
+
+  return { session };
+}
+
+export interface AuthVerificationResult {
+  authorized: boolean;
+  statusCode: number;
+  error?: string;
+  userId?: string;
+  email?: string;
+  session?: SessionPayload;
+}
+
+export async function verifyAuthRequest(req: any): Promise<AuthVerificationResult> {
+  if (req?.userId && req?.session) {
+    return {
+      authorized: true,
+      statusCode: 200,
+      userId: req.userId,
+      email: req.session.email,
+      session: req.session,
+    };
+  }
+
+  const authHeader = String(req?.headers?.authorization || req?.headers?.Authorization || "");
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+
+  if (!token) {
+    return {
+      authorized: false,
+      statusCode: 401,
+      error: "Authorization token required",
+    };
+  }
+
+  const { session, revoked } = await verifyBearerTokenAsync(token);
+  if (revoked) {
+    return {
+      authorized: false,
+      statusCode: 401,
+      error: "Session has been revoked. Please log in again.",
+    };
+  }
+  if (!session || !session.userId) {
+    return {
+      authorized: false,
+      statusCode: 401,
+      error: "Invalid or expired token",
+    };
+  }
+
+  req.userId = session.userId;
+  req.session = session;
+
+  return {
+    authorized: true,
+    statusCode: 200,
+    userId: session.userId,
+    email: session.email,
+    session,
+  };
+}
+
+export async function verifyAdminRequest(req: any): Promise<AuthVerificationResult> {
+  const authResult = await verifyAuthRequest(req);
+  if (!authResult.authorized || !authResult.userId) {
+    return authResult;
+  }
+
+  let userEmail = (authResult.email || req?.session?.email || "").trim().toLowerCase();
+  if (!userEmail && authResult.userId) {
+    if (pool) {
+      try {
+        const uRes = await pool.query("SELECT email FROM public.users WHERE id = $1 LIMIT 1;", [authResult.userId]);
+        userEmail = (uRes.rows[0]?.email || "").trim().toLowerCase();
+      } catch {}
+    }
+    if (!userEmail) {
+      const store = getLocalStore();
+      const u = store.users.find((user) => user.id === authResult.userId);
+      userEmail = (u?.email || "").trim().toLowerCase();
+    }
+  }
+
+  const isOwner = ADMIN_EMAILS.some((adm) => adm && userEmail === adm);
+  if (!isOwner) {
+    return {
+      authorized: false,
+      statusCode: 403,
+      error: "Access Denied: Database telemetry and system diagnostics are restricted to the application administrator.",
+    };
+  }
+
+  return {
+    authorized: true,
+    statusCode: 200,
+    userId: authResult.userId,
+    email: userEmail,
+    session: authResult.session,
+  };
+}
+
+export async function verifyCronOrAdminRequest(req: any): Promise<AuthVerificationResult> {
+  const cronSecret = (process.env.CRON_SECRET || "").trim();
+  const authHeader = String(req?.headers?.authorization || req?.headers?.Authorization || "");
+  const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+  const cronHeader = String(req?.headers?.["x-cron-secret"] || req?.headers?.["X-Cron-Secret"] || "").trim();
+
+  if (cronSecret && (bearerToken === cronSecret || cronHeader === cronSecret)) {
+    return {
+      authorized: true,
+      statusCode: 200,
+      userId: "system_cron",
+    };
+  }
+
+  return verifyAdminRequest(req);
+}
+
+export interface TripAuthCheck {
+  isOwner: boolean;
+  isMember: boolean;
+  canAccess: boolean;
+  role?: string;
+}
+
+export async function checkTripAuthorization(
+  tripId: string,
+  userId: string | undefined,
+  poolInstance: Pool | null = pool
+): Promise<TripAuthCheck> {
+  if (!tripId || !userId) {
+    return { isOwner: false, isMember: false, canAccess: false };
+  }
+
+  if (poolInstance) {
+    try {
+      const tripRes = await poolInstance.query(
+        "SELECT owner_id, member_user_ids FROM public.trips WHERE id = $1 LIMIT 1;",
+        [tripId]
+      );
+      const trip = tripRes.rows[0];
+      if (trip) {
+        const isOwner = trip.owner_id === userId;
+        if (isOwner) {
+          return { isOwner: true, isMember: true, canAccess: true, role: "owner" };
+        }
+
+        const memberRes = await poolInstance.query(
+          `SELECT tm.role FROM public.trip_members tm
+           LEFT JOIN public.users u ON u.id = $2
+           WHERE tm.trip_id = $1 AND (
+             tm.user_id = $2
+             OR tm.id = $2
+             OR (u.email IS NOT NULL AND u.email <> '' AND LOWER(TRIM(tm.email)) = LOWER(TRIM(u.email)))
+             OR (u.phone IS NOT NULL AND LENGTH(regexp_replace(u.phone, '\\D', '', 'g')) >= 7
+                 AND regexp_replace(COALESCE(tm.phone, ''), '\\D', '', 'g') LIKE '%' || regexp_replace(u.phone, '\\D', '', 'g') || '%')
+           )
+           LIMIT 1;`,
+          [tripId, userId]
+        );
+
+        const member = memberRes.rows[0];
+        if (member) {
+          return { isOwner: false, isMember: true, canAccess: true, role: member.role || "member" };
+        }
+
+        if (Array.isArray(trip.member_user_ids) && trip.member_user_ids.includes(userId)) {
+          return { isOwner: false, isMember: true, canAccess: true, role: "member" };
+        }
+
+        return { isOwner: false, isMember: false, canAccess: false };
+      }
+    } catch (err) {
+      console.warn("Notice checking trip authorization in PostgreSQL:", err);
+    }
+  }
+
+  // Local store fallback
+  const store = getLocalStore();
+  const trip = store.trips.find((t) => t.id === tripId);
+  if (!trip) {
+    return { isOwner: false, isMember: false, canAccess: false };
+  }
+  const isOwner = trip.owner_id === userId || trip.ownerId === userId;
+  if (isOwner) {
+    return { isOwner: true, isMember: true, canAccess: true, role: "owner" };
+  }
+  const member = store.trip_members.find(
+    (m) => m.trip_id === tripId && (m.user_id === userId || m.id === userId)
+  );
+  if (member) {
+    return { isOwner: false, isMember: true, canAccess: true, role: member.role || "member" };
+  }
+
+  return { isOwner: false, isMember: false, canAccess: false };
+}
+
+export function sanitizeReceiptUrl(rawUrl: any): string {
+  if (!rawUrl || typeof rawUrl !== "string") return "";
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return "";
+  if (/^data:image\/(jpeg|png|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(trimmed)) {
+    return trimmed;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return trimmed;
+    }
+  } catch {}
+  return "";
 }
 
 export function hashPasswordNode(password: string): string {
@@ -247,7 +592,13 @@ export function setCorsHeaders(res: any, req?: any): boolean {
   }
 
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-Telegram-Bot-Api-Secret-Token");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization, X-Requested-With, X-Telegram-Bot-Api-Secret-Token, X-Cron-Secret"
+  );
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Download-Options", "noopen");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
   return allowed;
 }
 
@@ -308,9 +659,23 @@ export function parseBody(req: any): any {
   return {};
 }
 
+export function logSecurityEvent(event: string, details: Record<string, any>): void {
+  const logRecord = {
+    level: "INFO",
+    type: "SECURITY_AUDIT",
+    event,
+    timestamp: new Date().toISOString(),
+    ...details,
+  };
+  console.log(JSON.stringify(logRecord));
+}
+
 export function sendJson(res: any, statusCode: number, data: any) {
   setCorsHeaders(res);
   res.setHeader("Content-Type", "application/json");
+  if (!res.getHeader?.("x-request-id") && typeof res.setHeader === "function") {
+    res.setHeader("X-Request-Id", `req_${Math.random().toString(36).substring(2, 10)}_${Date.now().toString(36)}`);
+  }
   if (typeof res.status === "function") {
     res.status(statusCode).json(data);
   } else {

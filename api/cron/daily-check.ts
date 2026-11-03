@@ -1,11 +1,19 @@
-import { setCorsHeaders, sendJson } from "../_shared.ts";
+import { setCorsHeaders, sendJson, verifyCronOrAdminRequest } from "../_shared.ts";
 import { runDiagnosticSweep } from "../health/_runner.ts";
 
 export default async function handler(req: any, res: any) {
-  setCorsHeaders(res);
+  setCorsHeaders(res, req);
   if (req.method === "OPTIONS") {
     res.statusCode = 204;
     return res.end();
+  }
+
+  const authResult = await verifyCronOrAdminRequest(req);
+  if (!authResult.authorized) {
+    return sendJson(res, authResult.statusCode || 401, {
+      success: false,
+      error: authResult.error || "Unauthorized: Cron secret or administrator authentication required.",
+    });
   }
 
   try {

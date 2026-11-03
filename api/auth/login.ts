@@ -12,6 +12,7 @@ import {
   checkRateLimit,
   resetRateLimit,
   getClientIp,
+  logSecurityEvent,
   type LocalUserRecord,
 } from "../_shared.ts";
 
@@ -181,6 +182,7 @@ export default async function handler(req: any, res: any) {
   }
 
   if (!foundUser) {
+    logSecurityEvent("AUTH_LOGIN_FAILED", { ip: clientIp, identifier: trimmedLower.slice(0, 3) + "***", reason: "user_not_found" });
     return sendJson(res, 401, {
       success: false,
       error: "Invalid email/phone or password. Please verify your credentials or create an account.",
@@ -189,6 +191,7 @@ export default async function handler(req: any, res: any) {
 
   const passCheck = verifyPasswordMatchNode(inputPassword, foundUser.password_hash);
   if (!passCheck.valid) {
+    logSecurityEvent("AUTH_LOGIN_FAILED", { ip: clientIp, userId: foundUser.id, reason: "invalid_password" });
     return sendJson(res, 401, {
       success: false,
       error: "Invalid email/phone or password. Please verify your credentials or create an account.",
@@ -197,6 +200,7 @@ export default async function handler(req: any, res: any) {
 
   // Login succeeded: clear failed rate limit counter for this account
   resetRateLimit(accountKey);
+  logSecurityEvent("AUTH_LOGIN_SUCCESS", { ip: clientIp, userId: foundUser.id, rehashUpgraded: passCheck.needsRehash });
 
   // Auto-upgrade legacy hash to modern bcrypt on successful login
   if (passCheck.needsRehash || !foundUser.password_hash?.startsWith("$2")) {

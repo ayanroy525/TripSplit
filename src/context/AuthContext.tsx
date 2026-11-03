@@ -124,7 +124,14 @@ export function saveLocalRegisteredUser(user: LocalStoredUserRecord) {
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
 
-  const [token, setTokenState] = useState<string | null>(null);
+  const [token, setTokenState] = useState<string | null>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        return localStorage.getItem("trip_expense_splitter_auth_token_v1");
+      } catch {}
+    }
+    return null;
+  });
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(() => {
     if (typeof window !== "undefined") {
       try {
@@ -170,7 +177,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // 2. Initial session check
     supabase.auth.getSession().then(async ({ data: { session } }) => {
       if (session?.user) {
-        setTokenState(session.access_token);
+        const existingServerToken =
+          typeof window !== "undefined" ? localStorage.getItem("trip_expense_splitter_auth_token_v1") : null;
+        if (!existingServerToken) {
+          setTokenState(session.access_token);
+        }
         await syncUserProfileToDatabase(session.user);
 
         let extraProfile: Partial<UserAccount> | undefined;
@@ -207,7 +218,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       if (session?.user) {
-        setTokenState(session.access_token);
+        const existingServerToken =
+          typeof window !== "undefined" ? localStorage.getItem("trip_expense_splitter_auth_token_v1") : null;
+        if (!existingServerToken) {
+          setTokenState(session.access_token);
+        }
         await syncUserProfileToDatabase(session.user);
 
         let extraProfile: Partial<UserAccount> | undefined;
@@ -587,11 +602,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return { success: true };
   };
 
-  // Logout handler
+  // Logout handler - thoroughly purge all session tokens and caches
   const logout = () => {
     supabase.auth.signOut().catch(() => {});
     persistUser(null);
     setTokenState(null);
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.removeItem(ACTIVE_USER_KEY);
+        localStorage.removeItem("trip_expense_splitter_auth_token_v1");
+        localStorage.removeItem("tripsplit_auth_token");
+        localStorage.removeItem("token");
+        sessionStorage.clear();
+      } catch {}
+    }
   };
 
   // Continue as guest

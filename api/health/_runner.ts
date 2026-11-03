@@ -21,6 +21,8 @@ export interface DiagnosticResult {
   check_type: string;
   error_details: string | null;
   executed_at: string;
+  telegram_sent?: boolean;
+  telegram_error?: string | null;
 }
 
 export async function runDiagnosticSweep(checkType = "scheduled_2am"): Promise<DiagnosticResult> {
@@ -140,6 +142,8 @@ export async function runDiagnosticSweep(checkType = "scheduled_2am"): Promise<D
     check_type: checkType,
     error_details: errorDetails,
     executed_at: executedAt,
+    telegram_sent: false,
+    telegram_error: null,
   };
 
   // Local file backup
@@ -159,20 +163,29 @@ export async function runDiagnosticSweep(checkType = "scheduled_2am"): Promise<D
   } catch {}
 
   // Telegram Alert Dispatch
-  try {
-    const tgConfig = await getTelegramConfig();
-    if (tgConfig.botToken && tgConfig.chatId) {
-      const isManual = checkType === "manual_trigger" || checkType === "manual_test";
-      // Send if daily check and dailyEnabled, or if degraded/offline (always alert on failure)
-      if ((tgConfig.dailyEnabled && !isManual) || result.status !== "nominal") {
-        const report = formatDiagnosticTelegramReport(result, tgConfig.webhookUrl);
-        await sendTelegramMessage(report.text, {
-          inlineKeyboard: report.inlineKeyboard,
-        });
+  // Skip duplicate dispatch if invoked directly from Telegram processor (which sends/edits its own reply)
+  const isTelegramInternal = checkType === "telegram_on_demand" || checkType === "telegram_post_heal";
+  if (!isTelegramInternal) {
+    try {
+      const tgConfig = await getTelegramConfig();
+      if (tgConfig.botToken && tgConfig.chatId) {
+        const isManual = checkType === "manual_trigger" || checkType === "manual_test";
+        // Always send for manual triggers, when dailyEnabled is true, or when degraded/offline
+        if (isManual || tgConfig.dailyEnabled || result.status !== "nominal") {
+          const report = formatDiagnosticTelegramReport(result, tgConfig.webhookUrl);
+          const tgRes = await sendTelegramMessage(report.text, {
+            inlineKeyboard: report.inlineKeyboard,
+          });
+          result.telegram_sent = tgRes.success;
+          if (!tgRes.success) {
+            result.telegram_error = tgRes.error || "Telegram dispatch failed";
+          }
+        }
       }
+    } catch (tgErr: any) {
+      result.telegram_error = tgErr?.message || String(tgErr);
+      console.warn("Could not dispatch Telegram health alert:", tgErr?.message || tgErr);
     }
-  } catch (tgErr: any) {
-    console.warn("Could not dispatch Telegram health alert:", tgErr?.message || tgErr);
   }
 
   return result;

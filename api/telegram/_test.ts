@@ -1,8 +1,8 @@
-import { setCorsHeaders, sendJson, verifySessionToken } from "../_shared.ts";
+import { setCorsHeaders, sendJson, verifyAdminRequest } from "../_shared.ts";
 import { sendTelegramMessage, getTelegramConfig, saveTelegramConfig } from "./_client.ts";
 
 export default async function handler(req: any, res: any) {
-  setCorsHeaders(res);
+  setCorsHeaders(res, req);
   if (req.method === "OPTIONS") {
     res.statusCode = 204;
     return res.end();
@@ -12,13 +12,11 @@ export default async function handler(req: any, res: any) {
     return sendJson(res, 405, { success: false, error: "Method not allowed" });
   }
 
-  // Authentication guard: prevent unauthorized users from triggering test messages
-  const authHeader = req.headers?.authorization || req.headers?.Authorization || "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  if (!token || !verifySessionToken(token)) {
-    return sendJson(res, 401, {
+  const adminAuth = await verifyAdminRequest(req);
+  if (!adminAuth.authorized) {
+    return sendJson(res, adminAuth.statusCode || 403, {
       success: false,
-      error: "Unauthorized: You must be logged in to send Telegram test alerts.",
+      error: adminAuth.error || "Access Denied: Restricted to application administrator.",
     });
   }
 

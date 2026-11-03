@@ -1,6 +1,8 @@
 import {
   pool,
-  verifySessionToken,
+  verifyAuthRequest,
+  checkTripAuthorization,
+  sanitizeReceiptUrl,
   setCorsHeaders,
   sendJson,
   parseBody,
@@ -9,7 +11,7 @@ import {
 } from "../_shared.ts";
 
 export default async function handler(req: any, res: any) {
-  setCorsHeaders(res);
+  setCorsHeaders(res, req);
   if (req.method === "OPTIONS") {
     res.statusCode = 204;
     return res.end();
@@ -19,19 +21,61 @@ export default async function handler(req: any, res: any) {
     return sendJson(res, 405, { success: false, error: "Method Not Allowed" });
   }
 
-  const authHeader = req.headers.authorization || "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  const session = verifySessionToken(token);
-
-  if (!session || !session.userId) {
-    return sendJson(res, 401, { success: false, error: "Authentication required" });
+  const authResult = await verifyAuthRequest(req);
+  if (!authResult.authorized || !authResult.userId) {
+    return sendJson(res, authResult.statusCode || 401, {
+      success: false,
+      error: authResult.error || "Authentication required",
+    });
   }
 
+  const userId = authResult.userId;
   const body = parseBody(req);
   const { type, tripId, payload } = body || {};
 
   if (!type || !tripId) {
     return sendJson(res, 400, { success: false, error: "type and tripId are required" });
+  }
+
+  // Authorization check: Verify user is a member of this trip (or creating a genuinely new trip where they are owner)
+  let tripExists = false;
+  if (pool) {
+    try {
+      const existsRes = await pool.query("SELECT id FROM public.trips WHERE id = $1 LIMIT 1;", [tripId]);
+      tripExists = existsRes.rows.length > 0;
+    } catch {}
+  } else {
+    const store = getLocalStore();
+    tripExists = store.trips.some((t: any) => t.id === tripId);
+  }
+
+  if (type === "SAVE_TRIP_SNAPSHOT" && !tripExists) {
+    if (payload?.id && payload.id !== tripId) {
+      return sendJson(res, 400, { success: false, error: "Trip ID mismatch in snapshot payload." });
+    }
+    if (payload?.ownerId && payload.ownerId !== userId) {
+      return sendJson(res, 403, { success: false, error: "Access denied: Cannot create a trip owned by another user." });
+    }
+  } else {
+    const authCheck = await checkTripAuthorization(tripId, userId, pool);
+    if (!authCheck.canAccess) {
+      return sendJson(res, 403, {
+        success: false,
+        error: "Access denied: You are not an authorized member of this trip.",
+      });
+    }
+    if (type === "DELETE_TRIP" && !authCheck.isOwner) {
+      return sendJson(res, 403, {
+        success: false,
+        error: "Access denied: Only the trip owner can delete this trip.",
+      });
+    }
+    if (authCheck.role === "viewer") {
+      return sendJson(res, 403, {
+        success: false,
+        error: "Access denied: Viewers have read-only access to this trip.",
+      });
+    }
   }
 
   if (pool) {
@@ -49,8 +93,8 @@ export default async function handler(req: any, res: any) {
                      cancelled_by = COALESCE($3, cancelled_by),
                      cancelled_at = CASE WHEN $3 IS NOT NULL THEN NOW() ELSE cancelled_at END,
                      updated_at = NOW()
-                 WHERE id = $4;`,
-                [payment.status, payment.confirmedBy || null, payment.cancelledBy || null, payment.id]
+                 WHERE id = $4 AND trip_id = $5;`,
+                [payment.status, payment.confirmedBy || null, payment.cancelledBy || null, payment.id, tripId]
               );
             } else {
               await pool.query(
@@ -66,7 +110,8 @@ export default async function handler(req: any, res: any) {
                   status = EXCLUDED.status,
                   method = EXCLUDED.method,
                   note = EXCLUDED.note,
-                  updated_at = NOW();`,
+                  updated_at = NOW()
+                WHERE public.payments.trip_id = EXCLUDED.trip_id;`,
                 [
                   payment.id,
                   tripId,
@@ -91,7 +136,7 @@ export default async function handler(req: any, res: any) {
         case "DELETE_PAYMENT": {
           const paymentId = payload?.paymentId || payload?.id;
           if (paymentId) {
-            await pool.query("DELETE FROM public.payments WHERE id = $1;", [paymentId]);
+            await pool.query("DELETE FROM public.payments WHERE id = $1 AND trip_id = $2;", [paymentId, tripId]);
           }
           break;
         }
@@ -102,7 +147,7 @@ export default async function handler(req: any, res: any) {
             const participantsList =
               Array.isArray(expense.participants) && expense.participants.length > 0
                 ? expense.participants
-                : [expense.paidBy || session.userId || "traveler"];
+                : [expense.paidBy || userId || "traveler"];
 
             await pool.query(
               `INSERT INTO public.expenses (
@@ -132,7 +177,8 @@ export default async function handler(req: any, res: any) {
                 notes = EXCLUDED.notes,
                 receipt_url = EXCLUDED.receipt_url,
                 deleted = EXCLUDED.deleted,
-                updated_at = NOW();`,
+                updated_at = NOW()
+              WHERE public.expenses.trip_id = EXCLUDED.trip_id;`,
               [
                 expense.id,
                 tripId,
@@ -142,7 +188,7 @@ export default async function handler(req: any, res: any) {
                 expense.date || new Date().toISOString().split("T")[0],
                 expense.paidBy || "",
                 JSON.stringify(expense.payers || null),
-                expense.createdBy || session.userId || "",
+                expense.createdBy || userId || "",
                 expense.method || "equal",
                 expense.splitType || expense.method || "equal",
                 JSON.stringify(participantsList),
@@ -150,7 +196,7 @@ export default async function handler(req: any, res: any) {
                 JSON.stringify(expense.splitPercentages || null),
                 JSON.stringify(expense.splitShares || null),
                 expense.notes || "",
-                expense.receiptUrl || "",
+                sanitizeReceiptUrl(expense.receiptUrl),
                 expense.originalAmount != null ? Number(expense.originalAmount) : null,
                 expense.currency || null,
                 expense.exchangeRate != null ? Number(expense.exchangeRate) : null,
@@ -164,7 +210,10 @@ export default async function handler(req: any, res: any) {
         case "DELETE_EXPENSE": {
           const expenseId = payload?.expenseId || payload?.id;
           if (expenseId) {
-            await pool.query("UPDATE public.expenses SET deleted = true, deleted_at = NOW() WHERE id = $1;", [expenseId]);
+            await pool.query("UPDATE public.expenses SET deleted = true, deleted_at = NOW() WHERE id = $1 AND trip_id = $2;", [
+              expenseId,
+              tripId,
+            ]);
           }
           break;
         }
@@ -183,7 +232,8 @@ export default async function handler(req: any, res: any) {
                 avatar_color = EXCLUDED.avatar_color,
                 phone = EXCLUDED.phone,
                 email = EXCLUDED.email,
-                status = EXCLUDED.status;`,
+                status = EXCLUDED.status
+              WHERE public.trip_members.trip_id = EXCLUDED.trip_id;`,
               [
                 memId,
                 tripId,
@@ -203,17 +253,18 @@ export default async function handler(req: any, res: any) {
         case "DELETE_MEMBER": {
           const memberId = payload?.memberId || payload?.id;
           if (memberId) {
-            await pool.query("DELETE FROM public.trip_members WHERE id = $1;", [memberId]);
+            await pool.query("DELETE FROM public.trip_members WHERE id = $1 AND trip_id = $2;", [memberId, tripId]);
           }
           break;
         }
 
         case "SAVE_TRIP_SNAPSHOT": {
           const trip = payload;
-          if (trip && trip.id) {
+          if (trip && (trip.id || tripId)) {
+            const targetTripId = tripId;
             const memberUserIds = Array.from(
               new Set([
-                trip.ownerId,
+                trip.ownerId || userId,
                 ...(trip.memberUserIds || []),
                 ...(trip.members || []).map((m: any) => m.userId || m.id),
               ].filter(Boolean))
@@ -236,7 +287,7 @@ export default async function handler(req: any, res: any) {
                 member_user_ids = EXCLUDED.member_user_ids,
                 updated_at = NOW();`,
               [
-                trip.id,
+                targetTripId,
                 trip.title || trip.name || "Untitled Trip",
                 trip.location || trip.destination || "Destination",
                 trip.destination || trip.location || "Destination",
@@ -244,10 +295,10 @@ export default async function handler(req: any, res: any) {
                 trip.endDate || new Date().toISOString().split("T")[0],
                 trip.currency || "INR",
                 trip.status || "ACTIVE",
-                trip.ownerId || session.userId || "",
+                trip.ownerId || userId || "",
                 trip.ownerName || "Traveler",
                 JSON.stringify(memberUserIds),
-                trip.inviteCode || `TRIP-${trip.id.slice(-6).toUpperCase()}`,
+                trip.inviteCode || `TRIP-${targetTripId.slice(-6).toUpperCase()}`,
               ]
             );
           }
@@ -266,16 +317,21 @@ export default async function handler(req: any, res: any) {
     }
   }
 
-  // Local store fallback
+  // Local store fallback (strictly scoped by trip_id)
   const store = getLocalStore();
   if (type === "RECORD_PAYMENT" && payload?.id) {
-    const idx = store.payments.findIndex((p: any) => p.id === payload.id);
-    if (idx >= 0) store.payments[idx] = { ...store.payments[idx], ...payload };
-    else store.payments.push({ ...payload, trip_id: tripId });
+    const idx = store.payments.findIndex((p: any) => p.id === payload.id && p.trip_id === tripId);
+    if (idx >= 0) store.payments[idx] = { ...store.payments[idx], ...payload, trip_id: tripId };
+    else if (!store.payments.some((p: any) => p.id === payload.id)) {
+      store.payments.push({ ...payload, trip_id: tripId });
+    }
   } else if (type === "SAVE_EXPENSE" && payload?.id) {
-    const idx = store.expenses.findIndex((e: any) => e.id === payload.id);
-    if (idx >= 0) store.expenses[idx] = { ...store.expenses[idx], ...payload };
-    else store.expenses.push({ ...payload, trip_id: tripId });
+    const safePayload = { ...payload, receiptUrl: sanitizeReceiptUrl(payload.receiptUrl) };
+    const idx = store.expenses.findIndex((e: any) => e.id === safePayload.id && e.trip_id === tripId);
+    if (idx >= 0) store.expenses[idx] = { ...store.expenses[idx], ...safePayload, trip_id: tripId };
+    else if (!store.expenses.some((e: any) => e.id === safePayload.id)) {
+      store.expenses.push({ ...safePayload, trip_id: tripId });
+    }
   }
   saveLocalStore(store);
 

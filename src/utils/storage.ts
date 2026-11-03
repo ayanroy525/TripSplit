@@ -1330,7 +1330,7 @@ export async function getTripByInviteCode(
     const baseUrl = typeof window !== "undefined" ? "" : "http://localhost:3000";
     const apiRes = await fetch(`${baseUrl}/api/trips/invite/lookup`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: getAuthHeaders(),
       body: JSON.stringify({ inviteCode: code }),
     });
     if (apiRes.ok) {
@@ -1444,7 +1444,7 @@ export async function joinTripByInviteCode(
     const baseUrl = typeof window !== "undefined" ? "" : "http://localhost:3000";
     const apiRes = await fetch(`${baseUrl}/api/trips/invite/join`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: getAuthHeaders(),
       body: JSON.stringify({
         inviteCode: code,
         user: {

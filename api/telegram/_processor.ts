@@ -79,12 +79,20 @@ export async function processTelegramUpdate(update: any): Promise<{ success: boo
       return { success: true, action: "unknown_callback" };
     }
 
-    // 2. Direct chat messages (/health, /status, /start, /help)
+    // 2. Direct chat messages (/health, /status, /check, /start, /help, or plain text equivalents)
     if (update?.message && update.message.text) {
       const text = update.message.text.trim().toLowerCase();
+      const cleanCmd = text.replace(/^\//, "").split("@")[0].trim();
       const chatId = update.message.chat?.id;
 
-      if (text.startsWith("/health") || text.startsWith("/status") || text.startsWith("/check")) {
+      if (
+        cleanCmd.startsWith("health") ||
+        cleanCmd.startsWith("status") ||
+        cleanCmd.startsWith("check") ||
+        cleanCmd.startsWith("report") ||
+        cleanCmd.startsWith("test") ||
+        cleanCmd.startsWith("diag")
+      ) {
         if (config.chatId && String(chatId) !== String(config.chatId)) {
           await sendTelegramMessage("⛔ <b>Access Denied</b>\n\nYou are not authorized to view TripSplit system diagnostics.", {
             customChatId: String(chatId),
@@ -101,7 +109,7 @@ export async function processTelegramUpdate(update: any): Promise<{ success: boo
         return { success: true, action: "command_health" };
       }
 
-      if (text.startsWith("/start") || text.startsWith("/help")) {
+      if (cleanCmd.startsWith("start") || cleanCmd.startsWith("help") || cleanCmd === "hi" || cleanCmd === "hello") {
         const helpText = `
 👋 <b>Welcome to TripSplit Health Monitor Bot!</b>
 

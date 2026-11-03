@@ -885,3 +885,6 @@ BEGIN
   RETURN v_res;
 END;
 $$;
+
+GRANT EXECUTE ON FUNCTION public.confirm_payment_atomic(TEXT, TEXT, TEXT, JSONB) TO anon, authenticated, service_role;
+

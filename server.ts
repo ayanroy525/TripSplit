@@ -1,6 +1,7 @@
 process.env.DISABLE_HMR = "true";
 import express, { Request, Response, NextFunction } from "express";
 import dotenv from "dotenv";
+import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { Pool } from "pg";
@@ -17,20 +18,27 @@ import {
 import { runDiagnosticSweep } from "./api/health/_runner.ts";
 import loginHandler from "./api/auth/login.ts";
 import signupHandler from "./api/auth/signup.ts";
-import telegramSettingsHandler from "./api/telegram/settings.ts";
-import telegramTestHandler from "./api/telegram/test.ts";
+import telegramSettingsHandler from "./api/telegram/_settings.ts";
+import telegramTestHandler from "./api/telegram/_test.ts";
 import telegramWebhookHandler from "./api/telegram/webhook.ts";
-import telegramDetectChatHandler from "./api/telegram/detect-chat.ts";
+import telegramDetectChatHandler from "./api/telegram/_detect-chat.ts";
 import { startTelegramPoller } from "./api/telegram/_poller.ts";
 import rateLimit from "express-rate-limit";
 import {
   pool,
   hashPasswordNode,
   verifyPasswordMatchNode,
+  verifySessionToken as verifySharedSessionToken,
+  verifyAuthRequest,
+  verifyAdminRequest,
+  verifyCronOrAdminRequest,
+  checkTripAuthorization,
+  sanitizeReceiptUrl as sharedSanitizeReceiptUrl,
   setCorsHeaders,
   isOriginAllowed,
   SESSION_SECRET,
   PASSWORD_SALT,
+  ADMIN_EMAILS,
 } from "./api/_shared.ts";
 
 dotenv.config();
@@ -41,12 +49,24 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// CORS Whitelist Protection using shared strict policy
+// CORS Whitelist Protection & Security Headers using shared strict policy
 app.use((req, res, next) => {
   setCorsHeaders(res, req);
+  if (req.path.startsWith("/api/")) {
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.setHeader("Pragma", "no-cache");
+  }
   if (req.method === "OPTIONS") {
     return res.status(204).end();
   }
+  next();
+});
+
+// Request ID tracking for distributed observability
+app.use((req, res, next) => {
+  const reqId = req.headers["x-request-id"] || `req_${Math.random().toString(36).substring(2, 10)}_${Date.now().toString(36)}`;
+  (req as any).id = reqId;
+  res.setHeader("X-Request-Id", reqId as string);
   next();
 });
 
@@ -66,11 +86,21 @@ const authRateLimiter = rateLimit({
   },
 });
 
+const inviteRateLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1-minute window
+  max: 25, // Max 25 invite lookups/joins per minute per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: "Too many invite code requests from this IP. Please wait a minute before trying again.",
+  },
+});
+
 app.use("/api/auth/login", authRateLimiter);
 app.use("/api/auth/signup", authRateLimiter);
-
-
-
+app.use("/api/trips/invite", inviteRateLimiter);
+app.use("/api/trips/join", inviteRateLimiter);
 
 interface SessionPayload {
   userId: string;
@@ -102,24 +132,18 @@ function generateSessionToken(userId: string, email?: string, name?: string, tok
 }
 
 function verifySessionToken(token: string): SessionPayload | null {
-  try {
-    const [headerBase64, payloadBase64, signatureBase64] = token.split(".");
-    if (!headerBase64 || !payloadBase64 || !signatureBase64) return null;
-
-    const signature = crypto
-      .createHmac("sha256", SESSION_SECRET)
-      .update(`${headerBase64}.${payloadBase64}`)
-      .digest("base64url");
-
-    if (signature !== signatureBase64) return null;
-
-    const payload: SessionPayload = JSON.parse(Buffer.from(payloadBase64, "base64url").toString("utf8"));
-    if (payload.exp < Math.floor(Date.now() / 1000)) return null;
-
-    return payload;
-  } catch (e) {
-    return null;
+  const sharedVerified = verifySharedSessionToken(token);
+  if (sharedVerified) {
+    return {
+      userId: sharedVerified.userId,
+      email: sharedVerified.email,
+      name: sharedVerified.name,
+      tokenVersion: (sharedVerified as any).tokenVersion,
+      iat: (sharedVerified as any).iat || Math.floor(Date.now() / 1000),
+      exp: sharedVerified.exp,
+    };
   }
+  return null;
 }
 
 interface AuthRequest extends Request {
@@ -128,146 +152,45 @@ interface AuthRequest extends Request {
 }
 
 async function authMiddleware(req: AuthRequest, res: Response, next: NextFunction) {
-  const authHeader = req.headers.authorization || "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-
-  if (!token) {
-    return res.status(401).json({ success: false, error: "Authorization token required" });
+  const authResult = await verifyAuthRequest(req);
+  if (!authResult.authorized || !authResult.userId) {
+    return res.status(authResult.statusCode || 401).json({
+      success: false,
+      error: authResult.error || "Authorization token required",
+    });
   }
-
-  const session = verifySessionToken(token);
-  if (!session) {
-    return res.status(401).json({ success: false, error: "Invalid or expired token" });
-  }
-
-  // Token version verification (instant revocation check)
-  if (session.tokenVersion !== undefined) {
-    if (pool) {
-      try {
-        const uRes = await pool.query("SELECT token_version FROM public.users WHERE id = $1 LIMIT 1;", [session.userId]);
-        const currentVersion = uRes.rows[0]?.token_version ?? 1;
-        if (session.tokenVersion < currentVersion) {
-          return res.status(401).json({ success: false, error: "Session has been revoked. Please log in again." });
-        }
-      } catch {}
-    } else {
-      const localStore = getLocalStore();
-      const localUser = localStore.users.find((u) => u.id === session.userId);
-      const currentVersion = (localUser as any)?.token_version ?? 1;
-      if (session.tokenVersion < currentVersion) {
-        return res.status(401).json({ success: false, error: "Session has been revoked. Please log in again." });
-      }
-    }
-  }
-
-  req.userId = session.userId;
-  req.session = session;
+  req.userId = authResult.userId;
+  req.session = authResult.session as SessionPayload;
   next();
 }
 
-const ADMIN_EMAILS = [
-  "ayanroy525@gmail.com",
-  (process.env.ADMIN_EMAIL || "").trim().toLowerCase(),
-].filter(Boolean);
-
 async function adminOnlyMiddleware(req: AuthRequest, res: Response, next: NextFunction) {
-  await authMiddleware(req, res, () => {
-    const userEmail = (req.session?.email || "").trim().toLowerCase();
-    const isOwner = ADMIN_EMAILS.some((adm) => adm && userEmail === adm);
-    if (!isOwner) {
-      return res.status(403).json({
-        success: false,
-        error: "Access Denied: Database telemetry and system diagnostics are restricted to the application administrator.",
-      });
-    }
-    next();
-  });
+  const adminResult = await verifyAdminRequest(req);
+  if (!adminResult.authorized || !adminResult.userId) {
+    return res.status(adminResult.statusCode || 403).json({
+      success: false,
+      error: adminResult.error || "Access Denied: Restricted to application administrator.",
+    });
+  }
+  req.userId = adminResult.userId;
+  req.session = adminResult.session as SessionPayload;
+  next();
 }
 
-interface TripAuthCheck {
-  isOwner: boolean;
-  isMember: boolean;
-  canAccess: boolean;
-  role?: string;
+async function cronOrAdminMiddleware(req: AuthRequest, res: Response, next: NextFunction) {
+  const cronResult = await verifyCronOrAdminRequest(req);
+  if (!cronResult.authorized) {
+    return res.status(cronResult.statusCode || 401).json({
+      success: false,
+      error: cronResult.error || "Unauthorized cron or admin request.",
+    });
+  }
+  req.userId = cronResult.userId;
+  req.session = cronResult.session as SessionPayload;
+  next();
 }
 
-async function checkTripAuthorization(tripId: string, userId: string | undefined, poolInstance: Pool | null): Promise<TripAuthCheck> {
-  if (!tripId || !userId) {
-    return { isOwner: false, isMember: false, canAccess: false };
-  }
-
-  if (poolInstance) {
-    try {
-      const tripRes = await poolInstance.query("SELECT owner_id FROM public.trips WHERE id = $1 LIMIT 1;", [tripId]);
-      const trip = tripRes.rows[0];
-      if (trip) {
-        const isOwner = trip.owner_id === userId;
-        if (isOwner) {
-          return { isOwner: true, isMember: true, canAccess: true, role: "owner" };
-        }
-
-        const memberRes = await poolInstance.query(
-          `SELECT tm.role FROM public.trip_members tm
-           LEFT JOIN public.users u ON u.id = $2
-           WHERE tm.trip_id = $1 AND (
-             tm.user_id = $2
-             OR tm.id = $2
-             OR (u.email IS NOT NULL AND u.email <> '' AND LOWER(TRIM(tm.email)) = LOWER(TRIM(u.email)))
-             OR (u.phone IS NOT NULL AND LENGTH(regexp_replace(u.phone, '\\D', '', 'g')) >= 7
-                 AND regexp_replace(COALESCE(tm.phone, ''), '\\D', '', 'g') LIKE '%' || regexp_replace(u.phone, '\\D', '', 'g') || '%')
-           )
-           LIMIT 1;`,
-          [tripId, userId]
-        );
-
-        const member = memberRes.rows[0];
-        if (member) {
-          return { isOwner: false, isMember: true, canAccess: true, role: member.role || "member" };
-        }
-
-        return { isOwner: false, isMember: false, canAccess: false };
-      }
-    } catch (err) {
-      console.warn("Notice checking trip authorization in PostgreSQL:", err);
-    }
-  }
-
-  // Local store fallback
-  const store = getLocalStore();
-  const trip = store.trips.find((t) => t.id === tripId);
-  if (!trip) {
-    return { isOwner: false, isMember: false, canAccess: false };
-  }
-  const isOwner = trip.owner_id === userId;
-  if (isOwner) {
-    return { isOwner: true, isMember: true, canAccess: true, role: "owner" };
-  }
-  const member = store.trip_members.find((m) => m.trip_id === tripId && (m.user_id === userId || m.id === userId));
-  if (member) {
-    return { isOwner: false, isMember: true, canAccess: true, role: member.role || "member" };
-  }
-
-  return { isOwner: false, isMember: false, canAccess: false };
-}
-
-
-export function sanitizeReceiptUrl(rawUrl: any): string {
-  if (!rawUrl || typeof rawUrl !== "string") return "";
-  const trimmed = rawUrl.trim();
-  if (!trimmed) return "";
-  // Safe base64 image data URIs (JPEG, PNG, WEBP, GIF)
-  if (/^data:image\/(jpeg|png|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(trimmed)) {
-    return trimmed;
-  }
-  // Safe web URLs (HTTP / HTTPS only, strictly disallowing javascript:, data:text/html, vbscript:, etc.)
-  try {
-    const parsed = new URL(trimmed);
-    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
-      return trimmed;
-    }
-  } catch {}
-  return "";
-}
+export const sanitizeReceiptUrl = sharedSanitizeReceiptUrl;
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
@@ -509,7 +432,7 @@ app.get("/api/user-trips", authMiddleware, async (req: AuthRequest, res) => {
   return res.json({ success: true, trips: userTrips });
 });
 
-// Robust Invite Code Lookup & Preview (Publicly accessible for joining trips)
+// Robust Invite Code Lookup & Preview (Strictly scoped to invite_code, strips member PII)
 app.post("/api/trips/invite/lookup", async (req, res) => {
   let { inviteCode } = req.body || {};
   let raw = String(inviteCode || "").trim();
@@ -517,9 +440,6 @@ app.post("/api/trips/invite/lookup", async (req, res) => {
   // Normalize: if user pasted URL or query string
   if (raw.includes("code=")) {
     const match = raw.match(/code=([^&?#]+)/);
-    if (match && match[1]) raw = decodeURIComponent(match[1]);
-  } else if (raw.includes("tripId=")) {
-    const match = raw.match(/tripId=([^&?#]+)/);
     if (match && match[1]) raw = decodeURIComponent(match[1]);
   } else if (raw.startsWith("#join?")) {
     raw = raw.replace("#join?", "");
@@ -530,17 +450,18 @@ app.post("/api/trips/invite/lookup", async (req, res) => {
     return res.status(400).json({ success: false, error: "Please enter an invite code." });
   }
 
-  // 1. Try PostgreSQL
+  // 1. Try PostgreSQL (Strictly match invite_code only, never internal trip id)
   if (pool) {
     try {
       const tripRes = await pool.query(
         `SELECT * FROM public.trips
-         WHERE UPPER(TRIM(invite_code)) = $1
-            OR UPPER(TRIM(invite_code)) = 'TRIP-' || $1
-            OR UPPER(TRIM(REPLACE(invite_code, 'TRIP-', ''))) = $1
-            OR id = $2
+         WHERE invite_code IS NOT NULL AND TRIM(invite_code) <> '' AND (
+           UPPER(TRIM(invite_code)) = $1
+           OR UPPER(TRIM(invite_code)) = 'TRIP-' || $1
+           OR UPPER(TRIM(REPLACE(invite_code, 'TRIP-', ''))) = $1
+         )
          LIMIT 1;`,
-        [clean, raw.trim()]
+        [clean]
       );
 
       const trip = tripRes.rows[0];
@@ -593,18 +514,37 @@ app.post("/api/trips/invite/lookup", async (req, res) => {
     }
   }
 
-  // 2. Try local store
+  // 2. Try local store (Strictly match inviteCode only, strip email/phone PII from preview)
   const store = getLocalStore();
-  const trip = store.trips.find(
-    (t: any) =>
-      (t.inviteCode && t.inviteCode.trim().toUpperCase() === clean) ||
-      (t.inviteCode && t.inviteCode.trim().toUpperCase() === `TRIP-${clean}`) ||
-      (t.inviteCode && t.inviteCode.replace("TRIP-", "").trim().toUpperCase() === clean) ||
-      t.id === raw.trim()
-  );
+  const trip = store.trips.find((t: any) => {
+    const codeVal = (t.inviteCode || t.invite_code || "").trim().toUpperCase();
+    if (!codeVal) return false;
+    return (
+      codeVal === clean ||
+      codeVal === `TRIP-${clean}` ||
+      codeVal.replace("TRIP-", "").trim() === clean
+    );
+  });
 
   if (trip) {
-    const members = store.trip_members.filter((m: any) => m.trip_id === trip.id);
+    const expAt = trip.inviteExpiresAt || trip.invite_expires_at;
+    if (expAt && new Date(expAt) < new Date()) {
+      return res.status(410).json({
+        success: false,
+        error: "This invite code has expired. Please ask the trip organizer for a new one.",
+      });
+    }
+
+    const members = store.trip_members
+      .filter((m: any) => m.trip_id === trip.id)
+      .map((m: any) => ({
+        id: m.id,
+        userId: m.user_id || m.userId || m.id,
+        name: m.name || "Traveler",
+        role: m.role || "participant",
+        avatarColor: m.avatar_color || m.avatarColor || "#0F6B65",
+        joinedAt: m.joined_at || m.joinedAt,
+      }));
     return res.json({
       success: true,
       trip: {
@@ -624,16 +564,13 @@ app.post("/api/trips/invite/lookup", async (req, res) => {
 });
 
 // Atomic Join Trip by Invite Code
-app.post("/api/trips/invite/join", async (req, res) => {
+app.post("/api/trips/invite/join", async (req: AuthRequest, res) => {
   let { inviteCode, user } = req.body || {};
   let raw = String(inviteCode || "").trim();
 
   // Normalize code
   if (raw.includes("code=")) {
     const match = raw.match(/code=([^&?#]+)/);
-    if (match && match[1]) raw = decodeURIComponent(match[1]);
-  } else if (raw.includes("tripId=")) {
-    const match = raw.match(/tripId=([^&?#]+)/);
     if (match && match[1]) raw = decodeURIComponent(match[1]);
   } else if (raw.startsWith("#join?")) {
     raw = raw.replace("#join?", "");
@@ -653,16 +590,42 @@ app.post("/api/trips/invite/join", async (req, res) => {
     return res.status(400).json({ success: false, error: "Please log in before joining a trip." });
   }
 
+  // Verify Bearer token if provided, or require it in production / for registered users
+  const authHeader = String(req.headers.authorization || "");
+  if (authHeader.startsWith("Bearer ")) {
+    const authResult = await verifyAuthRequest(req);
+    if (!authResult.authorized || !authResult.userId) {
+      return res.status(401).json({ success: false, error: authResult.error || "Invalid or expired token" });
+    }
+    if (authResult.userId !== userId) {
+      return res.status(403).json({ success: false, error: "Cannot join trip as another user" });
+    }
+  } else if (process.env.NODE_ENV === "production") {
+    return res.status(401).json({ success: false, error: "Authentication token required to join a trip." });
+  } else if (pool) {
+    try {
+      // Prevent unauthenticated impersonation of registered accounts
+      const registeredRes = await pool.query("SELECT id FROM public.users WHERE id = $1 LIMIT 1;", [userId]);
+      if (registeredRes.rows.length > 0) {
+        return res.status(401).json({
+          success: false,
+          error: "Authorization token required to join as a registered user.",
+        });
+      }
+    } catch {}
+  }
+
   if (pool) {
     try {
       const tripRes = await pool.query(
         `SELECT * FROM public.trips
-         WHERE UPPER(TRIM(invite_code)) = $1
-            OR UPPER(TRIM(invite_code)) = 'TRIP-' || $1
-            OR UPPER(TRIM(REPLACE(invite_code, 'TRIP-', ''))) = $1
-            OR id = $2
+         WHERE invite_code IS NOT NULL AND TRIM(invite_code) <> '' AND (
+           UPPER(TRIM(invite_code)) = $1
+           OR UPPER(TRIM(invite_code)) = 'TRIP-' || $1
+           OR UPPER(TRIM(REPLACE(invite_code, 'TRIP-', ''))) = $1
+         )
          LIMIT 1;`,
-        [clean, raw.trim()]
+        [clean]
       );
 
       const trip = tripRes.rows[0];
@@ -670,6 +633,20 @@ app.post("/api/trips/invite/join", async (req, res) => {
         return res.status(404).json({
           success: false,
           error: `Invite code '${clean}' is invalid or expired. Please check with your trip organizer.`,
+        });
+      }
+
+      if (trip.invite_expires_at && new Date(trip.invite_expires_at) < new Date()) {
+        return res.status(410).json({
+          success: false,
+          error: "This invite code has expired. Please ask the trip organizer for a new one.",
+        });
+      }
+
+      if (!authHeader.startsWith("Bearer ") && trip.owner_id === userId) {
+        return res.status(401).json({
+          success: false,
+          error: "Authorization token required.",
         });
       }
 
@@ -710,8 +687,8 @@ app.post("/api/trips/invite/join", async (req, res) => {
                  phone = COALESCE(phone, $4),
                  email = COALESCE(email, $5),
                  status = 'active'
-             WHERE id = $6;`,
-            [userId, userName, userAvatar, userPhone || null, userEmail || null, ph.id]
+             WHERE id = $6 AND trip_id = $7;`,
+            [userId, userName, userAvatar, userPhone || null, userEmail || null, ph.id, trip.id]
           );
         } else {
           // Insert new member
@@ -724,7 +701,8 @@ app.post("/api/trips/invite/join", async (req, res) => {
               name = EXCLUDED.name,
               avatar_color = EXCLUDED.avatar_color,
               phone = COALESCE(EXCLUDED.phone, trip_members.phone),
-              email = COALESCE(EXCLUDED.email, trip_members.email);`,
+              email = COALESCE(EXCLUDED.email, trip_members.email)
+            WHERE public.trip_members.trip_id = EXCLUDED.trip_id;`,
             [memberId, trip.id, userId, userName, userAvatar, userPhone || null, userEmail || null]
           );
         }
@@ -790,13 +768,15 @@ app.post("/api/trips/invite/join", async (req, res) => {
 
   // Local fallback
   const store = getLocalStore();
-  const trip = store.trips.find(
-    (t: any) =>
-      (t.inviteCode && t.inviteCode.trim().toUpperCase() === clean) ||
-      (t.inviteCode && t.inviteCode.trim().toUpperCase() === `TRIP-${clean}`) ||
-      (t.inviteCode && t.inviteCode.replace("TRIP-", "").trim().toUpperCase() === clean) ||
-      t.id === raw.trim()
-  );
+  const trip = store.trips.find((t: any) => {
+    const codeVal = (t.inviteCode || t.invite_code || "").trim().toUpperCase();
+    if (!codeVal) return false;
+    return (
+      codeVal === clean ||
+      codeVal === `TRIP-${clean}` ||
+      codeVal.replace("TRIP-", "").trim() === clean
+    );
+  });
 
   if (!trip) {
     return res.status(404).json({
@@ -821,6 +801,7 @@ app.post("/api/trips/invite/join", async (req, res) => {
     });
     if (!trip.memberUserIds) trip.memberUserIds = [];
     if (!trip.memberUserIds.includes(userId)) trip.memberUserIds.push(userId);
+    saveLocalStore(store);
   }
 
   const members = store.trip_members.filter((m: any) => m.trip_id === trip.id);
@@ -906,9 +887,26 @@ app.post("/api/sync/mutation", authMiddleware, async (req: AuthRequest, res) => 
     return res.status(400).json({ success: false, error: "type and tripId are required" });
   }
 
-  // Authorization check: Verify user is a member of this trip (or creating a new trip where they are owner)
-  if (type === "SAVE_TRIP_SNAPSHOT" && (payload?.ownerId === req.userId || !payload?.id)) {
-    // Authorized new trip creation
+  // Authorization check: Verify user is a member of this trip (or creating a genuinely new trip where they are owner)
+  let tripExists = false;
+  if (pool) {
+    try {
+      const existsRes = await pool.query("SELECT id FROM public.trips WHERE id = $1 LIMIT 1;", [tripId]);
+      tripExists = existsRes.rows.length > 0;
+    } catch {}
+  } else {
+    const store = getLocalStore();
+    tripExists = store.trips.some((t: any) => t.id === tripId);
+  }
+
+  if (type === "SAVE_TRIP_SNAPSHOT" && !tripExists) {
+    // Creating a new trip: enforce that payload.id matches tripId and ownerId is the authenticated caller
+    if (payload?.id && payload.id !== tripId) {
+      return res.status(400).json({ success: false, error: "Trip ID mismatch in snapshot payload." });
+    }
+    if (payload?.ownerId && payload.ownerId !== req.userId) {
+      return res.status(403).json({ success: false, error: "Access denied: Cannot create a trip owned by another user." });
+    }
   } else {
     const authCheck = await checkTripAuthorization(tripId, req.userId, pool);
     if (!authCheck.canAccess) {
@@ -916,6 +914,9 @@ app.post("/api/sync/mutation", authMiddleware, async (req: AuthRequest, res) => 
     }
     if (type === "DELETE_TRIP" && !authCheck.isOwner) {
       return res.status(403).json({ success: false, error: "Access denied: Only the trip owner can delete this trip." });
+    }
+    if (authCheck.role === "viewer") {
+      return res.status(403).json({ success: false, error: "Access denied: Viewers have read-only access to this trip." });
     }
   }
 
@@ -934,8 +935,8 @@ app.post("/api/sync/mutation", authMiddleware, async (req: AuthRequest, res) => 
                      cancelled_by = COALESCE($3, cancelled_by),
                      cancelled_at = CASE WHEN $3 IS NOT NULL THEN NOW() ELSE cancelled_at END,
                      updated_at = NOW()
-                 WHERE id = $4;`,
-                [payment.status, payment.confirmedBy || null, payment.cancelledBy || null, payment.id]
+                 WHERE id = $4 AND trip_id = $5;`,
+                [payment.status, payment.confirmedBy || null, payment.cancelledBy || null, payment.id, tripId]
               );
             } else {
               await pool.query(
@@ -951,7 +952,8 @@ app.post("/api/sync/mutation", authMiddleware, async (req: AuthRequest, res) => 
                   status = EXCLUDED.status,
                   method = EXCLUDED.method,
                   note = EXCLUDED.note,
-                  updated_at = NOW();`,
+                  updated_at = NOW()
+                WHERE public.payments.trip_id = EXCLUDED.trip_id;`,
                 [
                   payment.id,
                   tripId,
@@ -976,7 +978,7 @@ app.post("/api/sync/mutation", authMiddleware, async (req: AuthRequest, res) => 
         case "DELETE_PAYMENT": {
           const paymentId = payload?.paymentId || payload?.id;
           if (paymentId) {
-            await pool.query("DELETE FROM public.payments WHERE id = $1;", [paymentId]);
+            await pool.query("DELETE FROM public.payments WHERE id = $1 AND trip_id = $2;", [paymentId, tripId]);
           }
           break;
         }
@@ -1017,7 +1019,8 @@ app.post("/api/sync/mutation", authMiddleware, async (req: AuthRequest, res) => 
                 notes = EXCLUDED.notes,
                 receipt_url = EXCLUDED.receipt_url,
                 deleted = EXCLUDED.deleted,
-                updated_at = NOW();`,
+                updated_at = NOW()
+              WHERE public.expenses.trip_id = EXCLUDED.trip_id;`,
               [
                 expense.id,
                 tripId,
@@ -1049,7 +1052,10 @@ app.post("/api/sync/mutation", authMiddleware, async (req: AuthRequest, res) => 
         case "DELETE_EXPENSE": {
           const expenseId = payload?.expenseId || payload?.id;
           if (expenseId) {
-            await pool.query("UPDATE public.expenses SET deleted = true, deleted_at = NOW() WHERE id = $1;", [expenseId]);
+            await pool.query("UPDATE public.expenses SET deleted = true, deleted_at = NOW() WHERE id = $1 AND trip_id = $2;", [
+              expenseId,
+              tripId,
+            ]);
           }
           break;
         }
@@ -1068,7 +1074,8 @@ app.post("/api/sync/mutation", authMiddleware, async (req: AuthRequest, res) => 
                 avatar_color = EXCLUDED.avatar_color,
                 phone = EXCLUDED.phone,
                 email = EXCLUDED.email,
-                status = EXCLUDED.status;`,
+                status = EXCLUDED.status
+              WHERE public.trip_members.trip_id = EXCLUDED.trip_id;`,
               [
                 memId,
                 tripId,
@@ -1088,17 +1095,18 @@ app.post("/api/sync/mutation", authMiddleware, async (req: AuthRequest, res) => 
         case "DELETE_MEMBER": {
           const memberId = payload?.memberId || payload?.id;
           if (memberId) {
-            await pool.query("DELETE FROM public.trip_members WHERE id = $1;", [memberId]);
+            await pool.query("DELETE FROM public.trip_members WHERE id = $1 AND trip_id = $2;", [memberId, tripId]);
           }
           break;
         }
 
         case "SAVE_TRIP_SNAPSHOT": {
           const trip = payload;
-          if (trip && trip.id) {
+          if (trip && (trip.id || tripId)) {
+            const targetTripId = tripId;
             const memberUserIds = Array.from(
               new Set([
-                trip.ownerId,
+                trip.ownerId || req.userId,
                 ...(trip.memberUserIds || []),
                 ...(trip.members || []).map((m: any) => m.userId || m.id),
               ].filter(Boolean))
@@ -1121,7 +1129,7 @@ app.post("/api/sync/mutation", authMiddleware, async (req: AuthRequest, res) => 
                 member_user_ids = EXCLUDED.member_user_ids,
                 updated_at = NOW();`,
               [
-                trip.id,
+                targetTripId,
                 trip.title || trip.name || "Untitled Trip",
                 trip.location || trip.destination || "Destination",
                 trip.destination || trip.location || "Destination",
@@ -1132,7 +1140,7 @@ app.post("/api/sync/mutation", authMiddleware, async (req: AuthRequest, res) => 
                 trip.ownerId || req.userId || "",
                 trip.ownerName || "Traveler",
                 JSON.stringify(memberUserIds),
-                trip.inviteCode || `TRIP-${trip.id.slice(-6).toUpperCase()}`,
+                trip.inviteCode || `TRIP-${targetTripId.slice(-6).toUpperCase()}`,
               ]
             );
           }
@@ -1151,29 +1159,33 @@ app.post("/api/sync/mutation", authMiddleware, async (req: AuthRequest, res) => 
     }
   }
 
-  // Local store fallback
+  // Local store fallback (strictly scoped by trip_id)
   const store = getLocalStore();
   if (type === "RECORD_PAYMENT" && payload?.id) {
-    const idx = store.payments.findIndex((p: any) => p.id === payload.id);
-    if (idx >= 0) store.payments[idx] = { ...store.payments[idx], ...payload };
-    else store.payments.push({ ...payload, trip_id: tripId });
+    const idx = store.payments.findIndex((p: any) => p.id === payload.id && p.trip_id === tripId);
+    if (idx >= 0) store.payments[idx] = { ...store.payments[idx], ...payload, trip_id: tripId };
+    else if (!store.payments.some((p: any) => p.id === payload.id)) {
+      store.payments.push({ ...payload, trip_id: tripId });
+    }
   } else if (type === "SAVE_EXPENSE" && payload?.id) {
     const safePayload = { ...payload, receiptUrl: sanitizeReceiptUrl(payload.receiptUrl) };
-    const idx = store.expenses.findIndex((e: any) => e.id === safePayload.id);
-    if (idx >= 0) store.expenses[idx] = { ...store.expenses[idx], ...safePayload };
-    else store.expenses.push({ ...safePayload, trip_id: tripId });
+    const idx = store.expenses.findIndex((e: any) => e.id === safePayload.id && e.trip_id === tripId);
+    if (idx >= 0) store.expenses[idx] = { ...store.expenses[idx], ...safePayload, trip_id: tripId };
+    else if (!store.expenses.some((e: any) => e.id === safePayload.id)) {
+      store.expenses.push({ ...safePayload, trip_id: tripId });
+    }
   }
   saveLocalStore(store);
 
   return res.json({ success: true, processedVia: "local_store" });
 });
 
-app.get("/api/download-audit-pdf", (_req, res) => {
+app.get("/api/download-audit-pdf", adminOnlyMiddleware, (_req, res) => {
   const filePath = path.resolve(__dirname, "public", "Spliito_Application_Review.pdf");
   res.download(filePath, "Spliito_Application_Review.pdf");
 });
 
-app.get("/api/cron/daily-check", async (_req, res) => {
+app.get("/api/cron/daily-check", cronOrAdminMiddleware, async (_req, res) => {
   try {
     const result = await runDiagnosticSweep("scheduled_2am");
     return res.json({ success: true, diagnostic: result });
@@ -1226,36 +1238,41 @@ app.all("/api/telegram/test", adminOnlyMiddleware, (req, res) => telegramTestHan
 app.all("/api/telegram/webhook", (req, res) => telegramWebhookHandler(req, res));
 app.all("/api/telegram/detect-chat", adminOnlyMiddleware, (req, res) => telegramDetectChatHandler(req, res));
 
+// Catch-all for any unmapped /api/* routes: enforce authentication first (401), then return JSON 404
+app.all("/api/*", authMiddleware, (_req, res) => {
+  return res.status(404).json({
+    success: false,
+    error: "API endpoint not found",
+  });
+});
+
 async function checkAndRunMissedDailyCheck() {
   try {
     const todayStr = new Date().toISOString().split("T")[0];
-    const now = new Date();
-    if (now.getHours() >= 2) {
-      let alreadyRanToday = false;
-      if (pool) {
-        try {
-          const res = await pool.query(
-            `SELECT id FROM public.health_checks WHERE check_type = 'scheduled_2am' AND executed_at::date = $1 LIMIT 1;`,
-            [todayStr]
-          );
-          if (res.rows.length > 0) alreadyRanToday = true;
-        } catch {}
-      }
-      const filePath = path.resolve(__dirname, "data", "health_checks.json");
-      if (!alreadyRanToday && fs.existsSync(filePath)) {
-        try {
-          const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-          if (Array.isArray(data)) {
-            const found = data.some((d: any) => d.check_type === "scheduled_2am" && d.executed_at && d.executed_at.startsWith(todayStr));
-            if (found) alreadyRanToday = true;
-          }
-        } catch {}
-      }
+    let alreadyRanToday = false;
+    if (pool) {
+      try {
+        const res = await pool.query(
+          `SELECT id FROM public.health_checks WHERE check_type = 'scheduled_2am' AND executed_at::date = $1 LIMIT 1;`,
+          [todayStr]
+        );
+        if (res.rows.length > 0) alreadyRanToday = true;
+      } catch {}
+    }
+    const filePath = path.resolve(__dirname, "data", "health_checks.json");
+    if (!alreadyRanToday && fs.existsSync(filePath)) {
+      try {
+        const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+        if (Array.isArray(data)) {
+          const found = data.some((d: any) => d.check_type === "scheduled_2am" && d.executed_at && d.executed_at.startsWith(todayStr));
+          if (found) alreadyRanToday = true;
+        }
+      } catch {}
+    }
 
-      if (!alreadyRanToday) {
-        console.log("[Scheduler] Missed daily 2 AM health check detected for today. Executing now...");
-        await runDiagnosticSweep("scheduled_2am");
-      }
+    if (!alreadyRanToday) {
+      console.log("[Scheduler] Missed daily 2 AM health check detected for today. Executing now...");
+      await runDiagnosticSweep("scheduled_2am");
     }
   } catch (err) {
     console.warn("[Scheduler] Error checking missed daily check:", err);
@@ -1265,7 +1282,7 @@ async function checkAndRunMissedDailyCheck() {
 function scheduleDailyNightCheck() {
   setTimeout(() => {
     checkAndRunMissedDailyCheck();
-  }, 10000);
+  }, 2000);
 
   const now = new Date();
   const next2am = new Date(now);
@@ -1380,6 +1397,17 @@ async function setupServer() {
       res.sendFile(path.resolve(distPath, "index.html"));
     });
   }
+
+  // Centralized Error Handling Middleware
+  app.use((err: any, req: Request, res: Response, next: NextFunction) => {
+    console.error(`[Error] Request ${(req as any).id || "unknown"}:`, err?.message || err);
+    if (res.headersSent) return next(err);
+    return res.status(500).json({
+      success: false,
+      error: "An unexpected internal server error occurred.",
+      requestId: (req as any).id || undefined,
+    });
+  });
 
   app.listen(PORT, () => {
     console.log(`TripSplit server running on http://localhost:${PORT}`);

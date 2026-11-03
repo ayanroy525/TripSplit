@@ -5,8 +5,10 @@ import crypto from "crypto";
 
 dotenv.config();
 
+import { getSessionSecret } from "../../api/_shared.ts";
+
 const rawConn = (process.env.POSTGRES_URL_NON_POOLING || process.env.POSTGRES_URL || "").replace(/\?.*$/, "");
-const SESSION_SECRET = process.env.SESSION_SECRET || process.env.AUTH_SECRET || "tripsplit_session_secret_dev";
+const SESSION_SECRET = getSessionSecret();
 
 function generateTestToken(userId: string, email: string = "", name: string = "Test"): string {
   const payload = {
@@ -135,5 +137,122 @@ describe("Backend Authorization & IDOR Security Guard", () => {
     // The returned trips must NOT contain the victim's trip
     const foundVictimTrip = data.trips.find((t: any) => t.id === trip.id);
     expect(foundVictimTrip).toBeUndefined();
+  });
+
+  it("rejects unauthenticated requests to all admin, cron, telegram, sync, and unknown API endpoints with 401", async () => {
+    const protectedEndpoints = [
+      { method: "GET", path: "/api/db/status" },
+      { method: "GET", path: "/api/health/history" },
+      { method: "POST", path: "/api/health/run-check" },
+      { method: "GET", path: "/api/cron/daily-check" },
+      { method: "GET", path: "/api/telegram/settings" },
+      { method: "POST", path: "/api/telegram/settings" },
+      { method: "POST", path: "/api/telegram/test" },
+      { method: "GET", path: "/api/telegram/detect-chat" },
+      { method: "GET", path: "/api/telegram/webhook" },
+      { method: "GET", path: "/api/download-audit-pdf" },
+      { method: "POST", path: "/api/sync/mutation" },
+      { method: "POST", path: "/api/auth/revoke-all-sessions" },
+      { method: "GET", path: "/api/unknown-nonexistent-endpoint" },
+    ];
+
+    for (const ep of protectedEndpoints) {
+      const res = await fetch(`${baseUrl}${ep.path}`, { method: ep.method });
+      expect(res.status, `Expected 401 on ${ep.method} ${ep.path}`).toBe(401);
+    }
+  });
+
+  it("rejects spoofed X-Admin-Email header without a valid signed Bearer token with 401", async () => {
+    const res = await fetch(`${baseUrl}/api/db/status`, {
+      headers: {
+        "X-Admin-Email": "ayanroy525@gmail.com",
+      },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("rejects authenticated non-admin user from accessing admin and diagnostic endpoints with 403", async () => {
+    const nonAdminToken = generateTestToken("regular_user_123", "regular.traveler@example.com", "Regular User");
+    const adminEndpoints = [
+      { method: "GET", path: "/api/db/status" },
+      { method: "GET", path: "/api/health/history" },
+      { method: "POST", path: "/api/health/run-check" },
+      { method: "GET", path: "/api/cron/daily-check" },
+      { method: "GET", path: "/api/telegram/settings" },
+      { method: "POST", path: "/api/telegram/settings" },
+      { method: "POST", path: "/api/telegram/test" },
+      { method: "GET", path: "/api/telegram/detect-chat" },
+      { method: "GET", path: "/api/telegram/webhook" },
+    ];
+
+    for (const ep of adminEndpoints) {
+      const res = await fetch(`${baseUrl}${ep.path}`, {
+        method: ep.method,
+        headers: {
+          Authorization: `Bearer ${nonAdminToken}`,
+        },
+      });
+      expect(res.status, `Expected 403 on ${ep.method} ${ep.path} for non-admin`).toBe(403);
+    }
+  });
+
+  it("allows authenticated admin (ayanroy525@gmail.com) to access /api/db/status and /api/health/history", async () => {
+    const adminToken = generateTestToken("admin_user_id", "ayanroy525@gmail.com", "Ayan Roy");
+
+    const dbRes = await fetch(`${baseUrl}/api/db/status`, {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    expect(dbRes.status).toBe(200);
+
+    const histRes = await fetch(`${baseUrl}/api/health/history`, {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    expect(histRes.status).toBe(200);
+  });
+
+  it("blocks SAVE_TRIP_SNAPSHOT privilege escalation on an existing trip by a non-member", async () => {
+    if (!pool) return;
+    const tripRes = await pool.query("SELECT id, owner_id FROM public.trips WHERE owner_id IS NOT NULL LIMIT 1;");
+    if (tripRes.rows.length === 0) return;
+    const trip = tripRes.rows[0];
+
+    const attackerId = "attacker_snapshot_hijack_999";
+    const attackerToken = generateTestToken(attackerId, "attacker@example.com");
+
+    const res = await fetch(`${baseUrl}/api/sync/mutation`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${attackerToken}`,
+      },
+      body: JSON.stringify({
+        type: "SAVE_TRIP_SNAPSHOT",
+        tripId: trip.id,
+        payload: {
+          id: trip.id,
+          title: "Hijacked Trip",
+          ownerId: attackerId, // Attacker spoofing ownerId to match their own userId!
+          memberUserIds: [attackerId],
+        },
+      }),
+    });
+
+    expect(res.status).toBe(403);
+    const data = await res.json();
+    expect(data.success).toBe(false);
+  });
+
+  it("prevents looking up or joining a trip by internal trip ID instead of secret invite code", async () => {
+    if (!pool) return;
+    const tripRes = await pool.query("SELECT id FROM public.trips LIMIT 1;");
+    if (tripRes.rows.length === 0) return;
+    const tripId = tripRes.rows[0].id;
+
+    const lookupRes = await fetch(`${baseUrl}/api/trips/invite/lookup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ inviteCode: tripId }),
+    });
+    expect(lookupRes.status).toBe(404);
   });
 });

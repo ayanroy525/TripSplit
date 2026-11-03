@@ -1,21 +1,21 @@
-import { pool, verifySessionToken, setCorsHeaders, sendJson } from "./_shared.ts";
+import { pool, verifyAuthRequest, setCorsHeaders, sendJson } from "./_shared.ts";
 
 export default async function handler(req: any, res: any) {
-  setCorsHeaders(res);
+  setCorsHeaders(res, req);
   if (req.method === "OPTIONS") {
     res.statusCode = 204;
     return res.end();
   }
 
-  const authHeader = req.headers.authorization || "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  const session = verifySessionToken(token);
-
-  if (!session || !session.userId) {
-    return sendJson(res, 401, { success: false, error: "Authentication required" });
+  const authResult = await verifyAuthRequest(req);
+  if (!authResult.authorized || !authResult.userId) {
+    return sendJson(res, authResult.statusCode || 401, {
+      success: false,
+      error: authResult.error || "Authentication required",
+    });
   }
 
-  const userId = session.userId;
+  const userId = authResult.userId;
 
   if (!pool) {
     return sendJson(res, 503, { success: false, error: "Database offline" });

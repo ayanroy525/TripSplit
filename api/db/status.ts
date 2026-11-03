@@ -1,10 +1,18 @@
-import { pool, setCorsHeaders, sendJson } from "../_shared.ts";
+import { pool, setCorsHeaders, sendJson, verifyAdminRequest } from "../_shared.ts";
 
 export default async function handler(req: any, res: any) {
-  setCorsHeaders(res);
+  setCorsHeaders(res, req);
   if (req.method === "OPTIONS") {
     res.statusCode = 204;
     return res.end();
+  }
+
+  const adminAuth = await verifyAdminRequest(req);
+  if (!adminAuth.authorized) {
+    return sendJson(res, adminAuth.statusCode || 403, {
+      success: false,
+      error: adminAuth.error || "Access Denied: Restricted to application administrator.",
+    });
   }
 
   if (!pool) {
@@ -13,7 +21,7 @@ export default async function handler(req: any, res: any) {
 
   const start = Date.now();
   try {
-    const verRes = await pool.query("SELECT version();");
+    await pool.query("SELECT version();");
     const latencyMs = Date.now() - start;
 
     const tablesRes = await pool.query(`
@@ -33,10 +41,12 @@ export default async function handler(req: any, res: any) {
       }
     }
 
+    delete tableCounts.health_checks_config;
+
     return sendJson(res, 200, {
       connected: true,
       latencyMs,
-      version: verRes.rows[0]?.version,
+      engine: "PostgreSQL",
       tables: tableCounts,
       checkedAt: new Date().toISOString(),
     });
