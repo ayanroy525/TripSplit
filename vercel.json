@@ -2,6 +2,30 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "rewrites": [
     {
+      "source": "/api/auth/update-password",
+      "destination": "/api/auth/login?action=update-password"
+    },
+    {
+      "source": "/api/auth/revoke-all-sessions",
+      "destination": "/api/auth/login?action=revoke-all-sessions"
+    },
+    {
+      "source": "/api/trips/invite/lookup",
+      "destination": "/api/trips/invite-lookup?action=invite-lookup"
+    },
+    {
+      "source": "/api/trips/invite/join",
+      "destination": "/api/trips/invite-join?action=invite-join"
+    },
+    {
+      "source": "/api/trips/join",
+      "destination": "/api/trips/invite-join?action=invite-join"
+    },
+    {
+      "source": "/api/trips/invite/:code",
+      "destination": "/api/trips/invite-lookup?action=invite-lookup&code=:code"
+    },
+    {
       "source": "/api/telegram/settings",
       "destination": "/api/telegram/admin?action=settings"
     },

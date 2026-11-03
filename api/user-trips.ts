@@ -1,4 +1,4 @@
-import { pool, verifyAuthRequest, setCorsHeaders, sendJson } from "./_shared.ts";
+import { pool, verifyAuthRequest, setCorsHeaders, sendJson, getFullTripsForUser } from "./_shared";
 
 export default async function handler(req: any, res: any) {
   setCorsHeaders(res, req);
@@ -18,7 +18,7 @@ export default async function handler(req: any, res: any) {
   const userId = authResult.userId;
 
   if (!pool) {
-    return sendJson(res, 503, { success: false, error: "Database offline" });
+    return sendJson(res, 200, { success: true, trips: getFullTripsForUser(userId) });
   }
 
   try {
@@ -39,26 +39,57 @@ export default async function handler(req: any, res: any) {
     const tripsRes = await pool.query(tripsQuery, [userId]);
     const trips = tripsRes.rows;
 
-    const fullTrips = [];
-    for (const trip of trips) {
-      const [membersRes, expensesRes, paymentsRes, activitiesRes] = await Promise.all([
-        pool.query("SELECT * FROM public.trip_members WHERE trip_id = $1 ORDER BY joined_at ASC;", [trip.id]),
-        pool.query(
-          "SELECT * FROM public.expenses WHERE trip_id = $1 AND COALESCE(deleted, false) = false ORDER BY created_at DESC;",
-          [trip.id]
-        ),
-        pool.query("SELECT * FROM public.payments WHERE trip_id = $1 ORDER BY created_at DESC;", [trip.id]),
-        pool.query("SELECT * FROM public.activities WHERE trip_id = $1 ORDER BY created_at DESC LIMIT 50;", [trip.id]),
-      ]);
-
-      fullTrips.push({
-        ...trip,
-        members: membersRes.rows,
-        expenses: expensesRes.rows,
-        payments: paymentsRes.rows,
-        activities: activitiesRes.rows,
-      });
+    if (trips.length === 0) {
+      return sendJson(res, 200, { success: true, trips: [] });
     }
+
+    // Batch-fetch all relational rows in 4 parallel queries instead of 4 * N queries
+    const tripIds = trips.map((t: any) => t.id);
+    const [membersRes, expensesRes, paymentsRes, activitiesRes] = await Promise.all([
+      pool.query("SELECT * FROM public.trip_members WHERE trip_id = ANY($1::text[]) ORDER BY joined_at ASC;", [tripIds]),
+      pool.query(
+        "SELECT * FROM public.expenses WHERE trip_id = ANY($1::text[]) AND COALESCE(deleted, false) = false ORDER BY created_at DESC;",
+        [tripIds]
+      ),
+      pool.query("SELECT * FROM public.payments WHERE trip_id = ANY($1::text[]) ORDER BY created_at DESC;", [tripIds]),
+      pool.query("SELECT * FROM public.activities WHERE trip_id = ANY($1::text[]) ORDER BY created_at DESC;", [tripIds]),
+    ]);
+
+    const membersByTrip = new Map<string, any[]>();
+    const expensesByTrip = new Map<string, any[]>();
+    const paymentsByTrip = new Map<string, any[]>();
+    const activitiesByTrip = new Map<string, any[]>();
+
+    for (const m of membersRes.rows) {
+      const list = membersByTrip.get(m.trip_id) || [];
+      list.push(m);
+      membersByTrip.set(m.trip_id, list);
+    }
+    for (const e of expensesRes.rows) {
+      const list = expensesByTrip.get(e.trip_id) || [];
+      list.push(e);
+      expensesByTrip.set(e.trip_id, list);
+    }
+    for (const p of paymentsRes.rows) {
+      const list = paymentsByTrip.get(p.trip_id) || [];
+      list.push(p);
+      paymentsByTrip.set(p.trip_id, list);
+    }
+    for (const a of activitiesRes.rows) {
+      const list = activitiesByTrip.get(a.trip_id) || [];
+      if (list.length < 50) {
+        list.push(a);
+        activitiesByTrip.set(a.trip_id, list);
+      }
+    }
+
+    const fullTrips = trips.map((trip: any) => ({
+      ...trip,
+      members: membersByTrip.get(trip.id) || [],
+      expenses: expensesByTrip.get(trip.id) || [],
+      payments: paymentsByTrip.get(trip.id) || [],
+      activities: activitiesByTrip.get(trip.id) || [],
+    }));
 
     return sendJson(res, 200, { success: true, trips: fullTrips });
   } catch (err: any) {

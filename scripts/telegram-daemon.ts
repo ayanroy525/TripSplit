@@ -1,8 +1,8 @@
 import dotenv from "dotenv";
 dotenv.config();
 
-import { getTelegramConfig } from "../api/telegram/_client.ts";
-import { processTelegramUpdate } from "../api/telegram/_processor.ts";
+import { getTelegramConfig } from "../api/telegram/_client";
+import { processTelegramUpdate } from "../api/telegram/_processor";
 
 let lastUpdateId = 0;
 

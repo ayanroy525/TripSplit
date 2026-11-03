@@ -1,5 +1,5 @@
-import { setCorsHeaders, sendJson, verifyAdminRequest } from "../_shared.ts";
-import { getTelegramConfig, saveTelegramConfig } from "./_client.ts";
+import { setCorsHeaders, sendJson, verifyAdminRequest } from "../_shared";
+import { getTelegramConfig, saveTelegramConfig } from "./_client";
 
 export default async function handler(req: any, res: any) {
   setCorsHeaders(res, req);

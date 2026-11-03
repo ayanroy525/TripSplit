@@ -1,4 +1,4 @@
-import { pool, setCorsHeaders, sendJson, verifyAdminRequest } from "../_shared.ts";
+import { pool, setCorsHeaders, sendJson, verifyAdminRequest } from "../_shared";
 
 export default async function handler(req: any, res: any) {
   setCorsHeaders(res, req);

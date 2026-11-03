@@ -102,6 +102,17 @@ export function getValidatedSessionSecret(): string {
       .update("tripsplit_auth_session_secret_seed")
       .digest("hex");
   }
+  const vercelFallbackSeed =
+    process.env.VERCEL_PROJECT_ID ||
+    process.env.SUPABASE_ANON_KEY ||
+    process.env.VITE_SUPABASE_ANON_KEY ||
+    "";
+  if (vercelFallbackSeed.trim() !== "") {
+    return crypto
+      .createHmac("sha256", vercelFallbackSeed.trim())
+      .update("tripsplit_auth_session_secret_seed")
+      .digest("hex");
+  }
 
   // If in production and NO secret or infrastructure credentials exist at all:
   if (process.env.NODE_ENV === "production") {
@@ -708,6 +719,7 @@ export interface LocalMemberRecord {
   avatar_color?: string;
   role?: string;
   joined_at?: string;
+  status?: string;
 }
 
 export interface ServerStoreSchema {
@@ -728,62 +740,22 @@ let inMemoryStore: ServerStoreSchema = {
   activities: [],
 };
 
-function getStoragePath(): string | null {
-  try {
-    const candidate = path.resolve(process.cwd(), "data", "server_store.json");
-    return candidate;
-  } catch {
-    return null;
-  }
-}
-
 export function getLocalStore(): ServerStoreSchema {
-  try {
-    const filePath = getStoragePath();
-    if (filePath && fs.existsSync(filePath)) {
-      const raw = fs.readFileSync(filePath, "utf-8");
-      const parsed = JSON.parse(raw);
-      const diskUsers = Array.isArray(parsed.users) ? parsed.users : inMemoryStore.users;
-      const users = diskUsers.map((u: any) => {
-        const memUser = inMemoryStore.users.find((mu) => mu.id === u.id);
-        return {
-          ...u,
-          password_hash: memUser?.password_hash || "",
-        };
-      });
-      return {
-        users,
-        trips: Array.isArray(parsed.trips) ? parsed.trips : inMemoryStore.trips,
-        trip_members: Array.isArray(parsed.trip_members) ? parsed.trip_members : inMemoryStore.trip_members,
-        expenses: Array.isArray(parsed.expenses) ? parsed.expenses : inMemoryStore.expenses,
-        payments: Array.isArray(parsed.payments) ? parsed.payments : inMemoryStore.payments,
-        activities: Array.isArray(parsed.activities) ? parsed.activities : inMemoryStore.activities,
-      };
-    }
-  } catch {}
   return inMemoryStore;
 }
 
 export const loadLocalStore = getLocalStore;
 
 export function saveLocalStore(data: ServerStoreSchema): void {
-  inMemoryStore = data;
-  try {
-    const filePath = getStoragePath();
-    if (filePath) {
-      const dir = path.dirname(filePath);
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      // Security: Strip password_hash from JSON persistence so hashes are never stored on filesystem
-      const sanitizedData = {
-        ...data,
-        users: (data.users || []).map(({ password_hash, ...u }) => ({
-          ...u,
-          password_hash: "",
-        })),
-      };
-      fs.writeFileSync(filePath, JSON.stringify(sanitizedData, null, 2), "utf-8");
-    }
-  } catch {}
+  // Security: Keep fallback state strictly in-memory; never write user/auth records to disk
+  inMemoryStore = {
+    users: Array.isArray(data.users) ? data.users : [],
+    trips: Array.isArray(data.trips) ? data.trips : [],
+    trip_members: Array.isArray(data.trip_members) ? data.trip_members : [],
+    expenses: Array.isArray(data.expenses) ? data.expenses : [],
+    payments: Array.isArray(data.payments) ? data.payments : [],
+    activities: Array.isArray(data.activities) ? data.activities : [],
+  };
 }
 
 export function findLocalUser(identifier: string): LocalUserRecord | null {
@@ -835,3 +807,145 @@ export function saveLocalUser(user: LocalUserRecord): void {
   else store.users.push(user);
   saveLocalStore(store);
 }
+
+export function getFullTripsForUser(userId: string) {
+  const store = getLocalStore();
+  const userObj = store.users.find((u) => u.id === userId);
+  const userEmail = userObj?.email?.trim().toLowerCase() || "";
+  const userPhoneDigits = (userObj?.phone || "").replace(/\D/g, "");
+
+  const memberTripIds = new Set(
+    store.trip_members
+      .filter((m) => {
+        if (m.user_id === userId || m.id === userId) return true;
+        if (userEmail && m.email && m.email.trim().toLowerCase() === userEmail) return true;
+        if (userPhoneDigits.length >= 7 && m.phone) {
+          const mDigits = m.phone.replace(/\D/g, "");
+          if (mDigits.length >= 7 && (mDigits.endsWith(userPhoneDigits) || userPhoneDigits.endsWith(mDigits))) {
+            return true;
+          }
+        }
+        return false;
+      })
+      .map((m) => m.trip_id)
+  );
+
+  const matchingTrips = store.trips.filter((t) => {
+    if (t.owner_id === userId) return true;
+    if (Array.isArray(t.member_user_ids) && t.member_user_ids.includes(userId)) return true;
+    if (memberTripIds.has(t.id)) return true;
+    return false;
+  });
+
+  return matchingTrips.map((trip) => ({
+    ...trip,
+    members: store.trip_members.filter((m) => m.trip_id === trip.id),
+    expenses: store.expenses.filter((e) => e.trip_id === trip.id && !e.deleted),
+    payments: store.payments.filter((p) => p.trip_id === trip.id),
+    activities: store.activities.filter((a) => a.trip_id === trip.id).slice(0, 50),
+  }));
+}
+
+/**
+ * Server-side Smart User-Member Linking:
+ * Links any invited placeholder rows in public.trip_members matching the user's email or phone
+ * to the authenticated userId and adds userId to public.trips.member_user_ids.
+ */
+export async function linkUserToTripMembersInDb(
+  dbPool: any,
+  userId: string,
+  email?: string | null,
+  phone?: string | null,
+  name?: string | null
+): Promise<{ linkedTripsCount: number; linkedMembersCount: number }> {
+  const cleanEmail = (email || "").trim().toLowerCase();
+  const cleanDigits = (phone || "").replace(/\D/g, "");
+  const phoneTail = cleanDigits.length >= 10 ? cleanDigits.slice(-10) : cleanDigits.length >= 7 ? cleanDigits : "";
+
+  if (!userId || (!cleanEmail && !phoneTail)) {
+    return { linkedTripsCount: 0, linkedMembersCount: 0 };
+  }
+
+  const linkedTripIds = new Set<string>();
+  let linkedMembersCount = 0;
+
+  // 1. Update in-memory store
+  const store = getLocalStore();
+  for (const m of store.trip_members) {
+    const emailMatch = cleanEmail && m.email && m.email.trim().toLowerCase() === cleanEmail;
+    const mDigits = (m.phone || "").replace(/\D/g, "");
+    const phoneMatch =
+      phoneTail &&
+      mDigits.length >= 7 &&
+      (mDigits.endsWith(phoneTail) || phoneTail.endsWith(mDigits));
+
+    if ((emailMatch || phoneMatch) && m.user_id !== userId) {
+      m.user_id = userId;
+      if ((!m.name || m.name === "Traveler" || m.name === "Member" || m.name === "Guest") && name) {
+        m.name = name;
+      }
+      linkedTripIds.add(m.trip_id);
+      linkedMembersCount++;
+    }
+  }
+  for (const t of store.trips) {
+    if (linkedTripIds.has(t.id)) {
+      const current = Array.isArray(t.member_user_ids) ? t.member_user_ids : [];
+      if (!current.includes(userId)) {
+        t.member_user_ids = [...current, userId];
+      }
+    }
+  }
+
+  // 2. Update PostgreSQL if available
+  if (dbPool) {
+    try {
+      const matchRes = await dbPool.query(
+        `UPDATE public.trip_members
+         SET user_id = $1,
+             email = COALESCE(NULLIF(TRIM(email), ''), $2),
+             phone = COALESCE(NULLIF(TRIM(phone), ''), $3),
+             name = CASE
+               WHEN name IS NULL OR TRIM(name) = '' OR name IN ('Member', 'Guest', 'Traveler')
+               THEN COALESCE(NULLIF(TRIM($4), ''), name)
+               ELSE name
+             END
+         WHERE (user_id IS NULL OR user_id <> $1)
+           AND (
+             ($2 <> '' AND LOWER(TRIM(COALESCE(email, ''))) = $2)
+             OR ($5 <> '' AND LENGTH(regexp_replace(COALESCE(phone, ''), '\\D', '', 'g')) >= 7
+                 AND RIGHT(regexp_replace(COALESCE(phone, ''), '\\D', '', 'g'), LENGTH($5)) = $5)
+           )
+         RETURNING trip_id;`,
+        [userId, cleanEmail, phone || null, name || null, phoneTail]
+      );
+
+      for (const row of matchRes.rows) {
+        if (row.trip_id) {
+          linkedTripIds.add(row.trip_id);
+          linkedMembersCount++;
+        }
+      }
+
+      if (linkedTripIds.size > 0) {
+        const tripIdList = Array.from(linkedTripIds);
+        await dbPool.query(
+          `UPDATE public.trips
+           SET member_user_ids = CASE
+             WHEN COALESCE(member_user_ids, '[]'::jsonb) @> to_jsonb($1::text)
+             THEN COALESCE(member_user_ids, '[]'::jsonb)
+             ELSE COALESCE(member_user_ids, '[]'::jsonb) || to_jsonb($1::text)
+           END,
+           updated_at = NOW()
+           WHERE id = ANY($2::text[]);`,
+          [userId, tripIdList]
+        );
+      }
+    } catch (err: any) {
+      console.warn("Notice in linkUserToTripMembersInDb:", err?.message || err);
+    }
+  }
+
+  return { linkedTripsCount: linkedTripIds.size, linkedMembersCount };
+}
+

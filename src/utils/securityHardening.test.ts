@@ -15,9 +15,9 @@ import {
   saveLocalStore,
   loadLocalStore,
   type LocalUserRecord,
-} from "../../api/_shared.ts";
-import { getTelegramWebhookSecret } from "../../api/telegram/_client.ts";
-import { resolveSupabaseConfig } from "./supabaseClient.ts";
+} from "../../api/_shared";
+import { getTelegramWebhookSecret } from "../../api/telegram/_client";
+import { resolveSupabaseConfig } from "./supabaseClient";
 
 describe("Security Hardening Suite", () => {
   const baseUrl = "http://localhost:3000";
@@ -29,6 +29,9 @@ describe("Security Hardening Suite", () => {
       const prevAuthSecret = process.env.AUTH_SECRET;
       const prevServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
       const prevPostgres = process.env.POSTGRES_URL;
+      const prevVercelProj = process.env.VERCEL_PROJECT_ID;
+      const prevSupaAnon = process.env.SUPABASE_ANON_KEY;
+      const prevViteSupaAnon = process.env.VITE_SUPABASE_ANON_KEY;
 
       try {
         process.env.NODE_ENV = "production";
@@ -36,6 +39,9 @@ describe("Security Hardening Suite", () => {
         delete process.env.AUTH_SECRET;
         delete process.env.SUPABASE_SERVICE_ROLE_KEY;
         delete process.env.POSTGRES_URL;
+        delete process.env.VERCEL_PROJECT_ID;
+        delete process.env.SUPABASE_ANON_KEY;
+        delete process.env.VITE_SUPABASE_ANON_KEY;
 
         expect(() => getSessionSecret()).toThrow(/SESSION_SECRET or AUTH_SECRET environment variable is required/);
       } finally {
@@ -44,6 +50,9 @@ describe("Security Hardening Suite", () => {
         if (prevAuthSecret) process.env.AUTH_SECRET = prevAuthSecret;
         if (prevServiceKey) process.env.SUPABASE_SERVICE_ROLE_KEY = prevServiceKey;
         if (prevPostgres) process.env.POSTGRES_URL = prevPostgres;
+        if (prevVercelProj) process.env.VERCEL_PROJECT_ID = prevVercelProj;
+        if (prevSupaAnon) process.env.SUPABASE_ANON_KEY = prevSupaAnon;
+        if (prevViteSupaAnon) process.env.VITE_SUPABASE_ANON_KEY = prevViteSupaAnon;
       }
     });
 

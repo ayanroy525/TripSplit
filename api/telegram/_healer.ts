@@ -1,4 +1,4 @@
-import { pool } from "../_shared.ts";
+import { pool } from "../_shared";
 
 export interface HealResult {
   success: boolean;

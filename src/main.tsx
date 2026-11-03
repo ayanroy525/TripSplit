@@ -1,10 +1,10 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import App from './App.tsx';
-import { ThemeProvider } from './context/ThemeContext.tsx';
-import { AuthProvider } from './context/AuthContext.tsx';
-import { NotificationProvider } from './context/NotificationContext.tsx';
-import { OfflineSyncProvider } from './context/OfflineSyncContext.tsx';
+import App from './App';
+import { ThemeProvider } from './context/ThemeContext';
+import { AuthProvider } from './context/AuthContext';
+import { NotificationProvider } from './context/NotificationContext';
+import { OfflineSyncProvider } from './context/OfflineSyncContext';
 import './index.css';
 
 createRoot(document.getElementById('root')!).render(

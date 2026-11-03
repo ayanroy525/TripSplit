@@ -20,9 +20,9 @@
         "./*"
       ]
     },
-    "allowImportingTsExtensions": true,
     "noEmit": true,
     "types": [
+      "node",
       "vite/client",
       "vite-plugin-pwa/client"
     ]

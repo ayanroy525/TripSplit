@@ -1,7 +1,7 @@
-import settingsHandler from "./_settings.ts";
-import testHandler from "./_test.ts";
-import detectChatHandler from "./_detect-chat.ts";
-import { setCorsHeaders, sendJson, verifyAdminRequest } from "../_shared.ts";
+import settingsHandler from "./_settings";
+import testHandler from "./_test";
+import detectChatHandler from "./_detect-chat";
+import { setCorsHeaders, sendJson, verifyAdminRequest } from "../_shared";
 
 export default async function handler(req: any, res: any) {
   setCorsHeaders(res, req);

@@ -3,21 +3,23 @@ import {
   hashPasswordNode,
   verifyPasswordMatchNode,
   generateSessionToken,
+  verifyAuthRequest,
   setCorsHeaders,
   parseBody,
   sendJson,
   findLocalUser,
-  findLocalMember,
   saveLocalUser,
+  getLocalStore,
+  saveLocalStore,
+  linkUserToTripMembersInDb,
   checkRateLimit,
   resetRateLimit,
   getClientIp,
   logSecurityEvent,
-  type LocalUserRecord,
-} from "../_shared.ts";
+} from "../_shared";
 
 export default async function handler(req: any, res: any) {
-  setCorsHeaders(res);
+  setCorsHeaders(res, req);
 
   if (req.method === "OPTIONS") {
     res.statusCode = 204;
@@ -28,6 +30,167 @@ export default async function handler(req: any, res: any) {
     return sendJson(res, 405, { success: false, error: "Method Not Allowed" });
   }
 
+  const url = String(req.url || "");
+  const body = parseBody(req);
+  const queryAction = String(req.query?.action || body?.action || "").trim();
+
+  // 1. Handle /api/auth/revoke-all-sessions (or ?action=revoke-all-sessions)
+  if (queryAction === "revoke-all-sessions" || url.includes("/revoke-all-sessions")) {
+    const authResult = await verifyAuthRequest(req);
+    if (!authResult.authorized || !authResult.userId) {
+      return sendJson(res, authResult.statusCode || 401, {
+        success: false,
+        error: authResult.error || "Unauthorized",
+      });
+    }
+
+    const userId = authResult.userId;
+    if (pool) {
+      try {
+        await pool.query(
+          "UPDATE public.users SET token_version = COALESCE(token_version, 1) + 1, updated_at = NOW() WHERE id = $1;",
+          [userId]
+        );
+      } catch (err: any) {
+        console.warn("Notice updating token_version in pool:", err?.message || err);
+      }
+    }
+
+    const store = getLocalStore();
+    const u = store.users.find((u) => u.id === userId);
+    if (u) {
+      (u as any).token_version = ((u as any).token_version || 1) + 1;
+      saveLocalStore(store);
+    }
+
+    logSecurityEvent("AUTH_SESSIONS_REVOKED", { userId, ip: getClientIp(req) });
+    return sendJson(res, 200, {
+      success: true,
+      message: "All existing sessions have been revoked. Please log in again with new credentials.",
+    });
+  }
+
+  // 2. Handle /api/auth/update-password (or ?action=update-password)
+  if (queryAction === "update-password" || url.includes("/update-password")) {
+    const { newPassword, email: bodyEmail } = body;
+    if (!newPassword || typeof newPassword !== "string" || newPassword.length < 6) {
+      return sendJson(res, 400, {
+        success: false,
+        error: "Password must be at least 6 characters long.",
+      });
+    }
+
+    let resolvedUserId = "";
+    let resolvedEmail = (bodyEmail || "").trim().toLowerCase();
+
+    // First check standard backend session / Supabase bearer token via verifyAuthRequest
+    const authResult = await verifyAuthRequest(req);
+    if (authResult.authorized && authResult.userId) {
+      resolvedUserId = authResult.userId;
+      if (authResult.session?.email) {
+        resolvedEmail = authResult.session.email.trim().toLowerCase();
+      }
+    } else {
+      // Also support Supabase recovery token verification via Supabase Auth REST endpoint
+      const authHeader = String(req.headers?.authorization || req.headers?.Authorization || "");
+      const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+      const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || "";
+      const supabaseKey =
+        process.env.SUPABASE_SERVICE_ROLE_KEY ||
+        process.env.VITE_SUPABASE_ANON_KEY ||
+        process.env.SUPABASE_ANON_KEY ||
+        "";
+
+      if (bearerToken && supabaseUrl && supabaseKey) {
+        try {
+          const userResp = await fetch(`${supabaseUrl.replace(/\/$/, "")}/auth/v1/user`, {
+            headers: {
+              Authorization: `Bearer ${bearerToken}`,
+              apikey: supabaseKey,
+            },
+          });
+          if (userResp.ok) {
+            const supaUser = await userResp.json();
+            if (supaUser && supaUser.email) {
+              resolvedEmail = String(supaUser.email).trim().toLowerCase();
+              resolvedUserId = supaUser.id || "";
+            }
+          }
+        } catch (err) {
+          console.warn("Notice verifying Supabase recovery token:", err);
+        }
+      }
+    }
+
+    if (!resolvedUserId && !resolvedEmail) {
+      return sendJson(res, 401, {
+        success: false,
+        error: "Unauthorized: Valid session or recovery token required to update password.",
+      });
+    }
+
+    const newHashed = hashPasswordNode(newPassword);
+    let updatedUser: any = null;
+    let newTokenVersion = 1;
+
+    if (pool) {
+      try {
+        const updateRes = await pool.query(
+          `UPDATE public.users
+           SET password_hash = $1,
+               token_version = COALESCE(token_version, 1) + 1,
+               updated_at = NOW()
+           WHERE ($2 <> '' AND id = $2)
+              OR ($3 <> '' AND LOWER(TRIM(COALESCE(email, ''))) = $3)
+           RETURNING id, email, name, token_version;`,
+          [newHashed, resolvedUserId, resolvedEmail]
+        );
+        updatedUser = updateRes.rows[0];
+        if (updatedUser) {
+          newTokenVersion = Number(updatedUser.token_version || 1);
+        }
+      } catch (err: any) {
+        console.warn("Notice updating password in PostgreSQL:", err?.message || err);
+      }
+    }
+
+    const store = getLocalStore();
+    const localU = store.users.find(
+      (u) =>
+        (resolvedUserId && u.id === resolvedUserId) ||
+        (resolvedEmail && u.email && u.email.trim().toLowerCase() === resolvedEmail)
+    );
+    if (localU) {
+      localU.password_hash = newHashed;
+      localU.updated_at = new Date().toISOString();
+      (localU as any).token_version = ((localU as any).token_version || 1) + 1;
+      newTokenVersion = (localU as any).token_version;
+      saveLocalStore(store);
+      if (!updatedUser) {
+        updatedUser = localU;
+      }
+    }
+
+    const finalUserId = updatedUser?.id || resolvedUserId;
+    const finalEmail = updatedUser?.email || resolvedEmail;
+    const finalName = updatedUser?.name || "Traveler";
+    const freshToken = finalUserId
+      ? generateSessionToken(finalUserId, finalEmail, finalName, newTokenVersion)
+      : undefined;
+
+    logSecurityEvent("AUTH_PASSWORD_UPDATED", {
+      userId: finalUserId,
+      ip: getClientIp(req),
+    });
+
+    return sendJson(res, 200, {
+      success: true,
+      token: freshToken,
+      message: "Password updated and synchronized across all sign-in methods.",
+    });
+  }
+
+  // 3. Standard Login Flow
   const clientIp = getClientIp(req);
   const ipRate = checkRateLimit(`login_ip_${clientIp}`, 10, 5 * 60 * 1000);
   if (!ipRate.allowed) {
@@ -37,7 +200,6 @@ export default async function handler(req: any, res: any) {
     });
   }
 
-  const body = parseBody(req);
   const { emailOrPhone, password } = body;
   const rawInput = (emailOrPhone || "").trim();
   const inputPassword = password || "";
@@ -67,7 +229,7 @@ export default async function handler(req: any, res: any) {
   if (pool) {
     try {
       const usersQuery = `
-        SELECT id, email, name, phone, avatar_color, avatar_url, bio, password_hash, created_at
+        SELECT id, email, name, phone, avatar_color, avatar_url, bio, password_hash, COALESCE(token_version, 1) AS token_version, created_at
         FROM public.users
         WHERE LOWER(TRIM(COALESCE(email, ''))) = $1
            OR ($2 <> '' AND regexp_replace(COALESCE(phone, ''), '\\D', '', 'g') LIKE '%' || $2 || '%')
@@ -78,61 +240,16 @@ export default async function handler(req: any, res: any) {
       foundUser = userRes.rows[0];
 
       if (!foundUser && cleanDigits.length >= 7) {
-        const allUsersRes = await pool.query(
-          "SELECT id, email, name, phone, avatar_color, avatar_url, bio, password_hash, created_at FROM public.users LIMIT 200;"
+        const phoneTail = cleanDigits.length >= 10 ? cleanDigits.slice(-10) : cleanDigits;
+        const phoneUserRes = await pool.query(
+          `SELECT id, email, name, phone, avatar_color, avatar_url, bio, password_hash, COALESCE(token_version, 1) AS token_version, created_at
+           FROM public.users
+           WHERE LENGTH(regexp_replace(COALESCE(phone, ''), '\\D', '', 'g')) >= 7
+             AND RIGHT(regexp_replace(COALESCE(phone, ''), '\\D', '', 'g'), LENGTH($1)) = $1
+           LIMIT 1;`,
+          [phoneTail]
         );
-        foundUser = allUsersRes.rows.find((u) => {
-          const uPhone = (u.phone || "").replace(/\D/g, "");
-          return uPhone.length >= 7 && (uPhone.endsWith(cleanDigits) || cleanDigits.endsWith(uPhone));
-        });
-      }
-
-      if (!foundUser) {
-        try {
-          const memberRes = await pool.query(
-            `SELECT id, user_id, name, email, phone, avatar_color, joined_at
-             FROM public.trip_members
-             WHERE LOWER(TRIM(COALESCE(email, ''))) = $1
-                OR ($2 <> '' AND regexp_replace(COALESCE(phone, ''), '\\D', '', 'g') LIKE '%' || $2 || '%')
-             LIMIT 1;`,
-            [trimmedLower, cleanDigits.length >= 7 ? cleanDigits : ""]
-          );
-          const foundMember = memberRes.rows[0];
-          if (foundMember) {
-            const newUserId = foundMember.user_id || foundMember.id || `u_${Date.now()}`;
-            const newHashed = hashPasswordNode(inputPassword);
-            await pool.query(
-              `INSERT INTO public.users (id, email, name, phone, avatar_color, password_hash, created_at, updated_at)
-               VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
-               ON CONFLICT (id) DO UPDATE SET password_hash = $6;`,
-              [
-                newUserId,
-                foundMember.email || (trimmedLower.includes("@") ? trimmedLower : null),
-                foundMember.name || "Traveler",
-                foundMember.phone || (cleanDigits.length >= 7 ? rawInput : null),
-                foundMember.avatar_color || "#E39A2D",
-                newHashed,
-              ]
-            );
-
-            const sessionToken = generateSessionToken(newUserId, foundMember.email, foundMember.name);
-            return sendJson(res, 200, {
-              success: true,
-              token: sessionToken,
-              user: {
-                id: newUserId,
-                name: foundMember.name || "Traveler",
-                email: foundMember.email || (trimmedLower.includes("@") ? trimmedLower : ""),
-                phone: foundMember.phone || undefined,
-                avatarColor: foundMember.avatar_color || "#E39A2D",
-                bio: "Travel Enthusiast",
-                createdAt: foundMember.joined_at || new Date().toISOString(),
-              },
-            });
-          }
-        } catch (e) {
-          console.warn("Notice querying trip_members in pool:", e);
-        }
+        foundUser = phoneUserRes.rows[0];
       }
 
       usedPostgres = true;
@@ -141,48 +258,20 @@ export default async function handler(req: any, res: any) {
     }
   }
 
-  // Local fallback
+  // In-memory fallback (strictly checks registered users only; never auto-creates or overwrites accounts from trip_members)
   if (!foundUser) {
     const localUser = findLocalUser(rawInput);
     if (localUser) {
       foundUser = localUser;
-    } else {
-      const localMember = findLocalMember(rawInput);
-      if (localMember) {
-        const newUserId = localMember.user_id || localMember.id || `u_${Date.now()}`;
-        const newHashed = hashPasswordNode(inputPassword);
-        const createdUser: LocalUserRecord = {
-          id: newUserId,
-          email: localMember.email || (trimmedLower.includes("@") ? trimmedLower : null),
-          name: localMember.name || "Traveler",
-          phone: localMember.phone || (cleanDigits.length >= 7 ? rawInput : null),
-          avatar_color: localMember.avatar_color || "#E39A2D",
-          bio: "Travel Enthusiast",
-          password_hash: newHashed,
-          created_at: localMember.joined_at || new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        };
-        saveLocalUser(createdUser);
-        const sessionToken = generateSessionToken(newUserId, createdUser.email || undefined, createdUser.name);
-        return sendJson(res, 200, {
-          success: true,
-          token: sessionToken,
-          user: {
-            id: newUserId,
-            name: createdUser.name,
-            email: createdUser.email || "",
-            phone: createdUser.phone || undefined,
-            avatarColor: createdUser.avatar_color,
-            bio: createdUser.bio,
-            createdAt: createdUser.created_at,
-          },
-        });
-      }
     }
   }
 
   if (!foundUser) {
-    logSecurityEvent("AUTH_LOGIN_FAILED", { ip: clientIp, identifier: trimmedLower.slice(0, 3) + "***", reason: "user_not_found" });
+    logSecurityEvent("AUTH_LOGIN_FAILED", {
+      ip: clientIp,
+      identifier: trimmedLower.slice(0, 3) + "***",
+      reason: "user_not_found",
+    });
     return sendJson(res, 401, {
       success: false,
       error: "Invalid email/phone or password. Please verify your credentials or create an account.",
@@ -200,7 +289,11 @@ export default async function handler(req: any, res: any) {
 
   // Login succeeded: clear failed rate limit counter for this account
   resetRateLimit(accountKey);
-  logSecurityEvent("AUTH_LOGIN_SUCCESS", { ip: clientIp, userId: foundUser.id, rehashUpgraded: passCheck.needsRehash });
+  logSecurityEvent("AUTH_LOGIN_SUCCESS", {
+    ip: clientIp,
+    userId: foundUser.id,
+    rehashUpgraded: passCheck.needsRehash,
+  });
 
   // Auto-upgrade legacy hash to modern bcrypt on successful login
   if (passCheck.needsRehash || !foundUser.password_hash?.startsWith("$2")) {
@@ -217,6 +310,9 @@ export default async function handler(req: any, res: any) {
     saveLocalUser(foundUser);
   }
 
+  // Server-side smart member linking: link any invited placeholder trip_members matching this user's email/phone
+  await linkUserToTripMembersInDb(pool, foundUser.id, foundUser.email, foundUser.phone, foundUser.name);
+
   const userAccount = {
     id: foundUser.id,
     name: foundUser.name || (foundUser.email ? foundUser.email.split("@")[0] : "Traveler"),
@@ -228,6 +324,7 @@ export default async function handler(req: any, res: any) {
     createdAt: foundUser.created_at || new Date().toISOString(),
   };
 
-  const sessionToken = generateSessionToken(foundUser.id, foundUser.email, foundUser.name);
+  const tokenVersion = Number(foundUser.token_version || 1);
+  const sessionToken = generateSessionToken(foundUser.id, foundUser.email, foundUser.name, tokenVersion);
   return sendJson(res, 200, { success: true, token: sessionToken, user: userAccount });
 }

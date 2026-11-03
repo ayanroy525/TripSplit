@@ -1,6 +1,6 @@
-import { setCorsHeaders, sendJson } from "./_shared.ts";
-import historyHandler from "./health/_history.ts";
-import runCheckHandler from "./health/_run-check.ts";
+import { setCorsHeaders, sendJson } from "./_shared";
+import historyHandler from "./_health/_history";
+import runCheckHandler from "./_health/_run-check";
 
 export default async function handler(req: any, res: any) {
   setCorsHeaders(res, req);

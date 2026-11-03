@@ -1,5 +1,5 @@
-import { setCorsHeaders, sendJson, verifyCronOrAdminRequest } from "../_shared.ts";
-import { runDiagnosticSweep } from "../health/_runner.ts";
+import { setCorsHeaders, sendJson, verifyCronOrAdminRequest } from "../_shared";
+import { runDiagnosticSweep } from "../_health/_runner";
 
 export default async function handler(req: any, res: any) {
   setCorsHeaders(res, req);

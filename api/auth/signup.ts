@@ -7,13 +7,14 @@ import {
   sendJson,
   findLocalUser,
   saveLocalUser,
+  linkUserToTripMembersInDb,
   checkRateLimit,
   getClientIp,
   type LocalUserRecord,
-} from "../_shared.ts";
+} from "../_shared";
 
 export default async function handler(req: any, res: any) {
-  setCorsHeaders(res);
+  setCorsHeaders(res, req);
 
   if (req.method === "OPTIONS") {
     res.statusCode = 204;
@@ -116,6 +117,9 @@ export default async function handler(req: any, res: any) {
       console.warn("Notice: PostgreSQL insert during signup deferred:", err);
     }
   }
+
+  // Server-side smart member linking: link any invited placeholder trip_members matching this user's email/phone
+  await linkUserToTripMembersInDb(pool, userId, trimmedEmail, rawPhone || null, trimmedName);
 
   const userAccount = {
     id: userId,

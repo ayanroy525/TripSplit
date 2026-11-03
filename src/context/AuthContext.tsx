@@ -581,16 +581,81 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return { success: false, error: "Password must be at least 6 characters long." };
     }
 
+    let supabaseAccessToken = "";
+    let supabaseEmail = currentUser?.email || "";
+    let supabaseUpdated = false;
+
     try {
-      const { error } = await supabase.auth.updateUser({
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (sessionData?.session?.access_token) {
+        supabaseAccessToken = sessionData.session.access_token;
+      }
+      if (sessionData?.session?.user?.email) {
+        supabaseEmail = sessionData.session.user.email;
+      }
+
+      const { data: updateData, error } = await supabase.auth.updateUser({
         password: newPassword,
       });
 
-      if (error) {
+      if (!error) {
+        supabaseUpdated = true;
+        if (updateData?.user?.email) {
+          supabaseEmail = updateData.user.email;
+        }
+      } else if (!token && !supabaseAccessToken) {
         return { success: false, error: error.message };
       }
     } catch (err: any) {
-      return { success: false, error: err?.message || "Failed to update password." };
+      if (!token && !supabaseAccessToken) {
+        return { success: false, error: err?.message || "Failed to update password." };
+      }
+    }
+
+    // Also synchronize the bcrypt password_hash and token_version in PostgreSQL public.users
+    try {
+      const activeBearer =
+        token ||
+        supabaseAccessToken ||
+        (typeof window !== "undefined" ? localStorage.getItem("trip_expense_splitter_auth_token_v1") || "" : "");
+
+      const resp = await fetch("/api/auth/update-password", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(activeBearer ? { Authorization: `Bearer ${activeBearer}` } : {}),
+        },
+        body: JSON.stringify({
+          action: "update-password",
+          newPassword,
+          email: supabaseEmail || currentUser?.email || "",
+        }),
+      });
+
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data?.token) {
+          setTokenState(data.token);
+          if (typeof window !== "undefined") {
+            try {
+              localStorage.setItem("trip_expense_splitter_auth_token_v1", data.token);
+            } catch {}
+          }
+        }
+      } else if (!supabaseUpdated) {
+        const errData = await resp.json().catch(() => ({}));
+        return {
+          success: false,
+          error: errData?.error || "Failed to update password on server.",
+        };
+      }
+    } catch (syncErr: any) {
+      if (!supabaseUpdated) {
+        return {
+          success: false,
+          error: syncErr?.message || "Network error while updating password.",
+        };
+      }
     }
 
     setIsPasswordRecovery(false);

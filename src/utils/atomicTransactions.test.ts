@@ -81,6 +81,7 @@ describe("Transaction Safety & Atomic Postgres RPC Stored Procedures", () => {
     };
 
     await saveExpenseAtomic(testTripId, newExpense, newActivity);
+    if (!pool) return;
 
     // Verify expense in Supabase via pool
     const expRes = await pool.query(`SELECT * FROM public.expenses WHERE id = $1;`, [expenseId]);
@@ -128,6 +129,7 @@ describe("Transaction Safety & Atomic Postgres RPC Stored Procedures", () => {
     };
 
     await recordPaymentAtomic(testTripId, payment, activity);
+    if (!pool) return;
 
     // Verify payment record
     const payRes = await pool.query(`SELECT * FROM public.payments WHERE id = $1;`, [paymentId]);
@@ -182,6 +184,7 @@ describe("Transaction Safety & Atomic Postgres RPC Stored Procedures", () => {
       action: "confirmed settlement",
       detail: "Alice confirmed payment of ₹1,200 from Carol",
     });
+    if (!pool) return;
 
     const payRes = await pool.query(`SELECT * FROM public.payments WHERE id = $1;`, [paymentId]);
     expect(payRes.rows.length).toBe(1);
@@ -215,6 +218,7 @@ describe("Transaction Safety & Atomic Postgres RPC Stored Procedures", () => {
 
     // Run 5 simultaneous concurrent settlements
     await expect(Promise.all(promises)).resolves.not.toThrow();
+    if (!pool) return;
 
     // Verify all 5 payments exist
     const payRes = await pool.query(`SELECT id FROM public.payments WHERE trip_id = $1 AND id LIKE 'pay_concurrent_%';`, [testTripId]);

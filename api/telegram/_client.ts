@@ -1,4 +1,4 @@
-import { pool } from "../_shared.ts";
+import { pool } from "../_shared";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";

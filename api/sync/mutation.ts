@@ -8,7 +8,7 @@ import {
   parseBody,
   getLocalStore,
   saveLocalStore,
-} from "../_shared.ts";
+} from "../_shared";
 
 export default async function handler(req: any, res: any) {
   setCorsHeaders(res, req);

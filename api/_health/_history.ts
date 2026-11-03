@@ -1,6 +1,5 @@
-import { pool, setCorsHeaders, sendJson, verifyAdminRequest } from "../_shared.ts";
-import fs from "fs";
-import path from "path";
+import { pool, setCorsHeaders, sendJson, verifyAdminRequest } from "../_shared";
+import { inMemoryHealthChecks } from "./_runner";
 
 export default async function handler(req: any, res: any) {
   setCorsHeaders(res, req);
@@ -35,18 +34,13 @@ export default async function handler(req: any, res: any) {
     }
   }
 
-  // Local JSON fallback
-  try {
-    const filePath = path.resolve(process.cwd(), "data", "health_checks.json");
-    if (fs.existsSync(filePath)) {
-      const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-      return sendJson(res, 200, {
-        success: true,
-        source: "local_store",
-        history: Array.isArray(data) ? data.slice(-30).reverse() : [],
-      });
-    }
-  } catch {}
+  if (inMemoryHealthChecks.length > 0) {
+    return sendJson(res, 200, {
+      success: true,
+      source: "in_memory",
+      history: inMemoryHealthChecks.slice(-30).reverse(),
+    });
+  }
 
   return sendJson(res, 200, {
     success: true,

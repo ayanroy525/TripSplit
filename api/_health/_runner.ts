@@ -1,8 +1,6 @@
-import { pool } from "../_shared.ts";
-import fs from "fs";
-import path from "path";
-import { getTelegramConfig, sendTelegramMessage } from "../telegram/_client.ts";
-import { formatDiagnosticTelegramReport } from "../telegram/_formatter.ts";
+import { pool } from "../_shared";
+import { getTelegramConfig, sendTelegramMessage } from "../telegram/_client";
+import { formatDiagnosticTelegramReport } from "../telegram/_formatter";
 
 export interface DiagnosticResult {
   id: string;
@@ -24,6 +22,8 @@ export interface DiagnosticResult {
   telegram_sent?: boolean;
   telegram_error?: string | null;
 }
+
+export const inMemoryHealthChecks: DiagnosticResult[] = [];
 
 export async function runDiagnosticSweep(checkType = "scheduled_2am"): Promise<DiagnosticResult> {
   const checkId = "chk_" + Date.now();
@@ -146,21 +146,11 @@ export async function runDiagnosticSweep(checkType = "scheduled_2am"): Promise<D
     telegram_error: null,
   };
 
-  // Local file backup
-  try {
-    const dir = path.resolve(process.cwd(), "data");
-    const filePath = path.resolve(dir, "health_checks.json");
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    let existing: DiagnosticResult[] = [];
-    if (fs.existsSync(filePath)) {
-      try {
-        existing = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-      } catch {}
-    }
-    existing.push(result);
-    if (existing.length > 100) existing = existing.slice(-100);
-    fs.writeFileSync(filePath, JSON.stringify(existing, null, 2), "utf-8");
-  } catch {}
+  // Keep recent diagnostic checks in-memory when DB is unavailable (never write to data/health_checks.json)
+  inMemoryHealthChecks.push(result);
+  if (inMemoryHealthChecks.length > 100) {
+    inMemoryHealthChecks.splice(0, inMemoryHealthChecks.length - 100);
+  }
 
   // Telegram Alert Dispatch
   // Skip duplicate dispatch if invoked directly from Telegram processor (which sends/edits its own reply)

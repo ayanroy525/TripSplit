@@ -403,31 +403,47 @@ export async function linkUserToExistingTripMembers(
   const linkedTripIds = new Set<string>();
 
   try {
-    // 1. Fetch all trip members from database
-    const { data: allMembers, error: membersErr } = await supabase
-      .from("trip_members")
-      .select("*");
+    // 1. Query trip_members matching this user's email or phone tail (falling back cleanly if mock returns direct promise)
+    const candidateMap = new Map<string, any>();
 
-    if (membersErr || !Array.isArray(allMembers)) {
+    if (trimmedEmail) {
+      const selQuery: any = supabase.from("trip_members").select("*");
+      const { data: emailRows } =
+        typeof selQuery?.ilike === "function"
+          ? await selQuery.ilike("email", trimmedEmail)
+          : await selQuery;
+      if (Array.isArray(emailRows)) {
+        for (const r of emailRows) {
+          if (r && r.id) candidateMap.set(r.id, r);
+        }
+      }
+    }
+
+    if (cleanPhoneDigits.length >= 7) {
+      const phoneTail = cleanPhoneDigits.length >= 10 ? cleanPhoneDigits.slice(-10) : cleanPhoneDigits.slice(-7);
+      const selQuery: any = supabase.from("trip_members").select("*");
+      const { data: phoneRows } =
+        typeof selQuery?.ilike === "function"
+          ? await selQuery.ilike("phone", `%${phoneTail}%`)
+          : await selQuery;
+      if (Array.isArray(phoneRows)) {
+        for (const r of phoneRows) {
+          if (r && r.id) candidateMap.set(r.id, r);
+        }
+      }
+    }
+
+    const candidateMembers = Array.from(candidateMap.values());
+    if (candidateMembers.length === 0) {
       return { linkedTripsCount: 0, linkedMembersCount: 0 };
     }
 
     // 2. Identify unlinked or placeholder member rows matching this user's email or phone
-    const matchingMembers = allMembers.filter((m) => {
+    const matchingMembers = candidateMembers.filter((m) => {
       if (!m) return false;
-      // If already linked to this exact user ID, skip
       if (m.user_id === user.id) return false;
-
-      // Match by email
-      if (isEmailMatch(m.email, user.email)) {
-        return true;
-      }
-
-      // Match by phone
-      if (isPhoneMatch(m.phone, user.phone)) {
-        return true;
-      }
-
+      if (isEmailMatch(m.email, user.email)) return true;
+      if (isPhoneMatch(m.phone, user.phone)) return true;
       return false;
     });
 
@@ -937,19 +953,32 @@ export async function addMemberToDatabase(tripId: string, member: Member): Promi
     if (!resolvedUserId || resolvedUserId.startsWith("m_") || resolvedUserId.startsWith("guest_") || resolvedUserId === member.id) {
       if (cleanPhone.length >= 7 || cleanEmail) {
         try {
-          const { data: usersList } = await supabase.from("users").select("id, email, phone, name");
-          if (Array.isArray(usersList)) {
-            const match = usersList.find((u) => {
-              if (!u) return false;
-              if (isEmailMatch(u.email, member.email)) return true;
-              if (isPhoneMatch(u.phone, member.phone)) return true;
-              return false;
-            });
-            if (match) {
-              resolvedUserId = match.id;
-              if ((!member.name || member.name === "Member" || member.name === "Guest" || member.name === "Traveler") && match.name) {
-                member.name = match.name;
-              }
+          let matchedUser: any = null;
+          if (cleanEmail) {
+            const selQuery: any = supabase.from("users").select("id, email, phone, name");
+            const { data: emailMatchUsers } =
+              typeof selQuery?.ilike === "function"
+                ? await selQuery.ilike("email", cleanEmail).limit(1)
+                : await selQuery;
+            if (Array.isArray(emailMatchUsers) && emailMatchUsers.length > 0) {
+              matchedUser = emailMatchUsers.find((u: any) => isEmailMatch(u?.email, member.email));
+            }
+          }
+          if (!matchedUser && cleanPhone.length >= 7) {
+            const phoneTail = cleanPhone.length >= 10 ? cleanPhone.slice(-10) : cleanPhone.slice(-7);
+            const selQuery: any = supabase.from("users").select("id, email, phone, name");
+            const { data: phoneMatchUsers } =
+              typeof selQuery?.ilike === "function"
+                ? await selQuery.ilike("phone", `%${phoneTail}%`).limit(5)
+                : await selQuery;
+            if (Array.isArray(phoneMatchUsers)) {
+              matchedUser = phoneMatchUsers.find((u: any) => isPhoneMatch(u?.phone, member.phone));
+            }
+          }
+          if (matchedUser) {
+            resolvedUserId = matchedUser.id;
+            if ((!member.name || member.name === "Member" || member.name === "Guest" || member.name === "Traveler") && matchedUser.name) {
+              member.name = matchedUser.name;
             }
           }
         } catch (e) {}

@@ -5,7 +5,7 @@ import crypto from "crypto";
 
 dotenv.config();
 
-import { getSessionSecret } from "../../api/_shared.ts";
+import { getSessionSecret } from "../../api/_shared";
 
 const rawConn = (process.env.POSTGRES_URL_NON_POOLING || process.env.POSTGRES_URL || "").replace(/\?.*$/, "");
 const SESSION_SECRET = getSessionSecret();

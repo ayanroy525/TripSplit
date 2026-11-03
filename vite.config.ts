@@ -10,6 +10,7 @@ const __dirname = path.dirname(__filename);
 
 export default defineConfig(() => {
   return {
+    envPrefix: ['VITE_', 'NEXT_PUBLIC_'],
     plugins: [
       react(),
       tailwindcss(),

@@ -15,14 +15,14 @@ import {
   getFullTripsForUser,
   LocalUserRecord,
 } from "./src/serverDb.js";
-import { runDiagnosticSweep } from "./api/health/_runner.ts";
-import loginHandler from "./api/auth/login.ts";
-import signupHandler from "./api/auth/signup.ts";
-import telegramSettingsHandler from "./api/telegram/_settings.ts";
-import telegramTestHandler from "./api/telegram/_test.ts";
-import telegramWebhookHandler from "./api/telegram/webhook.ts";
-import telegramDetectChatHandler from "./api/telegram/_detect-chat.ts";
-import { startTelegramPoller } from "./api/telegram/_poller.ts";
+import { runDiagnosticSweep } from "./api/_health/_runner";
+import loginHandler from "./api/auth/login";
+import signupHandler from "./api/auth/signup";
+import telegramSettingsHandler from "./api/telegram/_settings";
+import telegramTestHandler from "./api/telegram/_test";
+import telegramWebhookHandler from "./api/telegram/webhook";
+import telegramDetectChatHandler from "./api/telegram/_detect-chat";
+import { startTelegramPoller } from "./api/telegram/_poller";
 import rateLimit from "express-rate-limit";
 import {
   pool,
@@ -39,7 +39,7 @@ import {
   SESSION_SECRET,
   PASSWORD_SALT,
   ADMIN_EMAILS,
-} from "./api/_shared.ts";
+} from "./api/_shared";
 
 dotenv.config();
 
@@ -266,6 +266,7 @@ app.get("/api/db/status", adminOnlyMiddleware, async (_req, res) => {
 
 app.all("/api/auth/login", (req, res) => loginHandler(req, res));
 app.all("/api/auth/signup", (req, res) => signupHandler(req, res));
+app.all("/api/auth/update-password", (req, res) => loginHandler(req, res));
 
 app.post("/api/auth/revoke-all-sessions", authMiddleware, async (req: AuthRequest, res: Response) => {
   const userId = req.userId;
@@ -275,7 +276,7 @@ app.post("/api/auth/revoke-all-sessions", authMiddleware, async (req: AuthReques
 
   if (pool) {
     try {
-      await pool.query("UPDATE public.users SET token_version = token_version + 1, updated_at = NOW() WHERE id = $1;", [userId]);
+      await pool.query("UPDATE public.users SET token_version = COALESCE(token_version, 1) + 1, updated_at = NOW() WHERE id = $1;", [userId]);
     } catch (err: any) {
       console.warn("Notice updating token_version in pool:", err?.message || err);
     }
@@ -404,23 +405,57 @@ app.get("/api/user-trips", authMiddleware, async (req: AuthRequest, res) => {
       const tripsRes = await pool.query(tripsQuery, [userId]);
       const trips = tripsRes.rows;
 
-      const fullTrips = [];
-      for (const trip of trips) {
-        const [membersRes, expensesRes, paymentsRes, activitiesRes] = await Promise.all([
-          pool.query("SELECT * FROM public.trip_members WHERE trip_id = $1 ORDER BY joined_at ASC;", [trip.id]),
-          pool.query("SELECT * FROM public.expenses WHERE trip_id = $1 AND COALESCE(deleted, false) = false ORDER BY created_at DESC;", [trip.id]),
-          pool.query("SELECT * FROM public.payments WHERE trip_id = $1 ORDER BY created_at DESC;", [trip.id]),
-          pool.query("SELECT * FROM public.activities WHERE trip_id = $1 ORDER BY created_at DESC LIMIT 50;", [trip.id]),
-        ]);
-
-        fullTrips.push({
-          ...trip,
-          members: membersRes.rows,
-          expenses: expensesRes.rows,
-          payments: paymentsRes.rows,
-          activities: activitiesRes.rows,
-        });
+      if (trips.length === 0) {
+        return res.json({ success: true, trips: [] });
       }
+
+      // Batch-fetch all relational rows in 4 parallel queries instead of 4 * N queries
+      const tripIds = trips.map((t: any) => t.id);
+      const [membersRes, expensesRes, paymentsRes, activitiesRes] = await Promise.all([
+        pool.query("SELECT * FROM public.trip_members WHERE trip_id = ANY($1::text[]) ORDER BY joined_at ASC;", [tripIds]),
+        pool.query(
+          "SELECT * FROM public.expenses WHERE trip_id = ANY($1::text[]) AND COALESCE(deleted, false) = false ORDER BY created_at DESC;",
+          [tripIds]
+        ),
+        pool.query("SELECT * FROM public.payments WHERE trip_id = ANY($1::text[]) ORDER BY created_at DESC;", [tripIds]),
+        pool.query("SELECT * FROM public.activities WHERE trip_id = ANY($1::text[]) ORDER BY created_at DESC;", [tripIds]),
+      ]);
+
+      const membersByTrip = new Map<string, any[]>();
+      const expensesByTrip = new Map<string, any[]>();
+      const paymentsByTrip = new Map<string, any[]>();
+      const activitiesByTrip = new Map<string, any[]>();
+
+      for (const m of membersRes.rows) {
+        const list = membersByTrip.get(m.trip_id) || [];
+        list.push(m);
+        membersByTrip.set(m.trip_id, list);
+      }
+      for (const e of expensesRes.rows) {
+        const list = expensesByTrip.get(e.trip_id) || [];
+        list.push(e);
+        expensesByTrip.set(e.trip_id, list);
+      }
+      for (const p of paymentsRes.rows) {
+        const list = paymentsByTrip.get(p.trip_id) || [];
+        list.push(p);
+        paymentsByTrip.set(p.trip_id, list);
+      }
+      for (const a of activitiesRes.rows) {
+        const list = activitiesByTrip.get(a.trip_id) || [];
+        if (list.length < 50) {
+          list.push(a);
+          activitiesByTrip.set(a.trip_id, list);
+        }
+      }
+
+      const fullTrips = trips.map((trip: any) => ({
+        ...trip,
+        members: membersByTrip.get(trip.id) || [],
+        expenses: expensesByTrip.get(trip.id) || [],
+        payments: paymentsByTrip.get(trip.id) || [],
+        activities: activitiesByTrip.get(trip.id) || [],
+      }));
 
       return res.json({ success: true, trips: fullTrips });
     } catch (err: any) {

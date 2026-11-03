@@ -3,14 +3,14 @@ import {
   editTelegramMessage,
   sendTelegramMessage,
   getTelegramConfig,
-} from "./_client.ts";
-import { executeComprehensiveHeal } from "./_healer.ts";
+} from "./_client";
+import { executeComprehensiveHeal } from "./_healer";
 import {
   formatFixSuccessMessage,
   formatFixRejectedMessage,
   formatDiagnosticTelegramReport,
-} from "./_formatter.ts";
-import { runDiagnosticSweep } from "../health/_runner.ts";
+} from "./_formatter";
+import { runDiagnosticSweep } from "../_health/_runner";
 
 export async function processTelegramUpdate(update: any): Promise<{ success: boolean; action?: string; error?: string }> {
   try {
