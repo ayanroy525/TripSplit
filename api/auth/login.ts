@@ -271,6 +271,117 @@ export default async function handler(req: any, res: any) {
     }
   }
 
+  // Serverless HTTPS Fallback: When POSTGRES_URL pool is not configured on Vercel,
+  // verify credentials directly against Supabase Auth REST API + public.users over HTTPS
+  if (candidateUsers.length === 0) {
+    const supabaseUrl = (
+      process.env.VITE_SUPABASE_URL ||
+      process.env.NEXT_PUBLIC_SUPABASE_URL ||
+      process.env.SUPABASE_URL ||
+      "https://ryamchjjwoaimwrmurry.supabase.co"
+    ).replace(/\/$/, "");
+    const supabaseKey = (
+      process.env.VITE_SUPABASE_ANON_KEY ||
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+      process.env.SUPABASE_ANON_KEY ||
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ5YW1jaGpqd29haW13cm11cnJ5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAwMTIwOTYsImV4cCI6MjEwNTU4ODA5Nn0.6r-qcinkytxEzCxb4jhRjXNZ0-g4_YTKdsnhUG3De6A"
+    ).trim();
+
+    try {
+      let emailsToTry: string[] = [];
+      if (trimmedLower.includes("@")) {
+        emailsToTry = [trimmedLower];
+      } else {
+        const rpcRes = await fetch(`${supabaseUrl}/rest/v1/rpc/resolve_email_for_login`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            apikey: supabaseKey,
+            Authorization: `Bearer ${supabaseKey}`,
+          },
+          body: JSON.stringify({ p_identifier: rawInput }),
+        });
+        if (rpcRes.ok) {
+          const rows = await rpcRes.json();
+          if (Array.isArray(rows)) {
+            emailsToTry = rows.map((r: any) => String(r?.email || "").trim().toLowerCase()).filter(Boolean);
+          }
+        }
+      }
+
+      for (const emailCandidate of emailsToTry) {
+        const tokenRes = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            apikey: supabaseKey,
+          },
+          body: JSON.stringify({
+            email: emailCandidate,
+            password: inputPassword,
+          }),
+        });
+
+        if (tokenRes.ok) {
+          const authData = await tokenRes.json();
+          const supaUser = authData?.user;
+          const accessToken = authData?.access_token;
+          if (supaUser && supaUser.id) {
+            let profileRow: any = null;
+            if (accessToken) {
+              try {
+                const profRes = await fetch(
+                  `${supabaseUrl}/rest/v1/users?id=eq.${encodeURIComponent(supaUser.id)}&select=*`,
+                  {
+                    headers: {
+                      apikey: supabaseKey,
+                      Authorization: `Bearer ${accessToken}`,
+                    },
+                  }
+                );
+                if (profRes.ok) {
+                  const profRows = await profRes.json();
+                  if (Array.isArray(profRows) && profRows[0]) {
+                    profileRow = profRows[0];
+                  }
+                }
+              } catch {}
+            }
+
+            const meta = supaUser.user_metadata || {};
+            const userAccount = {
+              id: profileRow?.id || supaUser.id,
+              name: profileRow?.name || meta.name || (supaUser.email ? supaUser.email.split("@")[0] : "Traveler"),
+              email: profileRow?.email || supaUser.email || emailCandidate,
+              phone: profileRow?.phone || meta.phone || undefined,
+              avatarColor: profileRow?.avatar_color || meta.avatarColor || meta.avatar_color || "#E39A2D",
+              avatarUrl: profileRow?.avatar_url || meta.avatarUrl || undefined,
+              bio: profileRow?.bio || meta.bio || "Travel Enthusiast",
+              createdAt: profileRow?.created_at || supaUser.created_at || new Date().toISOString(),
+            };
+
+            resetRateLimit(accountKey);
+            logSecurityEvent("AUTH_LOGIN_SUCCESS", {
+              ip: clientIp,
+              userId: userAccount.id,
+              via: "supabase_https_fallback",
+            });
+
+            const sessionToken = generateSessionToken(userAccount.id, userAccount.email, userAccount.name, 1);
+            return sendJson(res, 200, {
+              success: true,
+              token: sessionToken,
+              supabaseAccessToken: accessToken,
+              user: userAccount,
+            });
+          }
+        }
+      }
+    } catch (supaErr: any) {
+      console.warn("Notice: Supabase HTTPS auth fallback in api/auth/login:", supaErr?.message || supaErr);
+    }
+  }
+
   if (candidateUsers.length === 0) {
     logSecurityEvent("AUTH_LOGIN_FAILED", {
       ip: clientIp,

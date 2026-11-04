@@ -305,8 +305,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }
 
           return { success: true, user: userAccount };
-        } else if (response.status >= 400 && response.status < 500) {
-          // Authoritative client/auth error from server (401, 429, 400, etc.)
+        } else if (response.status === 429 || response.status === 400) {
+          // Authoritative rate-limit or validation error from server
           return {
             success: false,
             error: resData.error || "Invalid credentials. Please verify your email/phone and password.",
