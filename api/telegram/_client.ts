@@ -1,4 +1,4 @@
-import { pool } from "../_shared";
+import { pool } from "../_shared.js";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";

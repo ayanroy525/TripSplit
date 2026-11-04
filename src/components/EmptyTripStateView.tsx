@@ -16,6 +16,7 @@ import {
   User,
   LogIn,
   ChevronRight,
+  Activity,
 } from "lucide-react";
 import { C } from "../utils/constants";
 import { UserAccount, Trip, Member } from "../types";
@@ -28,6 +29,7 @@ interface EmptyTripStateViewProps {
   onJoinSuccess: (joinedTrip: Trip) => void;
   onLogout?: () => void;
   onOpenUserProfile?: () => void;
+  onOpenHealthModal?: () => void;
 }
 
 export function EmptyTripStateView({
@@ -37,6 +39,7 @@ export function EmptyTripStateView({
   onJoinSuccess,
   onLogout,
   onOpenUserProfile,
+  onOpenHealthModal,
 }: EmptyTripStateViewProps) {
   const [inlineCode, setInlineCode] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -142,6 +145,31 @@ export function EmptyTripStateView({
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {onOpenHealthModal && (
+            <button
+              id="btn-empty-system-health"
+              type="button"
+              onClick={onOpenHealthModal}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                background: C.card,
+                border: `1px solid ${C.teal}`,
+                borderRadius: 20,
+                padding: "5px 12px",
+                fontSize: 12,
+                fontWeight: 700,
+                color: C.teal,
+                cursor: "pointer",
+              }}
+              title="Open System Health & 2 AM Diagnostics (Admin Only)"
+            >
+              <Activity size={13} />
+              <span>System Health</span>
+            </button>
+          )}
+
           {onOpenUserProfile && (
             <button
               id="btn-empty-user-profile"

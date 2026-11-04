@@ -1,7 +1,7 @@
-import { setCorsHeaders, sendJson, verifyAdminRequest } from "../_shared";
-import { getTelegramWebhookSecret, registerTelegramWebhook, saveTelegramConfig } from "./_client";
-import { processTelegramUpdate } from "./_processor";
-import { startTelegramPoller } from "./_poller";
+import { setCorsHeaders, sendJson, verifyAdminRequest } from "../_shared.js";
+import { getTelegramWebhookSecret, registerTelegramWebhook, saveTelegramConfig } from "./_client.js";
+import { processTelegramUpdate } from "./_processor.js";
+import { startTelegramPoller } from "./_poller.js";
 
 export default async function handler(req: any, res: any) {
   setCorsHeaders(res, req);

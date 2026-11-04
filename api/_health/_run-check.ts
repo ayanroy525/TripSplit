@@ -1,5 +1,5 @@
-import { setCorsHeaders, sendJson, verifyAdminRequest } from "../_shared";
-import { runDiagnosticSweep } from "./_runner";
+import { setCorsHeaders, sendJson, verifyAdminRequest } from "../_shared.js";
+import { runDiagnosticSweep } from "./_runner.js";
 
 export default async function handler(req: any, res: any) {
   setCorsHeaders(res, req);

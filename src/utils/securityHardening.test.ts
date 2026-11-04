@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import fs from "fs";
 import path from "path";
 import {
+  pool,
   getSessionSecret,
   verifySessionToken,
   generateSessionToken,
@@ -470,6 +471,19 @@ describe("Security Hardening Suite", () => {
       const data = await res.json();
       expect(data.success).toBe(false);
       expect(data.error).toMatch(/Invalid email\/phone or password/i);
+    });
+
+    afterAll(async () => {
+      if (pool) {
+        try {
+          await pool.query("DELETE FROM public.users WHERE email = $1;", [uniqueEmail]);
+        } catch {}
+      }
+      try {
+        const store = loadLocalStore();
+        store.users = store.users.filter((u) => u.email !== uniqueEmail);
+        saveLocalStore(store);
+      } catch {}
     });
   });
 });

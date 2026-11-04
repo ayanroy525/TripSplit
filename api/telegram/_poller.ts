@@ -1,5 +1,5 @@
-import { getTelegramConfig } from "./_client";
-import { processTelegramUpdate } from "./_processor";
+import { getTelegramConfig } from "./_client.js";
+import { processTelegramUpdate } from "./_processor.js";
 
 let isPolling = false;
 let shouldStop = false;

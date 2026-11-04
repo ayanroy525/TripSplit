@@ -1,5 +1,5 @@
-import { pool, setCorsHeaders, sendJson, verifyAdminRequest } from "../_shared";
-import { inMemoryHealthChecks } from "./_runner";
+import { pool, setCorsHeaders, sendJson, verifyAdminRequest } from "../_shared.js";
+import { inMemoryHealthChecks, ensureDaily2AMCheckRan } from "./_runner.js";
 
 export default async function handler(req: any, res: any) {
   setCorsHeaders(res, req);
@@ -14,6 +14,12 @@ export default async function handler(req: any, res: any) {
       success: false,
       error: adminAuth.error || "Access Denied: Restricted to application administrator.",
     });
+  }
+
+  try {
+    await ensureDaily2AMCheckRan();
+  } catch (catchupErr: any) {
+    console.warn("Notice during 2 AM catchup check in history:", catchupErr?.message || catchupErr);
   }
 
   if (pool) {

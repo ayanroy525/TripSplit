@@ -1,6 +1,6 @@
-import { pool } from "../_shared";
-import { getTelegramConfig, sendTelegramMessage } from "../telegram/_client";
-import { formatDiagnosticTelegramReport } from "../telegram/_formatter";
+import { pool } from "../_shared.js";
+import { getTelegramConfig, sendTelegramMessage } from "../telegram/_client.js";
+import { formatDiagnosticTelegramReport } from "../telegram/_formatter.js";
 
 export interface DiagnosticResult {
   id: string;
@@ -152,7 +152,7 @@ export async function runDiagnosticSweep(checkType = "scheduled_2am"): Promise<D
     inMemoryHealthChecks.splice(0, inMemoryHealthChecks.length - 100);
   }
 
-  // Telegram Alert Dispatch
+      // Telegram Alert Dispatch
   // Skip duplicate dispatch if invoked directly from Telegram processor (which sends/edits its own reply)
   const isTelegramInternal = checkType === "telegram_on_demand" || checkType === "telegram_post_heal";
   if (!isTelegramInternal) {
@@ -180,3 +180,96 @@ export async function runDiagnosticSweep(checkType = "scheduled_2am"): Promise<D
 
   return result;
 }
+
+const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000; // UTC+5:30 (Asia/Kolkata)
+
+/**
+ * Returns the UTC timestamp (ms) of today's 2:00 AM IST window start (if currently >= 2:00 AM IST),
+ * and the delay (ms) until the next upcoming 2:00 AM IST.
+ */
+export function get2AMISTScheduleInfo(nowMs = Date.now()): {
+  isPast2AMTodayIST: boolean;
+  today2AMUtcIso: string;
+  next2AMUtcIso: string;
+  msUntilNext2AMIST: number;
+} {
+  const istWallClock = new Date(nowMs + IST_OFFSET_MS);
+  const year = istWallClock.getUTCFullYear();
+  const month = istWallClock.getUTCMonth();
+  const date = istWallClock.getUTCDate();
+
+  const today2AMWallClockMs = Date.UTC(year, month, date, 2, 0, 0, 0);
+  const today2AMUtcMs = today2AMWallClockMs - IST_OFFSET_MS;
+
+  const isPast2AMTodayIST = nowMs >= today2AMUtcMs;
+  const next2AMUtcMs = isPast2AMTodayIST
+    ? today2AMUtcMs + 24 * 60 * 60 * 1000
+    : today2AMUtcMs;
+
+  return {
+    isPast2AMTodayIST,
+    today2AMUtcIso: new Date(today2AMUtcMs).toISOString(),
+    next2AMUtcIso: new Date(next2AMUtcMs).toISOString(),
+    msUntilNext2AMIST: Math.max(1000, next2AMUtcMs - nowMs),
+  };
+}
+
+let isCatchingUpDailyCheck = false;
+let lastCompletedWindowIso = "";
+
+/**
+ * Ensures that if the current time is past 2:00 AM IST today and no 'scheduled_2am'
+ * diagnostic sweep has been recorded for today's 2:00 AM IST window (e.g. due to
+ * serverless hibernation or container restart), it runs immediately once.
+ */
+export async function ensureDaily2AMCheckRan(): Promise<DiagnosticResult | null> {
+  if (process.env.VITEST || process.env.NODE_ENV === "test") {
+    return null;
+  }
+
+  const { isPast2AMTodayIST, today2AMUtcIso } = get2AMISTScheduleInfo();
+  if (!isPast2AMTodayIST) {
+    return null;
+  }
+
+  if (isCatchingUpDailyCheck || lastCompletedWindowIso === today2AMUtcIso) {
+    return null;
+  }
+
+  // Check in-memory first
+  const alreadyInMemory = inMemoryHealthChecks.some(
+    (chk) => chk.check_type === "scheduled_2am" && chk.executed_at >= today2AMUtcIso
+  );
+  if (alreadyInMemory) {
+    lastCompletedWindowIso = today2AMUtcIso;
+    return null;
+  }
+
+  isCatchingUpDailyCheck = true;
+  try {
+    if (pool) {
+      try {
+        const existing = await pool.query(
+          `SELECT id FROM public.health_checks
+           WHERE check_type = 'scheduled_2am' AND executed_at >= $1
+           LIMIT 1;`,
+          [today2AMUtcIso]
+        );
+        if (existing.rows.length > 0) {
+          lastCompletedWindowIso = today2AMUtcIso;
+          return null;
+        }
+      } catch (err: any) {
+        console.warn("Notice checking existing scheduled_2am log:", err?.message || err);
+      }
+    }
+
+    console.log(`[2 AM IST Auto-Catchup] Running missed daily 2:00 AM IST diagnostic for window >= ${today2AMUtcIso}...`);
+    const result = await runDiagnosticSweep("scheduled_2am");
+    lastCompletedWindowIso = today2AMUtcIso;
+    return result;
+  } finally {
+    isCatchingUpDailyCheck = false;
+  }
+}
+

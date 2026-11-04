@@ -1,4 +1,4 @@
-import { pool } from "../_shared";
+import { pool } from "../_shared.js";
 
 export interface HealResult {
   success: boolean;

@@ -16,7 +16,7 @@ import {
   resetRateLimit,
   getClientIp,
   logSecurityEvent,
-} from "../_shared";
+} from "../_shared.js";
 
 export default async function handler(req: any, res: any) {
   setCorsHeaders(res, req);
@@ -223,7 +223,7 @@ export default async function handler(req: any, res: any) {
     });
   }
 
-  let foundUser: any = null;
+  let candidateUsers: any[] = [];
   let usedPostgres = false;
 
   if (pool) {
@@ -234,22 +234,27 @@ export default async function handler(req: any, res: any) {
         WHERE LOWER(TRIM(COALESCE(email, ''))) = $1
            OR ($2 <> '' AND regexp_replace(COALESCE(phone, ''), '\\D', '', 'g') LIKE '%' || $2 || '%')
            OR LOWER(TRIM(COALESCE(name, ''))) = $1
-        LIMIT 1;
+        ORDER BY
+          CASE WHEN LOWER(TRIM(COALESCE(email, ''))) = $1 THEN 0 ELSE 1 END,
+          updated_at DESC NULLS LAST,
+          created_at DESC
+        LIMIT 10;
       `;
       const userRes = await pool.query(usersQuery, [trimmedLower, cleanDigits.length >= 7 ? cleanDigits : ""]);
-      foundUser = userRes.rows[0];
+      candidateUsers = userRes.rows || [];
 
-      if (!foundUser && cleanDigits.length >= 7) {
+      if (candidateUsers.length === 0 && cleanDigits.length >= 7) {
         const phoneTail = cleanDigits.length >= 10 ? cleanDigits.slice(-10) : cleanDigits;
         const phoneUserRes = await pool.query(
           `SELECT id, email, name, phone, avatar_color, avatar_url, bio, password_hash, COALESCE(token_version, 1) AS token_version, created_at
            FROM public.users
            WHERE LENGTH(regexp_replace(COALESCE(phone, ''), '\\D', '', 'g')) >= 7
              AND RIGHT(regexp_replace(COALESCE(phone, ''), '\\D', '', 'g'), LENGTH($1)) = $1
-           LIMIT 1;`,
+           ORDER BY updated_at DESC NULLS LAST, created_at DESC
+           LIMIT 10;`,
           [phoneTail]
         );
-        foundUser = phoneUserRes.rows[0];
+        candidateUsers = phoneUserRes.rows || [];
       }
 
       usedPostgres = true;
@@ -259,14 +264,14 @@ export default async function handler(req: any, res: any) {
   }
 
   // In-memory fallback (strictly checks registered users only; never auto-creates or overwrites accounts from trip_members)
-  if (!foundUser) {
+  if (candidateUsers.length === 0) {
     const localUser = findLocalUser(rawInput);
     if (localUser) {
-      foundUser = localUser;
+      candidateUsers = [localUser];
     }
   }
 
-  if (!foundUser) {
+  if (candidateUsers.length === 0) {
     logSecurityEvent("AUTH_LOGIN_FAILED", {
       ip: clientIp,
       identifier: trimmedLower.slice(0, 3) + "***",
@@ -278,7 +283,21 @@ export default async function handler(req: any, res: any) {
     });
   }
 
-  const passCheck = verifyPasswordMatchNode(inputPassword, foundUser.password_hash);
+  let foundUser: any = candidateUsers[0];
+  let passCheck = verifyPasswordMatchNode(inputPassword, foundUser.password_hash);
+
+  // If multiple accounts share the same phone number or name, check remaining candidates
+  if (!passCheck.valid && candidateUsers.length > 1) {
+    for (let i = 1; i < candidateUsers.length; i++) {
+      const check = verifyPasswordMatchNode(inputPassword, candidateUsers[i].password_hash);
+      if (check.valid) {
+        foundUser = candidateUsers[i];
+        passCheck = check;
+        break;
+      }
+    }
+  }
+
   if (!passCheck.valid) {
     logSecurityEvent("AUTH_LOGIN_FAILED", { ip: clientIp, userId: foundUser.id, reason: "invalid_password" });
     return sendJson(res, 401, {

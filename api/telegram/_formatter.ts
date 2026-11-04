@@ -1,4 +1,4 @@
-import { DiagnosticResult } from "../_health/_runner";
+import { DiagnosticResult } from "../_health/_runner.js";
 
 /**
  * Format a diagnostic sweep result for Telegram HTML message

@@ -46,8 +46,18 @@
       "destination": "/api/health?action=run-check"
     },
     {
+      "source": "/api/cron/daily-check",
+      "destination": "/api/health?action=cron"
+    },
+    {
       "source": "/((?!api/).*)",
       "destination": "/index.html"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/daily-check",
+      "schedule": "30 20 * * *"
     }
   ]
 }

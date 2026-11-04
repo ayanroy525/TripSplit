@@ -305,8 +305,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }
 
           return { success: true, user: userAccount };
-        } else {
-          // Authoritative error from server (401, 429, 400, etc.)
+        } else if (response.status >= 400 && response.status < 500) {
+          // Authoritative client/auth error from server (401, 429, 400, etc.)
           return {
             success: false,
             error: resData.error || "Invalid credentials. Please verify your email/phone and password.",
@@ -317,11 +317,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       console.warn("Backend auth endpoint unreachable, checking Supabase Auth:", apiErr);
     }
 
-    // 2. Secondary Auth: Attempt standard Supabase Auth signInWithPassword if server endpoint was unreachable
+    // 2. Secondary Auth: Attempt standard Supabase Auth signInWithPassword if server endpoint was unreachable or returned 5xx
+    let candidateEmails: string[] = [];
     if (trimmedInput.includes("@")) {
+      candidateEmails = [trimmedInput];
+    } else {
+      try {
+        const { data: resolvedRows } = await supabase.rpc("resolve_email_for_login", {
+          p_identifier: rawInput,
+        });
+        if (Array.isArray(resolvedRows)) {
+          candidateEmails = resolvedRows
+            .map((r: any) => (r?.email || "").trim().toLowerCase())
+            .filter(Boolean);
+        }
+      } catch (rpcErr) {
+        console.warn("Could not resolve email for phone/name login:", rpcErr);
+      }
+    }
+
+    let lastAuthError: any = null;
+    for (const emailCandidate of candidateEmails) {
       try {
         const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-          email: trimmedInput,
+          email: emailCandidate,
           password,
         });
 
@@ -334,22 +353,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setAccounts((prev) => [userAccount, ...prev.filter((a) => a.id !== userAccount.id)]);
           return { success: true, user: userAccount };
         } else if (authError) {
-          const msg = authError.message?.toLowerCase() || "";
-          if (msg.includes("email not confirmed") || msg.includes("confirm your email")) {
-            return {
-              success: false,
-              isEmailNotConfirmed: true,
-              error: "Please check your email and click the confirmation link before logging in.",
-            };
-          }
-          return {
-            success: false,
-            error: authError.message || "Invalid email or password.",
-          };
+          lastAuthError = authError;
         }
       } catch (err) {
         console.warn("Supabase auth login notice:", err);
       }
+    }
+
+    if (lastAuthError) {
+      const msg = lastAuthError.message?.toLowerCase() || "";
+      if (msg.includes("email not confirmed") || msg.includes("confirm your email")) {
+        return {
+          success: false,
+          isEmailNotConfirmed: true,
+          error: "Please check your email and click the confirmation link before logging in.",
+        };
+      }
+      return {
+        success: false,
+        error: lastAuthError.message || "Invalid email/phone or password.",
+      };
     }
 
     return {

@@ -11,7 +11,7 @@ import {
   checkRateLimit,
   getClientIp,
   type LocalUserRecord,
-} from "../_shared";
+} from "../_shared.js";
 
 export default async function handler(req: any, res: any) {
   setCorsHeaders(res, req);

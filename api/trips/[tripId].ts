@@ -6,7 +6,7 @@ import {
   sendJson,
   getLocalStore,
   saveLocalStore,
-} from "../_shared";
+} from "../_shared.js";
 
 function normalizeInviteCodeInput(rawInput: any): string {
   let raw = String(rawInput || "").trim();

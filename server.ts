@@ -15,7 +15,12 @@ import {
   getFullTripsForUser,
   LocalUserRecord,
 } from "./src/serverDb.js";
-import { runDiagnosticSweep } from "./api/_health/_runner";
+import {
+  runDiagnosticSweep,
+  inMemoryHealthChecks,
+  get2AMISTScheduleInfo,
+  ensureDaily2AMCheckRan,
+} from "./api/_health/_runner";
 import loginHandler from "./api/auth/login";
 import signupHandler from "./api/auth/signup";
 import telegramSettingsHandler from "./api/telegram/_settings";
@@ -1239,6 +1244,12 @@ app.post("/api/health/run-check", adminOnlyMiddleware, async (_req, res) => {
 });
 
 app.get("/api/health/history", adminOnlyMiddleware, async (_req, res) => {
+  try {
+    await ensureDaily2AMCheckRan();
+  } catch (catchupErr: any) {
+    console.warn("Notice during 2 AM catchup check in history:", catchupErr?.message || catchupErr);
+  }
+
   if (pool) {
     try {
       const result = await pool.query(`
@@ -1251,6 +1262,14 @@ app.get("/api/health/history", adminOnlyMiddleware, async (_req, res) => {
     } catch (err: any) {
       console.warn("Notice querying health_checks in PostgreSQL:", err?.message || err);
     }
+  }
+
+  if (inMemoryHealthChecks.length > 0) {
+    return res.json({
+      success: true,
+      source: "in_memory",
+      history: inMemoryHealthChecks.slice(-30).reverse(),
+    });
   }
 
   const filePath = path.resolve(__dirname, "data", "health_checks.json");
@@ -1283,34 +1302,9 @@ app.all("/api/*", authMiddleware, (_req, res) => {
 
 async function checkAndRunMissedDailyCheck() {
   try {
-    const todayStr = new Date().toISOString().split("T")[0];
-    let alreadyRanToday = false;
-    if (pool) {
-      try {
-        const res = await pool.query(
-          `SELECT id FROM public.health_checks WHERE check_type = 'scheduled_2am' AND executed_at::date = $1 LIMIT 1;`,
-          [todayStr]
-        );
-        if (res.rows.length > 0) alreadyRanToday = true;
-      } catch {}
-    }
-    const filePath = path.resolve(__dirname, "data", "health_checks.json");
-    if (!alreadyRanToday && fs.existsSync(filePath)) {
-      try {
-        const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-        if (Array.isArray(data)) {
-          const found = data.some((d: any) => d.check_type === "scheduled_2am" && d.executed_at && d.executed_at.startsWith(todayStr));
-          if (found) alreadyRanToday = true;
-        }
-      } catch {}
-    }
-
-    if (!alreadyRanToday) {
-      console.log("[Scheduler] Missed daily 2 AM health check detected for today. Executing now...");
-      await runDiagnosticSweep("scheduled_2am");
-    }
+    await ensureDaily2AMCheckRan();
   } catch (err) {
-    console.warn("[Scheduler] Error checking missed daily check:", err);
+    console.warn("[Scheduler] Error checking missed daily 2 AM IST check:", err);
   }
 }
 
@@ -1319,35 +1313,33 @@ function scheduleDailyNightCheck() {
     checkAndRunMissedDailyCheck();
   }, 2000);
 
-  const now = new Date();
-  const next2am = new Date(now);
-  next2am.setHours(2, 0, 0, 0);
-  if (now >= next2am) {
-    next2am.setDate(next2am.getDate() + 1);
-  }
-  const delay = next2am.getTime() - now.getTime();
-  console.log(`[Scheduler] Daily 2:00 AM health check scheduled in ${Math.round(delay / 60000)} minutes (at ${next2am.toISOString()})`);
+  const { next2AMUtcIso, msUntilNext2AMIST } = get2AMISTScheduleInfo();
+  console.log(
+    `[Scheduler] Daily 2:00 AM IST health check scheduled in ${Math.round(
+      msUntilNext2AMIST / 60000
+    )} minutes (at ${next2AMUtcIso} / 02:00 AM IST)`
+  );
 
   setTimeout(async () => {
     try {
-      console.log("[Scheduler] Executing scheduled daily 2:00 AM health check sweep...");
+      console.log("[Scheduler] Executing scheduled daily 2:00 AM IST health check sweep...");
       await runDiagnosticSweep("scheduled_2am");
     } catch (err) {
-      console.error("[Scheduler] Error in daily 2:00 AM health check:", err);
+      console.error("[Scheduler] Error in daily 2:00 AM IST health check:", err);
     }
     setInterval(async () => {
       try {
-        console.log("[Scheduler] Executing scheduled daily 2:00 AM health check sweep...");
+        console.log("[Scheduler] Executing scheduled daily 2:00 AM IST health check sweep...");
         await runDiagnosticSweep("scheduled_2am");
       } catch (err) {
-        console.error("[Scheduler] Error in daily 2:00 AM health check:", err);
+        console.error("[Scheduler] Error in daily 2:00 AM IST health check:", err);
       }
     }, 24 * 60 * 60 * 1000);
-  }, delay);
+  }, msUntilNext2AMIST);
 
   setInterval(() => {
     checkAndRunMissedDailyCheck();
-  }, 60 * 60 * 1000);
+  }, 15 * 60 * 1000);
 }
 
 async function setupServer() {

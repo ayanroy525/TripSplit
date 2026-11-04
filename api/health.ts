@@ -1,6 +1,7 @@
-import { setCorsHeaders, sendJson } from "./_shared";
-import historyHandler from "./_health/_history";
-import runCheckHandler from "./_health/_run-check";
+import { setCorsHeaders, sendJson, verifyCronOrAdminRequest } from "./_shared.js";
+import historyHandler from "./_health/_history.js";
+import runCheckHandler from "./_health/_run-check.js";
+import { runDiagnosticSweep } from "./_health/_runner.js";
 
 export default async function handler(req: any, res: any) {
   setCorsHeaders(res, req);
@@ -17,6 +18,28 @@ export default async function handler(req: any, res: any) {
   }
   if (queryAction === "run-check" || url.includes("/run-check")) {
     return runCheckHandler(req, res);
+  }
+  if (queryAction === "cron" || url.includes("/cron") || url.includes("/daily-check")) {
+    const cronAuth = await verifyCronOrAdminRequest(req);
+    if (!cronAuth.authorized) {
+      return sendJson(res, cronAuth.statusCode || 401, {
+        success: false,
+        error: cronAuth.error || "Unauthorized cron or admin request.",
+      });
+    }
+    try {
+      const result = await runDiagnosticSweep("scheduled_2am");
+      return sendJson(res, 200, {
+        success: true,
+        message: "Daily 2 AM IST diagnostic completed",
+        diagnostic: result,
+      });
+    } catch (err: any) {
+      return sendJson(res, 500, {
+        success: false,
+        error: err?.message || "Cron execution error",
+      });
+    }
   }
 
   return sendJson(res, 200, {

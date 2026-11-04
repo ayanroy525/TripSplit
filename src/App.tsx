@@ -242,6 +242,7 @@ export default function App() {
           onOpenJoinModal={() => setIsJoinTripModalOpen(true)}
           onOpenCreateTrip={() => setIsTripsHubModalOpen(true)}
           onOpenUserProfile={() => setIsUserProfileOpen(true)}
+          onOpenHealthModal={isAdmin ? () => setIsHealthModalOpen(true) : undefined}
           onLogout={() => logout()}
           onJoinSuccess={(joinedTrip) => {
             if (!trips.find((t) => t.id === joinedTrip.id)) {
@@ -301,6 +302,13 @@ export default function App() {
                 setIsJoinTripModalOpen(true);
               }}
               onClose={() => setIsTripsHubModalOpen(false)}
+            />
+          )}
+
+          {isAdmin && isHealthModalOpen && (
+            <SystemHealthModal
+              isOpen={isHealthModalOpen}
+              onClose={() => setIsHealthModalOpen(false)}
             />
           )}
         </React.Suspense>
