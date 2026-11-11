@@ -260,7 +260,8 @@ export async function ensureDaily2AMCheckRan(): Promise<DiagnosticResult | null>
           return null;
         }
       } catch (err: any) {
-        console.warn("Notice checking existing scheduled_2am log:", err?.message || err);
+        console.warn("Notice checking existing scheduled_2am log (will retry next cycle):", err?.message || err);
+        return null;
       }
     }
 

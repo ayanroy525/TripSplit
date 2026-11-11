@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { Pool } from "pg";
 import crypto from "crypto";
 import fs from "fs";
@@ -8,6 +9,8 @@ const rawConn = (
   process.env.POSTGRES_URL ||
   process.env.DATABASE_URL ||
   process.env.POSTGRES_URL_NON_POOLING ||
+  process.env.new_POSTGRES_URL ||
+  process.env.new_POSTGRES_URL_NON_POOLING ||
   process.env.SUPABASE_DATABASE_URL ||
   process.env.POSTGRESQL_URL ||
   ""
@@ -64,7 +67,7 @@ export const pool = rawConn
       max: 6,
       min: 1,
       idleTimeoutMillis: 60000,
-      connectionTimeoutMillis: 5000,
+      connectionTimeoutMillis: 15000,
       keepAlive: true,
       keepAliveInitialDelayMillis: 10000,
     })
@@ -102,19 +105,7 @@ export function getValidatedSessionSecret(): string {
       .update("tripsplit_auth_session_secret_seed")
       .digest("hex");
   }
-  const vercelFallbackSeed =
-    process.env.VERCEL_PROJECT_ID ||
-    process.env.SUPABASE_ANON_KEY ||
-    process.env.VITE_SUPABASE_ANON_KEY ||
-    "";
-  if (vercelFallbackSeed.trim() !== "") {
-    return crypto
-      .createHmac("sha256", vercelFallbackSeed.trim())
-      .update("tripsplit_auth_session_secret_seed")
-      .digest("hex");
-  }
-
-  // If in production and NO secret or infrastructure credentials exist at all:
+  // If in production and NO secret or private infrastructure credentials exist at all:
   if (process.env.NODE_ENV === "production") {
     throw new Error("CRITICAL SECURITY ERROR: SESSION_SECRET or AUTH_SECRET environment variable is required in production.");
   }
@@ -126,16 +117,11 @@ export const getSessionSecret = getValidatedSessionSecret;
 export const SESSION_SECRET = (() => {
   try {
     return getValidatedSessionSecret();
-  } catch {
-    const runtimeSeed =
-      process.env.VERCEL_URL ||
-      process.env.VERCEL_GIT_COMMIT_SHA ||
-      process.env.VERCEL_REGION ||
-      "tripsplit_vercel_serverless_hmac_seed";
-    return crypto
-      .createHmac("sha256", runtimeSeed)
-      .update("tripsplit_auth_session_secret_seed")
-      .digest("hex");
+  } catch (err) {
+    if (process.env.NODE_ENV === "production") {
+      throw err;
+    }
+    return "tripsplit_session_secret_dev";
   }
 })();
 export const PASSWORD_SALT =
@@ -601,9 +587,20 @@ export function isOriginAllowed(origin: string): boolean {
       return true;
     }
 
-    // Google Cloud Run and Vercel application domains
-    if (hostname.endsWith(".run.app") || hostname.endsWith(".vercel.app")) {
+    // Google Cloud Run preview domains and project-scoped Vercel domains
+    if (hostname.endsWith(".run.app")) {
       return true;
+    }
+    if (hostname.endsWith(".vercel.app")) {
+      const vercelHost = (process.env.VERCEL_URL || "").trim().toLowerCase().replace(/^https?:\/\//, "");
+      if (
+        (vercelHost && hostname === vercelHost) ||
+        hostname.startsWith("tripsplit") ||
+        hostname.startsWith("spliito") ||
+        hostname.startsWith("travelsplit")
+      ) {
+        return true;
+      }
     }
 
     return false;

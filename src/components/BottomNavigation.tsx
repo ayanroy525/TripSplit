@@ -22,7 +22,10 @@ export function BottomNavigation({
   return (
     <nav
       id="bottom-navigation-bar"
-      className="fixed bottom-0 left-0 right-0 z-50 bg-[var(--c-card,#1E293B)] border-t border-[var(--c-line,#334155)] shadow-xl pb-[env(safe-area-inset-bottom,6px)] md:hidden select-none"
+      className="fixed bottom-0 left-0 right-0 z-50 backdrop-blur-xl border-t border-[var(--c-line,#334155)] shadow-2xl pb-[env(safe-area-inset-bottom,6px)] md:hidden select-none"
+      style={{
+        backgroundColor: "var(--c-glass-header, rgba(7, 13, 25, 0.85))",
+      }}
     >
       <div className="max-w-md mx-auto flex items-center justify-around h-16 px-2 relative">
         {/* 1. HOME */}
@@ -66,7 +69,11 @@ export function BottomNavigation({
                 onOpenAddExpense();
               }}
               aria-label="Add new expense"
-              className="w-12 h-12 rounded-full bg-[var(--c-teal,#2DD4BF)] text-[var(--c-teal-contrast-text,#0F172A)] border-4 border-[var(--c-paper,#0F172A)] shadow-lg flex items-center justify-center -translate-y-3 hover:brightness-110 active:scale-95 transition-all cursor-pointer z-10"
+              className="w-12 h-12 rounded-2xl text-white border-2 border-white/25 shadow-lg flex items-center justify-center -translate-y-3 hover:brightness-110 active:scale-95 transition-all cursor-pointer z-10"
+              style={{
+                background: "linear-gradient(135deg, #0D7A72 0%, #14B8A6 100%)",
+                boxShadow: "0 8px 20px -4px rgba(20, 184, 166, 0.5)",
+              }}
               title="Add Expense"
             >
               <Plus size={22} strokeWidth={3} />

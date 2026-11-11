@@ -255,4 +255,138 @@ describe("Backend Authorization & IDOR Security Guard", () => {
     });
     expect(lookupRes.status).toBe(404);
   });
+
+  it("enforces participant RBAC and persists nested members and itemized expenses in /api/sync/mutation", async () => {
+    if (!pool) return;
+    const testTripId = `trip_audit_rbac_${Date.now()}`;
+    const ownerId = `u_audit_owner_${Date.now()}`;
+    const partId = `u_audit_part_${Date.now()}`;
+    const ownerToken = generateTestToken(ownerId, "owner@audit.app", "Owner");
+    const partToken = generateTestToken(partId, "part@audit.app", "Participant");
+
+    try {
+      // 1. Owner creates trip via SAVE_TRIP_SNAPSHOT with nested members
+      const snapRes = await fetch(`${baseUrl}/api/sync/mutation`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          type: "SAVE_TRIP_SNAPSHOT",
+          tripId: testTripId,
+          payload: {
+            id: testTripId,
+            title: "Audit RBAC Trip",
+            ownerId,
+            ownerName: "Owner",
+            currency: "INR",
+            members: [
+              { id: `m_${ownerId}`, userId: ownerId, name: "Owner", role: "admin", avatarColor: "#0F6B65" },
+              { id: `m_${partId}`, userId: partId, name: "Participant", role: "participant", avatarColor: "#E39A2D" },
+            ],
+          },
+        }),
+      });
+      expect(snapRes.status).toBe(200);
+
+      // Verify nested members were persisted
+      const memCheck = await pool.query("SELECT id, role FROM public.trip_members WHERE trip_id = $1;", [testTripId]);
+      expect(memCheck.rows.length).toBe(2);
+
+      // 2. Owner saves an itemized expense with auditLogs
+      const expId = `exp_audit_${Date.now()}`;
+      const expRes = await fetch(`${baseUrl}/api/sync/mutation`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          type: "SAVE_EXPENSE",
+          tripId: testTripId,
+          payload: {
+            id: expId,
+            title: "Itemized Lunch",
+            amount: 1000,
+            paidBy: `m_${ownerId}`,
+            createdBy: ownerId,
+            method: "itemized",
+            splitType: "itemized",
+            participants: [`m_${ownerId}`, `m_${partId}`],
+            splits: { [`m_${ownerId}`]: 600, [`m_${partId}`]: 400 },
+            items: [{ id: "item_1", name: "Thali", amount: 1000, assignedTo: [`m_${ownerId}`, `m_${partId}`] }],
+            auditLogs: [{ id: "log_1", ts: "Now", user: "Owner", action: "created" }],
+          },
+        }),
+      });
+      expect(expRes.status).toBe(200);
+
+      const expDb = await pool.query("SELECT items, audit_logs FROM public.expenses WHERE id = $1;", [expId]);
+      expect(Array.isArray(expDb.rows[0]?.items)).toBe(true);
+      expect(expDb.rows[0].items.length).toBe(1);
+      expect(Array.isArray(expDb.rows[0]?.audit_logs)).toBe(true);
+
+      // 3. Participant CANNOT delete a member (403)
+      const delMemRes = await fetch(`${baseUrl}/api/sync/mutation`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${partToken}`,
+        },
+        body: JSON.stringify({
+          type: "DELETE_MEMBER",
+          tripId: testTripId,
+          payload: { memberId: `m_${ownerId}` },
+        }),
+      });
+      expect(delMemRes.status).toBe(403);
+
+      // 4. Participant CANNOT promote themselves to admin (403)
+      const promoteRes = await fetch(`${baseUrl}/api/sync/mutation`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${partToken}`,
+        },
+        body: JSON.stringify({
+          type: "SAVE_MEMBER",
+          tripId: testTripId,
+          payload: { id: `m_${partId}`, userId: partId, name: "Participant", role: "admin" },
+        }),
+      });
+      expect(promoteRes.status).toBe(403);
+
+      // 5. Participant CANNOT edit or delete Owner's expense (403)
+      const editOtherExpRes = await fetch(`${baseUrl}/api/sync/mutation`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${partToken}`,
+        },
+        body: JSON.stringify({
+          type: "SAVE_EXPENSE",
+          tripId: testTripId,
+          payload: { id: expId, title: "Tampered Title", amount: 1000 },
+        }),
+      });
+      expect(editOtherExpRes.status).toBe(403);
+
+      const delOtherExpRes = await fetch(`${baseUrl}/api/sync/mutation`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${partToken}`,
+        },
+        body: JSON.stringify({
+          type: "DELETE_EXPENSE",
+          tripId: testTripId,
+          payload: { expenseId: expId },
+        }),
+      });
+      expect(delOtherExpRes.status).toBe(403);
+    } finally {
+      await pool.query("DELETE FROM public.trips WHERE id = $1;", [testTripId]);
+    }
+  });
 });

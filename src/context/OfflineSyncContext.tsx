@@ -82,6 +82,9 @@ export function OfflineSyncProvider({ children }: { children: React.ReactNode })
 
     const handleQueueChange = () => {
       refreshPendingCount();
+      if (navigator.onLine && getOfflineQueue().length > 0) {
+        triggerSync();
+      }
     };
 
     window.addEventListener("online", handleOnline);

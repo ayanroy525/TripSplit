@@ -73,13 +73,13 @@ export function BalanceView({
   return (
     <div className="flex flex-col gap-4">
       {/* 1. HERO NET BANNER */}
-      <div className="bg-[var(--c-card)] border border-[var(--c-line)] rounded-2xl p-5 sm:p-6 shadow-sm flex flex-col gap-4">
+      <div className="bg-[var(--c-card)] border border-[var(--c-line)] rounded-2xl p-4 sm:p-6 shadow-sm flex flex-col gap-4">
         {/* Status Title & Number */}
         <div className="text-center py-1">
           <div
-            className={`text-xs font-bold uppercase tracking-wider ${
+            className={`text-xs font-extrabold uppercase tracking-wider ${
               userStats.net > 0.01
-                ? "text-emerald-700"
+                ? "text-[var(--c-positive)]"
                 : userStats.net < -0.01
                 ? "text-[var(--c-rust)]"
                 : simplifiedDebts.length > 0
@@ -97,9 +97,9 @@ export function BalanceView({
           </div>
 
           <div
-            className={`text-3xl sm:text-4xl font-extrabold mt-1 tracking-tight ${
+            className={`text-3xl sm:text-4xl font-extrabold font-mono-tabular mt-1 tracking-tight ${
               userStats.net > 0.01
-                ? "text-emerald-700"
+                ? "text-[var(--c-positive)]"
                 : userStats.net < -0.01
                 ? "text-[var(--c-rust)]"
                 : "text-[var(--c-ink)]"
@@ -127,8 +127,14 @@ export function BalanceView({
 
         {/* Breakdown of who owes you / who you owe */}
         {userStats.net > 0.01 && userReceives.length > 0 && (
-          <div className="bg-emerald-50/50 border border-emerald-200 rounded-xl p-3.5 flex flex-col gap-2.5">
-            <div className="text-xs font-bold text-emerald-800 uppercase tracking-wide">
+          <div
+            className="rounded-xl p-3 sm:p-3.5 flex flex-col gap-2.5"
+            style={{
+              backgroundColor: "var(--c-positiveSoft)",
+              border: "1px solid var(--c-positive)",
+            }}
+          >
+            <div className="text-[11px] font-extrabold text-[var(--c-positive)] uppercase tracking-wider">
               Members who owe you:
             </div>
             {userReceives.map((d, idx) => {
@@ -136,16 +142,16 @@ export function BalanceView({
               return (
                 <div
                   key={idx}
-                  className="flex items-center justify-between gap-3 bg-[var(--c-card)] p-2.5 sm:p-3 rounded-lg border border-[var(--c-line)]"
+                  className="flex items-center justify-between gap-2.5 bg-[var(--c-card)] p-2.5 sm:p-3 rounded-xl border border-[var(--c-line)]"
                 >
-                  <div className="flex items-center gap-2.5">
+                  <div className="flex items-center gap-2.5 min-w-0 flex-1">
                     <Avatar member={debtor} name={debtor?.name || d.from} size={32} />
-                    <div>
-                      <div className="text-sm font-semibold text-[var(--c-ink)]">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-bold text-[var(--c-ink)] truncate">
                         {debtor?.name || d.from}
                       </div>
-                      <div className="text-xs text-[var(--c-inkSoft)]">
-                        owes you <b className="text-emerald-700">{money(d.amount)}</b>
+                      <div className="text-xs text-[var(--c-inkSoft)] truncate">
+                        owes you <b className="text-[var(--c-positive)] font-mono-tabular">{money(d.amount)}</b>
                       </div>
                     </div>
                   </div>
@@ -153,7 +159,7 @@ export function BalanceView({
                   <button
                     type="button"
                     onClick={() => onOpenSettleModal(debtor?.id || d.from, currentUser.id, d.amount)}
-                    className="px-3 py-1.5 text-xs font-semibold text-[var(--c-teal-contrast-text)] bg-teal-700 hover:bg-teal-800 rounded-lg shadow-sm transition-colors cursor-pointer"
+                    className="px-3 py-1.5 text-xs font-bold text-white bg-teal-600 hover:bg-teal-500 rounded-lg shadow-xs transition-colors cursor-pointer shrink-0"
                   >
                     Record Received
                   </button>
@@ -164,8 +170,8 @@ export function BalanceView({
         )}
 
         {userStats.net < -0.01 && userOwes.length > 0 && (
-          <div className="bg-[var(--c-rustSoft)]/50 border border-[var(--c-rust)] rounded-xl p-3.5 flex flex-col gap-2.5">
-            <div className="text-xs font-bold text-[var(--c-rust)] uppercase tracking-wide">
+          <div className="bg-[var(--c-rustSoft)] border border-[var(--c-rust)] rounded-xl p-3 sm:p-3.5 flex flex-col gap-2.5">
+            <div className="text-[11px] font-extrabold text-[var(--c-rust)] uppercase tracking-wider">
               You owe:
             </div>
             {userOwes.map((d, idx) => {
@@ -173,16 +179,16 @@ export function BalanceView({
               return (
                 <div
                   key={idx}
-                  className="flex items-center justify-between gap-3 bg-[var(--c-card)] p-2.5 sm:p-3 rounded-lg border border-[var(--c-line)]"
+                  className="flex items-center justify-between gap-2.5 bg-[var(--c-card)] p-2.5 sm:p-3 rounded-xl border border-[var(--c-line)]"
                 >
-                  <div className="flex items-center gap-2.5">
+                  <div className="flex items-center gap-2.5 min-w-0 flex-1">
                     <Avatar member={creditor} name={creditor?.name || d.to} size={32} />
-                    <div>
-                      <div className="text-sm font-semibold text-[var(--c-ink)]">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-bold text-[var(--c-ink)] truncate">
                         {creditor?.name || d.to}
                       </div>
-                      <div className="text-xs text-[var(--c-inkSoft)]">
-                        Amount: <b className="text-[var(--c-rust)]">{money(d.amount)}</b>
+                      <div className="text-xs text-[var(--c-inkSoft)] truncate">
+                        Amount: <b className="text-[var(--c-rust)] font-mono-tabular">{money(d.amount)}</b>
                       </div>
                     </div>
                   </div>
@@ -190,7 +196,7 @@ export function BalanceView({
                   <button
                     type="button"
                     onClick={() => onOpenSettleModal(currentUser.id, creditor?.id || d.to, d.amount)}
-                    className="px-3.5 py-1.5 text-xs font-semibold text-[var(--c-teal-contrast-text)] bg-[var(--c-ink)] hover:bg-[var(--c-inkSoft)] rounded-lg shadow-sm transition-colors cursor-pointer flex items-center gap-1.5"
+                    className="px-3 py-1.5 text-xs font-bold text-[var(--c-teal-contrast-text)] bg-[var(--c-teal)] hover:opacity-90 rounded-lg shadow-xs transition-opacity cursor-pointer flex items-center gap-1.5 shrink-0"
                   >
                     <Check className="w-3.5 h-3.5" />
                     Record Paid
@@ -206,7 +212,7 @@ export function BalanceView({
           id="btn-open-settle-modal"
           type="button"
           onClick={() => onOpenSettleModal()}
-          className="w-full py-3 px-4 bg-teal-800 hover:bg-[var(--c-teal)] text-[var(--c-teal-contrast-text)] text-sm font-semibold rounded-xl shadow-sm transition-colors flex items-center justify-center gap-2 cursor-pointer"
+          className="w-full py-3 px-4 bg-[var(--c-teal)] hover:opacity-95 text-[var(--c-teal-contrast-text)] text-sm font-extrabold rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer"
         >
           <Sparkles className="w-4 h-4" />
           <span>Record Settlement Payment</span>
@@ -214,52 +220,52 @@ export function BalanceView({
       </div>
 
       {/* 2. TAB SWITCHER: SMART SETTLEMENT vs PAYMENT HISTORY */}
-      <div className="grid grid-cols-2 bg-[var(--c-lineSoft)] p-1 rounded-xl gap-1">
+      <div className="grid grid-cols-2 bg-[var(--c-paperDark)] border border-[var(--c-line)] p-1 rounded-xl gap-1">
         <button
           type="button"
           onClick={() => setActiveTab("smart")}
-          className={`py-2 text-xs sm:text-sm font-semibold rounded-lg transition-all cursor-pointer ${
+          className={`py-2 px-2 text-xs sm:text-sm font-bold rounded-lg transition-all cursor-pointer truncate ${
             activeTab === "smart"
-              ? "bg-[var(--c-card)] text-[var(--c-ink)] shadow-xs"
+              ? "bg-[var(--c-teal)] text-[var(--c-teal-contrast-text)] shadow-xs"
               : "text-[var(--c-inkSoft)] hover:text-[var(--c-ink)]"
           }`}
         >
-          Suggested Settlements ({simplifiedDebts.length})
+          Suggested ({simplifiedDebts.length})
         </button>
         <button
           type="button"
           onClick={() => setActiveTab("history")}
-          className={`py-2 text-xs sm:text-sm font-semibold rounded-lg transition-all cursor-pointer ${
+          className={`py-2 px-2 text-xs sm:text-sm font-bold rounded-lg transition-all cursor-pointer truncate ${
             activeTab === "history"
-              ? "bg-[var(--c-card)] text-[var(--c-ink)] shadow-xs"
+              ? "bg-[var(--c-teal)] text-[var(--c-teal-contrast-text)] shadow-xs"
               : "text-[var(--c-inkSoft)] hover:text-[var(--c-ink)]"
           }`}
         >
-          Settlement History ({completedPayments.length})
+          History ({completedPayments.length})
         </button>
       </div>
 
       {/* 3. TAB CONTENT: SMART SETTLEMENT */}
       {activeTab === "smart" && (
         <div className="flex flex-col gap-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-sm font-bold text-[var(--c-ink)]">
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <h2 className="text-sm font-extrabold text-[var(--c-ink)]">
                 Minimum Debt Settlements
               </h2>
-              <div className="text-xs text-[var(--c-inkSoft)]">
+              <div className="text-xs text-[var(--c-inkSoft)] truncate">
                 {simplifiedDebts.length} transaction(s) to settle all member balances
               </div>
             </div>
 
-            <span className="text-xs font-semibold text-[var(--c-teal)] bg-teal-50 border border-teal-200 px-2.5 py-0.5 rounded-full">
+            <span className="text-[11px] font-bold text-[var(--c-teal)] bg-[var(--c-tealSoft)] border border-[var(--c-teal)]/30 px-2.5 py-0.5 rounded-full shrink-0">
               Optimal Graph
             </span>
           </div>
 
           {simplifiedDebts.length === 0 ? (
             <div className="bg-[var(--c-card)] border border-dashed border-[var(--c-line)] rounded-xl p-8 text-center">
-              <CheckCircle2 className="w-9 h-9 text-emerald-600 mx-auto mb-2" />
+              <CheckCircle2 className="w-9 h-9 text-[var(--c-positive)] mx-auto mb-2" />
               <div className="text-sm font-bold text-[var(--c-ink)]">All Accounts Cleared</div>
               <div className="text-xs text-[var(--c-inkSoft)] mt-1">
                 No one in this trip owes any money.
@@ -276,21 +282,22 @@ export function BalanceView({
                 return (
                   <div
                     key={idx}
-                    className={`p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs ${
-                      isUserDebtor
-                        ? "bg-[var(--c-rustSoft)]/30 border-[var(--c-rust)]"
+                    className="p-3.5 sm:p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs bg-[var(--c-card)]"
+                    style={{
+                      borderColor: isUserDebtor
+                        ? "var(--c-rust)"
                         : isUserCreditor
-                        ? "bg-emerald-50/30 border-emerald-200"
-                        : "bg-[var(--c-card)] border-[var(--c-line)]"
-                    }`}
+                        ? "var(--c-positive)"
+                        : "var(--c-line)",
+                    }}
                   >
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
                       <Avatar member={debtor} name={debtor?.name || debt.from} size={36} />
-                      <div>
-                        <div className="text-sm font-semibold text-[var(--c-ink)] flex items-center gap-1.5">
-                          <span>{debtor?.name || debt.from} {isUserDebtor && "(You)"}</span>
-                          <ArrowRight className="w-3.5 h-3.5 text-[var(--c-inkSoft)]" />
-                          <span>{creditor?.name || debt.to} {isUserCreditor && "(You)"}</span>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-bold text-[var(--c-ink)] flex items-center gap-1.5 truncate">
+                          <span className="truncate">{debtor?.name || debt.from} {isUserDebtor && "(You)"}</span>
+                          <ArrowRight className="w-3.5 h-3.5 text-[var(--c-inkSoft)] shrink-0" />
+                          <span className="truncate">{creditor?.name || debt.to} {isUserCreditor && "(You)"}</span>
                         </div>
                         <div className="text-xs text-[var(--c-inkSoft)] mt-0.5">
                           {isUserDebtor
@@ -302,19 +309,15 @@ export function BalanceView({
                       </div>
                     </div>
 
-                    <div className="flex items-center justify-between sm:justify-end gap-3 pt-2 sm:pt-0 border-t sm:border-t-0 border-[var(--c-lineSoft)]">
-                      <div className="text-base font-bold text-[var(--c-ink)]">
+                    <div className="flex items-center justify-between sm:justify-end gap-3 pt-2.5 sm:pt-0 border-t sm:border-t-0 border-[var(--c-lineSoft)]">
+                      <div className="text-base font-extrabold font-mono-tabular text-[var(--c-ink)]">
                         {money(debt.amount)}
                       </div>
 
                       <button
                         type="button"
                         onClick={() => onOpenSettleModal(debt.from, debt.to, debt.amount)}
-                        className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg shadow-xs transition-colors cursor-pointer ${
-                          isUserDebtor
-                            ? "bg-[var(--c-ink)] hover:bg-[var(--c-inkSoft)] text-[var(--c-teal-contrast-text)]"
-                            : "bg-teal-700 hover:bg-teal-800 text-[var(--c-teal-contrast-text)]"
-                        }`}
+                        className="px-3.5 py-1.5 text-xs font-bold rounded-lg shadow-xs transition-opacity hover:opacity-90 cursor-pointer bg-[var(--c-teal)] text-[var(--c-teal-contrast-text)]"
                       >
                         Record Settlement
                       </button>

@@ -17,9 +17,9 @@ import {
   CheckCircle2,
 } from "lucide-react";
 import { Trip, Member, Expense, Debt } from "../types";
-import { C, CATEGORY_META } from "../utils/constants";
+import { C, CATEGORY_META, getCategoryMeta } from "../utils/constants";
 import { money, formatDate } from "../utils/calculations";
-import { Avatar, CategoryBadge } from "./Atoms";
+import { Avatar } from "./Atoms";
 
 interface HomeDashboardViewProps {
   trip: Trip;
@@ -75,15 +75,16 @@ export function HomeDashboardView({
   return (
     <div className="flex flex-col gap-3.5 sm:gap-4.5">
       {/* 1. Header Greeting & Active Trip Bar */}
-      <div className="flex flex-col gap-1.5 sm:gap-2 pt-0.5 sm:pt-1 pb-1 sm:pb-2">
+      <div className="flex flex-col gap-2 sm:gap-2.5 pt-0.5 sm:pt-1 pb-1 sm:pb-2">
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div>
-            <div style={{ fontSize: 13, color: C.inkSoft, fontWeight: 600 }}>
+            <div style={{ fontSize: 12.5, color: C.inkSoft, fontWeight: 700, letterSpacing: "0.02em" }}>
               {greeting},
             </div>
             <h1
               style={{
-                fontSize: 22,
+                fontFamily: "'Fraunces', 'Playfair Display', serif",
+                fontSize: 24,
                 fontWeight: 800,
                 color: C.ink,
                 margin: 0,
@@ -97,19 +98,21 @@ export function HomeDashboardView({
           <button
             type="button"
             onClick={onOpenTripsHub}
+            className="transition-all hover:opacity-90"
             style={{
               display: "inline-flex",
               alignItems: "center",
               gap: 6,
               background: C.card,
+              backdropFilter: "blur(12px)",
               border: `1px solid ${C.line}`,
-              borderRadius: 999,
-              padding: "6px 14px",
+              borderRadius: 12,
+              padding: "7px 14px",
               fontSize: 12.5,
               fontWeight: 700,
               color: C.teal,
               cursor: "pointer",
-              boxShadow: "0 1px 3px rgba(0,0,0,0.03)",
+              boxShadow: "0 2px 8px rgba(0,0,0,0.04)",
             }}
           >
             <span>Switch Trip</span>
@@ -120,23 +123,25 @@ export function HomeDashboardView({
         {/* Active Trip Info Chip */}
         <div
           onClick={onOpenTripsHub}
-          className="py-2 px-3 sm:py-2.5 sm:px-3.5"
+          className="py-2.5 px-3.5 sm:py-3 sm:px-4 transition-all hover:opacity-95"
           style={{
-            background: C.paperDark,
+            background: C.card,
+            backdropFilter: "blur(16px)",
             border: `1px solid ${C.line}`,
-            borderRadius: 14,
+            borderRadius: 16,
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
             cursor: "pointer",
+            boxShadow: "0 4px 16px -4px rgba(0,0,0,0.05)",
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 11, minWidth: 0 }}>
             <div
               style={{
-                width: 34,
-                height: 34,
-                borderRadius: 10,
+                width: 36,
+                height: 36,
+                borderRadius: 11,
                 background: C.tealSoft,
                 color: C.teal,
                 display: "flex",
@@ -178,7 +183,7 @@ export function HomeDashboardView({
                   alignItems: "center",
                   justifyContent: "center",
                   marginLeft: -8,
-                  border: `2px solid var(--c-paper, #F8F9FA)`,
+                  border: `2px solid var(--c-paper, #F4F7FB)`,
                 }}
               >
                 +{trip.members.length - 3}
@@ -190,56 +195,57 @@ export function HomeDashboardView({
 
       {/* 2. HERO FINANCE CARD (3-Second Rule) */}
       <div
+        className="p-4 sm:p-6"
         style={{
-          background: C.card,
-          border: `1px solid ${C.line}`,
-          borderRadius: 18,
-          padding: "20px 22px",
-          boxShadow: "0 4px 20px rgba(0, 0, 0, 0.04)",
+          background: "var(--c-hero-surface, linear-gradient(140deg, #072227 0%, #0C4341 52%, #082B31 100%))",
+          border: "1px solid var(--c-hero-border, rgba(45, 212, 191, 0.32))",
+          borderRadius: 22,
+          boxShadow: "0 20px 44px -12px rgba(6, 28, 33, 0.32)",
+          color: "#F8FAFC",
           display: "flex",
           flexDirection: "column",
           gap: 16,
         }}
       >
         {/* Top: Total Spent & Paid Overview */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-          <div>
-            <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", color: C.inkSoft, letterSpacing: "0.02em" }}>
+        <div className="grid grid-cols-2 gap-3 sm:gap-4">
+          <div className="min-w-0">
+            <div style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", color: "#94A3B8", letterSpacing: "0.05em" }}>
               Total Spent
             </div>
             <div
+              className="font-mono-tabular text-[22px] sm:text-[26px] truncate"
               style={{
-                fontSize: 24,
                 fontWeight: 800,
-                color: C.ink,
-                marginTop: 2,
-                letterSpacing: "-0.02em",
+                color: "#F8FAFC",
+                marginTop: 4,
+                letterSpacing: "-0.03em",
               }}
             >
               {money(totalTripSpent)}
             </div>
-            <div style={{ fontSize: 11.5, color: C.inkSoft, marginTop: 1 }}>
+            <div style={{ fontSize: 11, color: "#94A3B8", marginTop: 2 }}>
               {trip.expenses.filter((e) => !e.deleted).length} trip expenses
             </div>
           </div>
 
-          <div style={{ borderLeft: `1px solid ${C.line}`, paddingLeft: 14 }}>
-            <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", color: C.inkSoft, letterSpacing: "0.02em" }}>
+          <div className="min-w-0 pl-3 sm:pl-4" style={{ borderLeft: "1px solid rgba(148, 163, 184, 0.22)" }}>
+            <div style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", color: "#94A3B8", letterSpacing: "0.05em" }}>
               You Paid
             </div>
             <div
+              className="font-mono-tabular text-[22px] sm:text-[26px] truncate"
               style={{
-                fontSize: 24,
                 fontWeight: 800,
-                color: C.teal,
-                marginTop: 2,
-                letterSpacing: "-0.02em",
+                color: "#2DD4BF",
+                marginTop: 4,
+                letterSpacing: "-0.03em",
               }}
             >
               {money(userStats.paid)}
             </div>
-            <div style={{ fontSize: 11.5, color: C.inkSoft, marginTop: 1 }}>
-              Your share: <b>{money(userStats.share)}</b>
+            <div className="truncate" style={{ fontSize: 11, color: "#CBD5E1", marginTop: 2 }}>
+              Your share: <b className="font-mono-tabular" style={{ color: "#F8FAFC" }}>{money(userStats.share)}</b>
             </div>
           </div>
         </div>
@@ -249,19 +255,19 @@ export function HomeDashboardView({
           style={{
             background:
               userStats.net > 0.01
-                ? C.positiveSoft
+                ? "rgba(74, 222, 128, 0.14)"
                 : userStats.net < -0.01
-                ? C.rustSoft
-                : C.paperDark,
-            border: `1.5px solid ${
+                ? "rgba(248, 113, 113, 0.14)"
+                : "rgba(255, 255, 255, 0.07)",
+            border: `1px solid ${
               userStats.net > 0.01
-                ? C.positive
+                ? "rgba(74, 222, 128, 0.45)"
                 : userStats.net < -0.01
-                ? C.rust
-                : C.line
+                ? "rgba(248, 113, 113, 0.45)"
+                : "rgba(255, 255, 255, 0.14)"
             }`,
-            borderRadius: 14,
-            padding: "14px 18px",
+            borderRadius: 16,
+            padding: "15px 18px",
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
@@ -271,18 +277,18 @@ export function HomeDashboardView({
           <div>
             <div
               style={{
-                fontSize: 12,
+                fontSize: 11.5,
                 fontWeight: 800,
                 textTransform: "uppercase",
-                letterSpacing: "0.02em",
+                letterSpacing: "0.05em",
                 color:
                   userStats.net > 0.01
-                    ? C.positive
+                    ? "#4ADE80"
                     : userStats.net < -0.01
-                    ? C.rust
+                    ? "#F87171"
                     : simplifiedDebts.length > 0
-                    ? C.marigold
-                    : C.inkSoft,
+                    ? "#FBBF24"
+                    : "#94A3B8",
               }}
             >
               {userStats.net > 0.01
@@ -294,15 +300,17 @@ export function HomeDashboardView({
                 : "All Settled Up"}
             </div>
             <div
+              className="font-mono-tabular"
               style={{
-                fontSize: 22,
+                fontSize: 23,
                 fontWeight: 800,
+                letterSpacing: "-0.02em",
                 color:
                   userStats.net > 0.01
-                    ? C.positive
+                    ? "#4ADE80"
                     : userStats.net < -0.01
-                    ? C.rust
-                    : C.ink,
+                    ? "#F87171"
+                    : "#F8FAFC",
                 marginTop: 2,
               }}
             >
@@ -313,7 +321,7 @@ export function HomeDashboardView({
                 : "₹0.00"}
             </div>
             {Math.abs(userStats.net) <= 0.01 && simplifiedDebts.length > 0 && (
-              <div style={{ fontSize: 11.5, color: C.inkSoft, marginTop: 2 }}>
+              <div style={{ fontSize: 11.5, color: "#CBD5E1", marginTop: 2 }}>
                 {simplifiedDebts.length} pending settlement(s) in group
               </div>
             )}
@@ -324,19 +332,20 @@ export function HomeDashboardView({
               id="btn-home-settle-up-cta"
               type="button"
               onClick={onOpenSettleModal}
+              className="hover:brightness-105 active:scale-95 transition-all"
               style={{
-                background: C.teal,
+                background: "linear-gradient(135deg, #14B8A6 0%, #0D9488 100%)",
                 color: "#ffffff",
                 border: "none",
                 borderRadius: 12,
-                padding: "10px 18px",
+                padding: "11px 18px",
                 fontSize: 13.5,
                 fontWeight: 800,
                 cursor: "pointer",
                 display: "flex",
                 alignItems: "center",
                 gap: 6,
-                boxShadow: "0 2px 8px rgba(15, 107, 101, 0.3)",
+                boxShadow: "0 6px 18px -4px rgba(20, 184, 166, 0.5)",
                 whiteSpace: "nowrap",
               }}
             >
@@ -349,9 +358,9 @@ export function HomeDashboardView({
               type="button"
               disabled
               style={{
-                background: C.paperDark,
-                color: C.inkSoft,
-                border: `1px solid ${C.line}`,
+                background: "rgba(255, 255, 255, 0.08)",
+                color: "#CBD5E1",
+                border: "1px solid rgba(255, 255, 255, 0.16)",
                 borderRadius: 12,
                 padding: "10px 16px",
                 fontSize: 13,
@@ -361,12 +370,12 @@ export function HomeDashboardView({
                 alignItems: "center",
                 gap: 6,
                 boxShadow: "none",
-                opacity: 0.65,
+                opacity: 0.85,
                 whiteSpace: "nowrap",
               }}
               title="All settled up! No balance to settle."
             >
-              <CheckCircle2 size={15} color={C.positive} />
+              <CheckCircle2 size={15} color="#4ADE80" />
               <span>Settled</span>
             </button>
           )}
@@ -590,6 +599,9 @@ export function HomeDashboardView({
                 exp.splits[currentUserId] ||
                 0;
 
+              const meta = getCategoryMeta(exp.category, exp.title);
+              const CatIcon = meta.icon;
+
               return (
                 <div
                   key={exp.id}
@@ -597,23 +609,39 @@ export function HomeDashboardView({
                   style={{
                     background: C.card,
                     border: `1px solid ${C.line}`,
-                    borderRadius: 14,
-                    padding: "14px 16px",
+                    borderRadius: 16,
+                    padding: "12px 14px",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "space-between",
-                    gap: 12,
+                    gap: 10,
                     cursor: "pointer",
                     boxShadow: "0 1px 4px rgba(0,0,0,0.02)",
                     transition: "border-color .15s ease",
                   }}
                 >
-                  <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
-                    <CategoryBadge category={exp.category} title={exp.title} size="sm" />
-                    <div style={{ minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 11, minWidth: 0, flex: 1 }}>
+                    <div
+                      style={{
+                        width: 38,
+                        height: 38,
+                        borderRadius: 12,
+                        background: meta.bg || `${meta.color}18`,
+                        color: meta.text || meta.color,
+                        border: `1px solid ${meta.color}35`,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        flexShrink: 0,
+                      }}
+                      title={meta.resolvedCategory}
+                    >
+                      <CatIcon size={17} />
+                    </div>
+                    <div style={{ minWidth: 0, flex: 1 }}>
                       <div
                         style={{
-                          fontSize: 14.5,
+                          fontSize: 14,
                           fontWeight: 800,
                           color: C.ink,
                           whiteSpace: "nowrap",
@@ -623,24 +651,36 @@ export function HomeDashboardView({
                       >
                         {exp.title}
                       </div>
-                      <div style={{ fontSize: 11.5, color: C.inkSoft, marginTop: 2 }}>
+                      <div
+                        style={{
+                          fontSize: 11.5,
+                          color: C.inkSoft,
+                          marginTop: 2,
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        <span style={{ color: C.teal, fontWeight: 700 }}>{meta.resolvedCategory}</span>
+                        {" • "}
                         {isPaidByMe ? "Paid by You" : `Paid by ${payer?.name || "Member"}`} • {formatDate(exp.date)}
                       </div>
                     </div>
                   </div>
 
                   <div style={{ textAlign: "right", flexShrink: 0 }}>
-                    <div style={{ fontSize: 15.5, fontWeight: 800, color: C.ink }}>
+                    <div className="font-mono-tabular" style={{ fontSize: 15, fontWeight: 800, color: C.ink }}>
                       {money(exp.amount)}
                     </div>
                     <div
+                      className="font-mono-tabular"
                       style={{
-                        fontSize: 11,
+                        fontSize: 10.5,
                         fontWeight: 700,
                         color: myShare > 0 ? C.rust : C.inkSoft,
                       }}
                     >
-                      {myShare > 0 ? `Your share: ${money(myShare)}` : "Not split"}
+                      {myShare > 0 ? `Share: ${money(myShare)}` : "Not split"}
                     </div>
                   </div>
                 </div>
@@ -731,30 +771,43 @@ export function HomeDashboardView({
                         : C.line
                     }`,
                     borderRadius: 12,
-                    padding: "10px 14px",
+                    padding: "10px 12px",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "space-between",
                     gap: 10,
                   }}
                 >
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
-                    <Avatar member={debtor} name={debtor?.name || debt.from} size={24} />
-                    <span style={{ fontWeight: 700, color: C.ink }}>
-                      {debtor?.name || debt.from} {isUserDebtor && "(You)"}
-                    </span>
-                    <span style={{ color: C.inkSoft }}>→</span>
-                    <Avatar member={creditor} name={creditor?.name || debt.to} size={24} />
-                    <span style={{ fontWeight: 700, color: C.ink }}>
-                      {creditor?.name || debt.to} {isUserCreditor && "(You)"}
-                    </span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, minWidth: 0, flex: 1 }}>
+                    <div style={{ display: "flex", alignItems: "center", flexShrink: 0 }}>
+                      <Avatar member={debtor} name={debtor?.name || debt.from} size={24} />
+                      <div style={{ marginLeft: -6 }}>
+                        <Avatar member={creditor} name={creditor?.name || debt.to} size={24} />
+                      </div>
+                    </div>
+                    <div
+                      style={{
+                        minWidth: 0,
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        fontWeight: 700,
+                        color: C.ink,
+                      }}
+                    >
+                      <span>{isUserDebtor ? "You" : debtor?.name || debt.from}</span>
+                      <span style={{ color: C.inkSoft, margin: "0 5px" }}>→</span>
+                      <span>{isUserCreditor ? "You" : creditor?.name || debt.to}</span>
+                    </div>
                   </div>
 
                   <span
+                    className="font-mono-tabular"
                     style={{
-                      fontSize: 14,
+                      fontSize: 13.5,
                       fontWeight: 800,
                       color: isUserCreditor ? C.positive : isUserDebtor ? C.rust : C.ink,
+                      flexShrink: 0,
                     }}
                   >
                     {money(debt.amount)}

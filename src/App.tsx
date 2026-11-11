@@ -31,6 +31,7 @@ import { LoginPage } from "./components/LoginPage";
 import { BottomNavigation } from "./components/BottomNavigation";
 import { NotificationBell } from "./components/NotificationBell";
 import { NotificationToastContainer } from "./components/NotificationToastContainer";
+import { OfflineSyncBanner } from "./components/OfflineSyncBanner";
 
 // Lazy-loaded Views (Heavy chart and auxiliary tabs)
 const AnalyticsView = React.lazy(() =>
@@ -318,40 +319,49 @@ export default function App() {
 
   // 7. Main Application Shell
   return (
-    <div className="min-h-screen bg-[var(--c-paper,#0F172A)] text-[var(--c-ink,#F8FAFC)] pb-24 md:pb-12">
+    <div className="min-h-screen bg-[var(--c-paper,#070D19)] text-[var(--c-ink,#F8FAFC)] pb-28 md:pb-12">
+      <OfflineSyncBanner />
       {/* Top App Bar */}
       <header
-        className="sticky top-0 z-30 w-full shrink-0 shadow-xs backdrop-blur-md"
+        className="sticky top-0 z-30 w-full shrink-0 backdrop-blur-xl"
         style={{
-          backgroundColor: "var(--c-paper, #0F172A)",
-          borderBottom: "1px solid var(--c-line, #334155)",
+          backgroundColor: "var(--c-glass-header, rgba(7, 13, 25, 0.8))",
+          borderBottom: "1px solid var(--c-line, rgba(148, 163, 184, 0.18))",
+          boxShadow: "0 8px 30px -12px rgba(0, 0, 0, 0.15)",
         }}
       >
-        <div className="max-w-4xl mx-auto px-3.5 sm:px-6 h-16 flex items-center justify-between gap-3">
+        <div className="max-w-4xl mx-auto px-3 sm:px-6 h-15 sm:h-16 flex items-center justify-between gap-2 sm:gap-3">
           {/* Left: Trip Identity & Hub trigger */}
-          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+          <div className="flex items-center gap-2 sm:gap-2.5 min-w-0 flex-1 overflow-hidden">
             <button
               id="btn-header-trips-hub-icon"
               type="button"
               onClick={() => setIsTripsHubModalOpen(true)}
-              className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 shadow-xs transition-transform hover:scale-105 cursor-pointer"
+              className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center shrink-0 transition-transform hover:scale-105 cursor-pointer overflow-hidden"
               style={{
-                backgroundColor: "var(--c-badge-brand-bg, #042F2E)",
-                border: "1px solid var(--c-line, #334155)",
-                color: "var(--c-badge-brand-text, #5EEAD4)",
+                background: "linear-gradient(135deg, #0D7A72 0%, #14B8A6 100%)",
+                color: "#FFFFFF",
+                boxShadow: "0 4px 14px rgba(20, 184, 166, 0.35)",
+                border: "1px solid rgba(45, 212, 191, 0.4)",
+                padding: 0,
               }}
               title="Open Trips Hub (Switch or create trips)"
             >
-              <Banknote size={20} />
+              <img
+                src="/assets/brand/tripsplit-logo-icon.jpg"
+                alt="TripSplit Logo"
+                referrerPolicy="no-referrer"
+                className="w-full h-full object-cover"
+              />
             </button>
 
             <div className="min-w-0 flex flex-col justify-center flex-1 overflow-hidden">
-              <div className="flex items-center gap-1.5 min-w-0 flex-nowrap">
+              <div className="flex items-center gap-1.5 min-w-0">
                 <button
                   id="btn-header-trip-title"
                   type="button"
                   onClick={() => setIsTripsHubModalOpen(true)}
-                  className="text-sm sm:text-base font-extrabold tracking-tight truncate cursor-pointer text-left transition-opacity hover:opacity-80 shrink-0 max-w-[140px] sm:max-w-[240px]"
+                  className="text-[14px] sm:text-base font-extrabold tracking-tight truncate cursor-pointer text-left transition-opacity hover:opacity-80 min-w-0"
                   style={{ color: "var(--c-ink, #F8FAFC)" }}
                   title="Click to view all trips"
                 >
@@ -359,11 +369,11 @@ export default function App() {
                 </button>
 
                 <span
-                  className="px-1.5 py-0.5 rounded text-[10px] font-extrabold uppercase shrink-0"
+                  className="px-1.5 py-0.5 rounded-md text-[10px] font-extrabold uppercase shrink-0 font-mono-tabular leading-none"
                   style={{
-                    backgroundColor: "var(--c-paperDark, #1E293B)",
-                    color: "var(--c-marigold, #F59E0B)",
-                    border: "1px solid var(--c-line, #334155)",
+                    backgroundColor: "var(--c-paperDark, #111B2E)",
+                    color: "var(--c-marigold, #FBBF24)",
+                    border: "1px solid var(--c-line, rgba(148, 163, 184, 0.18))",
                   }}
                 >
                   {trip.currency || "INR"}
@@ -372,36 +382,39 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setIsTripsHubModalOpen(true)}
-                  className="px-2 py-0.5 rounded-full text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-opacity hover:opacity-80 shrink-0"
+                  className="hidden sm:inline-flex px-2 py-0.5 rounded-lg text-[10px] font-bold items-center gap-1 cursor-pointer transition-opacity hover:opacity-80 shrink-0"
                   style={{
-                    backgroundColor: "var(--c-badge-yellow-bg, #352610)",
+                    backgroundColor: "var(--c-badge-yellow-bg, rgba(251, 191, 36, 0.14))",
                     color: "var(--c-badge-yellow-text, #FBBF24)",
-                    border: "1px solid var(--c-badge-yellow-text, #FBBF24)",
+                    border: "1px solid var(--c-marigold, #FBBF24)",
                   }}
                   title="Switch or manage trips in Trips Hub"
                 >
                   <Compass size={11} />
-                  <span className="hidden sm:inline">Hub</span>
+                  <span>Hub</span>
                 </button>
               </div>
 
-              <div className="flex items-center gap-1 text-[11px] font-medium truncate mt-0.5" style={{ color: "var(--c-inkSoft, #94A3B8)" }}>
-                <MapPin size={11} style={{ color: "var(--c-rust, #F87171)" }} className="shrink-0" />
+              <div
+                className="flex items-center gap-1 text-[11px] font-medium truncate mt-0.5"
+                style={{ color: "var(--c-inkSoft, #94A3B8)" }}
+              >
+                <MapPin size={11} style={{ color: "var(--c-teal, #2DD4BF)" }} className="shrink-0" />
                 <span className="truncate">{trip.location}</span>
               </div>
             </div>
           </div>
 
           {/* Right: User Switcher Pill + Notification Bell + More Menu Dots */}
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <button
               id="btn-user-profile-menu"
               type="button"
               onClick={() => setIsUserProfileOpen(true)}
-              className="flex items-center gap-1.5 rounded-full px-2 sm:px-2.5 py-1.5 transition-all cursor-pointer shadow-xs hover:opacity-80"
+              className="h-9 flex items-center gap-1 sm:gap-1.5 rounded-xl px-2 sm:px-2.5 transition-all cursor-pointer shadow-xs hover:opacity-85 shrink-0"
               style={{
-                backgroundColor: "var(--c-paperDark, #1E293B)",
-                border: "1px solid var(--c-line, #334155)",
+                backgroundColor: "var(--c-paperDark, #111B2E)",
+                border: "1px solid var(--c-line, rgba(148, 163, 184, 0.18))",
               }}
               title={`Logged in as ${currentUser.name}. Click to view profile.`}
             >
@@ -426,10 +439,10 @@ export default function App() {
               id="btn-open-trip-more-menu"
               type="button"
               onClick={() => setIsMoreMenuOpen(true)}
-              className="w-9 h-9 rounded-full flex items-center justify-center transition-colors cursor-pointer shadow-xs hover:opacity-80"
+              className="w-9 h-9 rounded-xl flex items-center justify-center transition-colors cursor-pointer shadow-xs hover:opacity-85 shrink-0"
               style={{
-                backgroundColor: "var(--c-card, #1E293B)",
-                border: "1px solid var(--c-line, #334155)",
+                backgroundColor: "var(--c-paperDark, #111B2E)",
+                border: "1px solid var(--c-line, rgba(148, 163, 184, 0.18))",
                 color: "var(--c-ink, #F8FAFC)",
               }}
               title="More options & settings"
@@ -439,8 +452,8 @@ export default function App() {
           </div>
         </div>
 
-        {/* Desktop Navigation Tabs (md and up) */}
-        <nav className="hidden md:flex items-center gap-1.5 border-t border-[var(--c-line)] px-4 py-2 text-xs font-bold max-w-4xl mx-auto">
+        {/* Desktop Navigation Tabs (hidden on mobile since BottomNavigation is present) */}
+        <nav className="hidden md:flex items-center gap-1.5 border-t border-[var(--c-line)] px-6 py-2 text-xs font-bold max-w-4xl mx-auto overflow-x-auto no-scrollbar">
           {[
             { id: "home", label: "Dashboard" },
             { id: "expenses", label: `Expenses (${activeExpenses.length})` },
@@ -458,9 +471,9 @@ export default function App() {
                 key={tab.id}
                 type="button"
                 onClick={() => setActiveTab(tab.id as NavTab)}
-                className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
+                className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer whitespace-nowrap shrink-0 ${
                   isActive
-                    ? "bg-[var(--c-teal)] text-[var(--c-teal-contrast-text)] shadow-xs"
+                    ? "bg-[var(--c-teal)] text-[var(--c-teal-contrast-text)] shadow-sm"
                     : "text-[var(--c-inkSoft)] hover:text-[var(--c-ink)] hover:bg-[var(--c-paperDark)]"
                 }`}
               >
@@ -592,7 +605,11 @@ export default function App() {
             setEditingExpense(null);
             setIsExpenseModalOpen(true);
           }}
-          className="hidden md:flex fixed bottom-8 right-8 z-40 bg-[var(--c-teal,#0F6B65)] hover:bg-[var(--c-tealDark,#0B4F4B)] text-white px-5 py-3.5 rounded-2xl shadow-xl items-center gap-2.5 font-extrabold text-sm hover:scale-105 active:scale-95 transition-all cursor-pointer border border-white/20"
+          className="hidden md:flex fixed bottom-8 right-8 z-40 text-white px-5 py-3.5 rounded-2xl shadow-xl items-center gap-2.5 font-extrabold text-sm hover:scale-105 active:scale-95 transition-all cursor-pointer border border-white/20"
+          style={{
+            background: "linear-gradient(135deg, #0D7A72 0%, #14B8A6 100%)",
+            boxShadow: "0 12px 28px -6px rgba(20, 184, 166, 0.45)",
+          }}
           title="Add new expense"
         >
           <Plus size={20} strokeWidth={3} />

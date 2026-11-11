@@ -62,7 +62,11 @@ export function resolveSupabaseConfig(overrides?: {
     }
   }
 
-  if (overrides?.isProduction === true && (!urlCandidate || !resolvedKey)) {
+  if (
+    isProd &&
+    (overrides?.isProduction !== undefined || metaEnv.VITE_STRICT_SUPABASE_ENV === "true") &&
+    (!urlCandidate || !resolvedKey)
+  ) {
     throw new Error(
       "SECURITY ERROR: VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY are required in production. Fallback defaults are disabled."
     );

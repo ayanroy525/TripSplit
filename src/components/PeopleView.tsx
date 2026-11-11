@@ -81,30 +81,31 @@ export function PeopleView({
           return (
             <div
               key={m.id}
-              className={`p-4 rounded-xl border flex flex-col gap-3.5 shadow-xs transition-all ${
-                isMe ? "bg-teal-50/20 border-teal-300 ring-1 ring-teal-300/50" : "bg-[var(--c-card)] border-[var(--c-line)]"
-              }`}
+              className="p-3.5 sm:p-4 rounded-2xl border flex flex-col gap-3 shadow-xs transition-all bg-[var(--c-card)]"
+              style={{
+                borderColor: isMe ? "var(--c-teal)" : "var(--c-line)",
+              }}
             >
               {/* Top Row: Avatar, Name, Role badge, & IsMe tag */}
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
+              <div className="flex items-start justify-between gap-2.5">
+                <div className="flex items-center gap-3 min-w-0 flex-1">
                   <Avatar member={m} size={40} />
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-semibold text-[var(--c-ink)]">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="text-sm font-extrabold text-[var(--c-ink)] truncate">
                         {m.name}
                       </span>
                       {isMe && (
-                        <span className="text-[11px] font-medium text-[var(--c-teal)] bg-teal-50 border border-teal-200 px-2 py-0.5 rounded-full">
+                        <span className="text-[10px] font-bold text-[var(--c-teal)] bg-[var(--c-tealSoft)] border border-[var(--c-teal)]/30 px-2 py-0.5 rounded-full shrink-0">
                           You
                         </span>
                       )}
                     </div>
 
-                    <div className="flex items-center gap-2 mt-1">
+                    <div className="flex flex-wrap items-center gap-1.5 mt-1">
                       <RoleBadge role={m.role} />
                       {m.phone && (
-                        <span className="text-xs text-[var(--c-inkSoft)]">
+                        <span className="text-[11px] text-[var(--c-inkSoft)] truncate">
                           {m.phone}
                         </span>
                       )}
@@ -113,14 +114,14 @@ export function PeopleView({
                 </div>
 
                 {/* Balance Badge */}
-                <div className="text-right">
-                  <div className="text-[11px] font-bold uppercase tracking-wider text-[var(--c-inkSoft)]">
+                <div className="text-right shrink-0">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-[var(--c-inkSoft)]">
                     Net Balance
                   </div>
                   <div
-                    className={`text-sm font-bold mt-0.5 ${
+                    className={`text-sm font-extrabold font-mono-tabular mt-0.5 ${
                       stats.net > 0.01
-                        ? "text-emerald-700"
+                        ? "text-[var(--c-positive)]"
                         : stats.net < -0.01
                         ? "text-[var(--c-rust)]"
                         : "text-[var(--c-inkSoft)]"
@@ -136,27 +137,27 @@ export function PeopleView({
               </div>
 
               {/* Financial Metrics Strip */}
-              <div className="bg-[var(--c-paperDark)] rounded-lg p-2.5 grid grid-cols-3 gap-2 text-center">
+              <div className="bg-[var(--c-paperDark)] border border-[var(--c-line)] rounded-xl p-2.5 grid grid-cols-3 gap-2 text-center">
                 <div>
-                  <div className="text-[11px] text-[var(--c-inkSoft)] font-medium">Total Paid</div>
-                  <div className="text-xs font-bold text-[var(--c-ink)] mt-0.5">
+                  <div className="text-[10px] text-[var(--c-inkSoft)] font-semibold uppercase">Total Paid</div>
+                  <div className="text-xs font-extrabold font-mono-tabular text-[var(--c-ink)] mt-0.5">
                     {money(stats.paid)}
                   </div>
                 </div>
 
-                <div>
-                  <div className="text-[11px] text-[var(--c-inkSoft)] font-medium">Trip Share</div>
-                  <div className="text-xs font-bold text-[var(--c-ink)] mt-0.5">
+                <div className="border-x border-[var(--c-line)] px-1">
+                  <div className="text-[10px] text-[var(--c-inkSoft)] font-semibold uppercase">Trip Share</div>
+                  <div className="text-xs font-extrabold font-mono-tabular text-[var(--c-ink)] mt-0.5">
                     {money(stats.share)}
                   </div>
                 </div>
 
                 <div>
-                  <div className="text-[11px] text-[var(--c-inkSoft)] font-medium">Status</div>
+                  <div className="text-[10px] text-[var(--c-inkSoft)] font-semibold uppercase">Status</div>
                   <div
-                    className={`text-xs font-bold mt-0.5 ${
+                    className={`text-xs font-extrabold mt-0.5 ${
                       stats.net > 0.01
-                        ? "text-emerald-700"
+                        ? "text-[var(--c-positive)]"
                         : stats.net < -0.01
                         ? "text-[var(--c-rust)]"
                         : "text-[var(--c-inkSoft)]"
@@ -170,6 +171,30 @@ export function PeopleView({
                   </div>
                 </div>
               </div>
+
+              {/* Mobile & Desktop Quick Member Actions */}
+              {(onSendWhatsAppStatement || onOpenEditMember) && (
+                <div className="flex items-center justify-end gap-2 pt-1">
+                  {onSendWhatsAppStatement && (
+                    <button
+                      type="button"
+                      onClick={() => onSendWhatsAppStatement(m)}
+                      className="px-2.5 py-1.5 rounded-lg text-[11px] font-bold bg-[var(--c-tealSoft)] text-[var(--c-teal)] border border-[var(--c-teal)]/30 hover:opacity-90 transition-opacity cursor-pointer"
+                    >
+                      Share Statement
+                    </button>
+                  )}
+                  {onOpenEditMember && permissions.isAdmin && (
+                    <button
+                      type="button"
+                      onClick={() => onOpenEditMember(m)}
+                      className="px-2.5 py-1.5 rounded-lg text-[11px] font-bold bg-[var(--c-paperDark)] text-[var(--c-inkSoft)] hover:text-[var(--c-ink)] border border-[var(--c-line)] transition-colors cursor-pointer"
+                    >
+                      Manage
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           );
         })}

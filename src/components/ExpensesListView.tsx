@@ -177,18 +177,12 @@ export function ExpensesListView({
         <div>
           <h2 className="text-base font-bold text-[var(--c-ink)] flex items-center gap-2">
             <span>Expenses Ledger</span>
-            <span className="text-xs px-2 py-0.5 rounded-full bg-teal-50 text-[var(--c-teal)] font-bold border border-teal-200">
+            <span className="text-xs px-2.5 py-0.5 rounded-full bg-[var(--c-tealSoft)] text-[var(--c-teal)] font-bold border border-[var(--c-teal)]/30">
               {filteredExpenses.length} entries
             </span>
-            {filteredExpenses.length > 5 && (
-              <span className="text-[11px] font-bold text-[var(--c-teal)] flex items-center gap-1">
-                <Zap size={12} className="text-amber-500 fill-amber-500" />
-                <span>Virtualized</span>
-              </span>
-            )}
           </h2>
           <div className="text-xs text-[var(--c-inkSoft)] mt-0.5">
-            Filtered Total: <span className="font-bold text-[var(--c-ink)]">{money(totalFilteredAmount, currency)}</span>
+            Filtered Total: <span className="font-bold font-mono-tabular text-[var(--c-ink)]">{money(totalFilteredAmount, currency)}</span>
           </div>
         </div>
 
@@ -383,12 +377,12 @@ export function ExpensesListView({
                       </div>
 
                       <div className="text-right shrink-0">
-                        <div className="text-base font-extrabold text-[var(--c-ink)] tracking-tight">
+                        <div className="text-base font-extrabold font-mono-tabular text-[var(--c-ink)] tracking-tight">
                           {money(expense.amount, currency)}
                         </div>
                         {myShare > 0 && (
-                          <div className="text-[11px] font-bold text-[var(--c-teal)] bg-teal-50 px-2 py-0.5 rounded-md mt-0.5">
-                            Your share: {money(myShare, currency)}
+                          <div className="text-[11px] font-bold font-mono-tabular text-[var(--c-teal)] bg-[var(--c-tealSoft)] border border-[var(--c-teal)]/30 px-2 py-0.5 rounded-md mt-0.5">
+                            Share: {money(myShare, currency)}
                           </div>
                         )}
                       </div>

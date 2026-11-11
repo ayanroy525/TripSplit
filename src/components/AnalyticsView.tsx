@@ -89,143 +89,110 @@ export function AnalyticsView({
   const avgPerPerson = members.length > 0 ? totalTripSpent / members.length : 0;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      {/* Top Stat Highlights */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-          gap: 14,
-        }}
-      >
+    <div className="flex flex-col gap-4 sm:gap-5">
+      {/* Top Stat Highlights (2x2 on mobile, 4 columns on desktop) */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-3.5">
         <div
+          className="p-3.5 sm:p-4 rounded-2xl min-w-0"
           style={{
             background: C.card,
-            border: `1.5px solid ${C.line}`,
-            borderRadius: 14,
-            padding: 16,
+            border: `1px solid ${C.line}`,
             boxShadow: "0 2px 6px rgba(22,35,59,0.03)",
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 8, color: C.inkSoft }}>
-            <Wallet size={16} color={C.marigoldDark} />
-            <span style={{ fontSize: 12, fontWeight: 800, textTransform: "uppercase" }}>
-              Total Trip Spent
+          <div style={{ display: "flex", alignItems: "center", gap: 6, color: C.inkSoft }}>
+            <Wallet size={14} color={C.marigoldDark} className="shrink-0" />
+            <span className="text-[10px] sm:text-xs font-extrabold uppercase truncate">
+              Total Spent
             </span>
           </div>
           <div
-            style={{
-              fontFamily: "'JetBrains Mono', monospace",
-              fontSize: 22,
-              fontWeight: 800,
-              color: C.ink,
-              marginTop: 6,
-            }}
+            className="font-mono-tabular text-lg sm:text-[22px] font-extrabold truncate mt-1.5"
+            style={{ color: C.ink }}
           >
             {money(totalTripSpent)}
           </div>
-          <span style={{ fontSize: 12, color: C.inkSoft }}>
-            Across {activeExpenses.length} logged expenses
+          <span className="text-[11px] block truncate mt-0.5" style={{ color: C.inkSoft }}>
+            {activeExpenses.length} logged expenses
           </span>
         </div>
 
         <div
+          className="p-3.5 sm:p-4 rounded-2xl min-w-0"
           style={{
             background: C.card,
-            border: `1.5px solid ${C.line}`,
-            borderRadius: 14,
-            padding: 16,
+            border: `1px solid ${C.line}`,
             boxShadow: "0 2px 6px rgba(22,35,59,0.03)",
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 8, color: C.inkSoft }}>
-            <DollarSign size={16} color={C.teal} />
-            <span style={{ fontSize: 12, fontWeight: 800, textTransform: "uppercase" }}>
-              Average / Member
+          <div style={{ display: "flex", alignItems: "center", gap: 6, color: C.inkSoft }}>
+            <DollarSign size={14} color={C.teal} className="shrink-0" />
+            <span className="text-[10px] sm:text-xs font-extrabold uppercase truncate">
+              Avg / Member
             </span>
           </div>
           <div
-            style={{
-              fontFamily: "'JetBrains Mono', monospace",
-              fontSize: 22,
-              fontWeight: 800,
-              color: C.ink,
-              marginTop: 6,
-            }}
+            className="font-mono-tabular text-lg sm:text-[22px] font-extrabold truncate mt-1.5"
+            style={{ color: C.ink }}
           >
             {money(avgPerPerson)}
           </div>
-          <span style={{ fontSize: 12, color: C.inkSoft }}>
-            Divided over {members.length} trip members
+          <span className="text-[11px] block truncate mt-0.5" style={{ color: C.inkSoft }}>
+            Across {members.length} members
           </span>
         </div>
 
         <div
+          className="p-3.5 sm:p-4 rounded-2xl min-w-0"
           style={{
             background: C.card,
-            border: `1.5px solid ${C.line}`,
-            borderRadius: 14,
-            padding: 16,
+            border: `1px solid ${C.line}`,
             boxShadow: "0 2px 6px rgba(22,35,59,0.03)",
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 8, color: C.inkSoft }}>
-            <Award size={16} color={C.marigoldDark} />
-            <span style={{ fontSize: 12, fontWeight: 800, textTransform: "uppercase" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, color: C.inkSoft }}>
+            <Award size={14} color={C.marigoldDark} className="shrink-0" />
+            <span className="text-[10px] sm:text-xs font-extrabold uppercase truncate">
               Top Payer
             </span>
           </div>
           <div
+            className="text-base sm:text-xl font-extrabold truncate mt-1.5"
             style={{
               fontFamily: "'Fraunces', serif",
-              fontSize: 20,
-              fontWeight: 800,
               color: C.ink,
-              marginTop: 6,
             }}
           >
             {topPayer.name}
           </div>
-          <span style={{ fontSize: 12, color: C.teal, fontWeight: 700 }}>
-            Paid {money(topPayer.amount)} total
+          <span className="text-[11px] font-bold block truncate mt-0.5" style={{ color: C.teal }}>
+            Paid {money(topPayer.amount)}
           </span>
         </div>
 
         <div
+          className="p-3.5 sm:p-4 rounded-2xl min-w-0"
           style={{
             background: C.card,
-            border: `1.5px solid ${C.line}`,
-            borderRadius: 14,
-            padding: 16,
+            border: `1px solid ${C.line}`,
             boxShadow: "0 2px 6px rgba(22,35,59,0.03)",
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 8, color: C.inkSoft }}>
-            <TrendingUp size={16} color={C.rust} />
-            <span style={{ fontSize: 12, fontWeight: 800, textTransform: "uppercase" }}>
-              Largest Expense
+          <div style={{ display: "flex", alignItems: "center", gap: 6, color: C.inkSoft }}>
+            <TrendingUp size={14} color={C.rust} className="shrink-0" />
+            <span className="text-[10px] sm:text-xs font-extrabold uppercase truncate">
+              Top Expense
             </span>
           </div>
           <div
-            style={{
-              fontSize: 14,
-              fontWeight: 800,
-              color: C.ink,
-              marginTop: 6,
-              whiteSpace: "nowrap",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-            }}
+            className="text-xs sm:text-sm font-extrabold truncate mt-1.5"
+            style={{ color: C.ink }}
           >
             {maxExpense?.title || "None"}
           </div>
           <span
-            style={{
-              fontSize: 12,
-              fontFamily: "'JetBrains Mono', monospace",
-              color: C.rust,
-              fontWeight: 700,
-            }}
+            className="font-mono-tabular text-[11px] font-bold block truncate mt-0.5"
+            style={{ color: C.rust }}
           >
             {maxExpense ? money(maxExpense.amount) : "₹0"}
           </span>
@@ -233,20 +200,13 @@ export function AnalyticsView({
       </div>
 
       {/* Charts Grid */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
-          gap: 20,
-        }}
-      >
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Category Pie Breakdown */}
         <div
+          className="p-4 sm:p-5 rounded-2xl min-w-0"
           style={{
             background: C.card,
-            border: `1.5px solid ${C.line}`,
-            borderRadius: 16,
-            padding: 20,
+            border: `1px solid ${C.line}`,
           }}
         >
           <h3

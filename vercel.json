@@ -11,19 +11,19 @@
     },
     {
       "source": "/api/trips/invite/lookup",
-      "destination": "/api/trips/invite-lookup?action=invite-lookup"
+      "destination": "/api/trips/[tripId]?tripId=invite-lookup&action=invite-lookup"
     },
     {
       "source": "/api/trips/invite/join",
-      "destination": "/api/trips/invite-join?action=invite-join"
+      "destination": "/api/trips/[tripId]?tripId=invite-join&action=invite-join"
     },
     {
       "source": "/api/trips/join",
-      "destination": "/api/trips/invite-join?action=invite-join"
+      "destination": "/api/trips/[tripId]?tripId=invite-join&action=invite-join"
     },
     {
       "source": "/api/trips/invite/:code",
-      "destination": "/api/trips/invite-lookup?action=invite-lookup&code=:code"
+      "destination": "/api/trips/[tripId]?tripId=invite-lookup&action=invite-lookup&code=:code"
     },
     {
       "source": "/api/telegram/settings",

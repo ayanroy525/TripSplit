@@ -200,8 +200,8 @@ export default async function handler(req: any, res: any) {
     });
   }
 
-  const { emailOrPhone, password } = body;
-  const rawInput = (emailOrPhone || "").trim();
+  const { emailOrPhone, email, phone, password } = body;
+  const rawInput = (emailOrPhone || email || phone || "").trim();
   const inputPassword = password || "";
 
   if (!rawInput) {

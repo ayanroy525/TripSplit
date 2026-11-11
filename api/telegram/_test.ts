@@ -28,7 +28,7 @@ export default async function handler(req: any, res: any) {
       } catch {}
     }
 
-    const { botToken, chatId } = body || {};
+    const { botToken, chatId, customMessage } = body || {};
     const config = await getTelegramConfig();
 
     const targetToken = botToken && !botToken.includes("••••") ? botToken.trim() : config.botToken;
@@ -54,7 +54,9 @@ export default async function handler(req: any, res: any) {
       timeStyle: "short",
     });
 
-    const testMessage = `
+    const testMessage = customMessage
+      ? String(customMessage).trim()
+      : `
 ✈️ <b>TripSplit Telegram Alerts Connected!</b>
 
 ✅ <b>Status:</b> Test message delivered successfully

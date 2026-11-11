@@ -179,82 +179,101 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
       style={{
         minHeight: "100vh",
         backgroundColor: C.paper,
+        backgroundImage: "var(--c-mesh-bg)",
         color: C.ink,
         fontFamily: "'Manrope', sans-serif",
         display: "flex",
         flexDirection: "column",
         position: "relative",
+        overflowX: "hidden",
       }}
     >
       {/* Top Navigation Bar */}
       <header
+        className="px-3.5 py-2.5 sm:px-6 sm:py-3.5 sticky top-0 z-30"
         style={{
           borderBottom: `1px solid ${C.line}`,
-          background: C.card,
-          padding: "14px 20px",
+          background: "var(--c-glass-header, rgba(255, 255, 255, 0.82))",
+          backdropFilter: "blur(18px)",
+          WebkitBackdropFilter: "blur(18px)",
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          boxShadow: "0 2px 8px rgba(0, 0, 0, 0.03)",
+          gap: 8,
+          boxShadow: "0 4px 20px rgba(0, 0, 0, 0.04)",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
           <div
             style={{
               width: 38,
               height: 38,
               borderRadius: 12,
-              background: C.teal,
+              background: "linear-gradient(135deg, #0D7A72 0%, #14B8A6 100%)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
               color: "#ffffff",
-              boxShadow: "0 3px 8px rgba(15, 107, 101, 0.25)",
+              boxShadow: "0 6px 16px rgba(20, 184, 166, 0.32)",
+              flexShrink: 0,
+              overflow: "hidden",
+              border: "1px solid rgba(45, 212, 191, 0.35)",
             }}
           >
-            <Compass size={22} />
+            <img
+              src="/assets/brand/tripsplit-logo-icon.jpg"
+              alt="TripSplit Logo"
+              referrerPolicy="no-referrer"
+              style={{ width: "100%", height: "100%", objectFit: "cover" }}
+            />
           </div>
-          <div>
+          <div style={{ minWidth: 0 }}>
             <h1
+              className="text-base sm:text-[19px]"
               style={{
-                fontSize: 19,
                 fontWeight: 800,
                 color: C.ink,
                 margin: 0,
-                letterSpacing: "-0.01em",
+                letterSpacing: "-0.02em",
+                lineHeight: 1.2,
               }}
             >
               TravelSplit
             </h1>
-            <p style={{ fontSize: 11, color: C.inkSoft, margin: 0, fontWeight: 600 }}>
+            <p
+              className="hidden sm:block"
+              style={{ fontSize: 11, color: C.inkSoft, margin: 0, fontWeight: 600 }}
+            >
               Travel together. Split expenses easily.
             </p>
           </div>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <ThemeToggle />
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+          <ThemeToggle compact />
           <button
             type="button"
             onClick={() => {
               continueAsGuest();
               if (onSuccess) onSuccess();
             }}
+            className="px-2.5 py-1.5 sm:px-3.5 sm:py-1.5 text-xs transition-all hover:opacity-90"
             style={{
-              background: "transparent",
+              background: C.paperDark,
               border: `1px solid ${C.line}`,
-              borderRadius: 999,
-              padding: "6px 14px",
-              fontSize: 12.5,
+              borderRadius: 10,
               fontWeight: 700,
               color: C.ink,
               cursor: "pointer",
               display: "inline-flex",
               alignItems: "center",
-              gap: 5,
+              gap: 4,
+              whiteSpace: "nowrap",
+              flexShrink: 0,
             }}
           >
-            <span>Explore as Guest</span>
+            <span className="hidden md:inline">Explore as Guest</span>
+            <span className="inline md:hidden">Guest</span>
             <ArrowRight size={13} />
           </button>
         </div>
@@ -262,35 +281,30 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
 
       {/* Main Form Center Area */}
       <main
+        className="px-3.5 py-5 sm:px-6 sm:py-9"
         style={{
           flex: 1,
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          padding: "32px 20px",
         }}
       >
-        <div
-          style={{
-            width: "100%",
-            maxWidth: 1020,
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))",
-            gap: 28,
-            alignItems: "stretch",
-          }}
-        >
-          {/* Left Column: Feature Highlights & Hero Card */}
+        <div className="w-full max-w-[1040px] grid grid-cols-1 lg:grid-cols-2 gap-5 sm:gap-7 items-stretch">
+          {/* Left Column on Desktop / Bottom on Mobile: Feature Highlights & Hero Card */}
           <div
+            className="order-2 lg:order-1 p-5 sm:p-8"
             style={{
-              background: C.card,
-              border: `1.5px solid ${C.line}`,
-              borderRadius: 22,
-              padding: "30px 28px",
+              background: "var(--c-hero-surface, linear-gradient(140deg, #072227 0%, #0C4341 52%, #082B31 100%))",
+              border: "1px solid var(--c-hero-border, rgba(45, 212, 191, 0.32))",
+              borderRadius: 24,
               display: "flex",
               flexDirection: "column",
               justifyContent: "space-between",
-              boxShadow: "0 10px 30px rgba(0, 0, 0, 0.05)",
+              boxShadow: "0 22px 48px -12px rgba(6, 28, 33, 0.35)",
+              color: "#F8FAFC",
+              minWidth: 0,
+              position: "relative",
+              overflow: "hidden",
             }}
           >
             <div>
@@ -299,118 +313,152 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                   display: "inline-flex",
                   alignItems: "center",
                   gap: 6,
-                  background: "rgba(227, 154, 45, 0.14)",
-                  border: `1px solid ${C.marigold}`,
-                  borderRadius: 999,
-                  padding: "4px 12px",
-                  fontSize: 11.5,
+                  background: "rgba(251, 191, 36, 0.14)",
+                  border: "1px solid rgba(251, 191, 36, 0.45)",
+                  borderRadius: 8,
+                  padding: "5px 11px",
+                  fontSize: 11,
                   fontWeight: 800,
-                  color: C.marigoldDark,
+                  letterSpacing: "0.04em",
+                  textTransform: "uppercase",
+                  color: "#FBBF24",
                   marginBottom: 16,
                 }}
               >
                 <Sparkles size={13} />
-                <span>All-in-One Group Travel Hub</span>
+                <span>Next-Gen Group Travel Ledger</span>
               </div>
 
               <h2
+                className="text-[24px] sm:text-[31px]"
                 style={{
-                  fontFamily: "'Playfair Display', serif",
-                  fontSize: 28,
-                  fontWeight: 900,
-                  lineHeight: 1.25,
-                  color: C.ink,
+                  fontFamily: "'Fraunces', 'Playfair Display', serif",
+                  fontWeight: 800,
+                  lineHeight: 1.18,
+                  letterSpacing: "-0.02em",
+                  color: "#F8FAFC",
                   margin: "0 0 12px 0",
+                  textWrap: "balance" as any,
                 }}
               >
                 Travel together, split fair, settle in seconds.
               </h2>
               <p
                 style={{
-                  fontSize: 14,
+                  fontSize: 13.5,
                   lineHeight: 1.6,
-                  color: C.inkSoft,
-                  margin: "0 0 24px 0",
+                  color: "#CBD5E1",
+                  margin: "0 0 22px 0",
                 }}
               >
                 Manage group vacations, track out-of-pocket bills, simplify multi-currency debts, and record manual settlements with recipient verification.
               </p>
 
               {/* Feature Grid */}
-              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-                <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: 12,
+                    padding: "12px 14px",
+                    borderRadius: 16,
+                    background: "rgba(255, 255, 255, 0.06)",
+                    border: "1px solid rgba(255, 255, 255, 0.11)",
+                  }}
+                >
                   <div
                     style={{
-                      width: 34,
-                      height: 34,
-                      borderRadius: 10,
-                      background: "rgba(15, 107, 101, 0.12)",
+                      width: 36,
+                      height: 36,
+                      borderRadius: 11,
+                      background: "rgba(45, 212, 191, 0.16)",
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "center",
-                      color: C.teal,
+                      color: "#2DD4BF",
                       flexShrink: 0,
                     }}
                   >
                     <CheckCircle2 size={18} />
                   </div>
-                  <div>
-                    <div style={{ fontSize: 13.5, fontWeight: 800, color: C.ink }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 800, color: "#F8FAFC" }}>
                       Manual Settlement & Receiver Confirmation
                     </div>
-                    <div style={{ fontSize: 12, color: C.inkSoft }}>
+                    <div style={{ fontSize: 12, color: "#CBD5E1", marginTop: 2, lineHeight: 1.45 }}>
                       Record offline cash or bank payments with two-party recipient confirmation and full audit trails.
                     </div>
                   </div>
                 </div>
 
-                <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: 12,
+                    padding: "12px 14px",
+                    borderRadius: 16,
+                    background: "rgba(255, 255, 255, 0.06)",
+                    border: "1px solid rgba(255, 255, 255, 0.11)",
+                  }}
+                >
                   <div
                     style={{
-                      width: 34,
-                      height: 34,
-                      borderRadius: 10,
-                      background: "rgba(227, 154, 45, 0.14)",
+                      width: 36,
+                      height: 36,
+                      borderRadius: 11,
+                      background: "rgba(251, 191, 36, 0.16)",
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "center",
-                      color: C.marigoldDark,
+                      color: "#FBBF24",
                       flexShrink: 0,
                     }}
                   >
                     <Bell size={18} />
                   </div>
-                  <div>
-                    <div style={{ fontSize: 13.5, fontWeight: 800, color: C.ink }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 800, color: "#F8FAFC" }}>
                       Instant Real-Time Updates
                     </div>
-                    <div style={{ fontSize: 12, color: C.inkSoft }}>
+                    <div style={{ fontSize: 12, color: "#CBD5E1", marginTop: 2, lineHeight: 1.45 }}>
                       Everyone in the group sees new bills, balance adjustments, and payments synchronously.
                     </div>
                   </div>
                 </div>
 
-                <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: 12,
+                    padding: "12px 14px",
+                    borderRadius: 16,
+                    background: "rgba(255, 255, 255, 0.06)",
+                    border: "1px solid rgba(255, 255, 255, 0.11)",
+                  }}
+                >
                   <div
                     style={{
-                      width: 34,
-                      height: 34,
-                      borderRadius: 10,
-                      background: "rgba(18, 92, 43, 0.12)",
+                      width: 36,
+                      height: 36,
+                      borderRadius: 11,
+                      background: "rgba(74, 222, 128, 0.16)",
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "center",
-                      color: "#125C2B",
+                      color: "#4ADE80",
                       flexShrink: 0,
                     }}
                   >
                     <MessageCircle size={18} />
                   </div>
-                  <div>
-                    <div style={{ fontSize: 13.5, fontWeight: 800, color: C.ink }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 800, color: "#F8FAFC" }}>
                       WhatsApp 1-Click Broadcasts
                     </div>
-                    <div style={{ fontSize: 12, color: C.inkSoft }}>
+                    <div style={{ fontSize: 12, color: "#CBD5E1", marginTop: 2, lineHeight: 1.45 }}>
                       Send formatted balance sheets and payment reminders directly to group chats.
                     </div>
                   </div>
@@ -419,16 +467,19 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
             </div>
           </div>
 
-          {/* Right Column: Sign In / Create Account Card */}
+          {/* Right Column on Desktop / Top on Mobile: Sign In / Create Account Card */}
           <div
+            className="order-1 lg:order-2 p-5 sm:p-8"
             style={{
               background: C.card,
-              border: `1.5px solid ${C.line}`,
-              borderRadius: 22,
-              padding: "30px 28px",
+              backdropFilter: "blur(20px)",
+              WebkitBackdropFilter: "blur(20px)",
+              border: `1px solid ${C.line}`,
+              borderRadius: 24,
               display: "flex",
               flexDirection: "column",
-              boxShadow: "0 10px 30px rgba(0, 0, 0, 0.05)",
+              boxShadow: "var(--c-card-shadow)",
+              minWidth: 0,
             }}
           >
             {/* Segmented Switcher Tabs */}
@@ -436,7 +487,7 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
               style={{
                 display: "flex",
                 background: C.paperDark,
-                borderRadius: 12,
+                borderRadius: 14,
                 padding: 4,
                 marginBottom: 22,
                 border: `1px solid ${C.line}`,
@@ -452,8 +503,8 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                 }}
                 style={{
                   flex: 1,
-                  padding: "9px 0",
-                  borderRadius: 9,
+                  padding: "10px 0",
+                  borderRadius: 10,
                   border: "none",
                   background: activeTab === "login" ? C.card : "transparent",
                   color: activeTab === "login" ? C.ink : C.inkSoft,
@@ -464,8 +515,8 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                   alignItems: "center",
                   justifyContent: "center",
                   gap: 6,
-                  boxShadow: activeTab === "login" ? "0 2px 6px rgba(0,0,0,0.06)" : "none",
-                  transition: "all 0.15s ease",
+                  boxShadow: activeTab === "login" ? "0 4px 12px rgba(0,0,0,0.08)" : "none",
+                  transition: "all 0.2s ease",
                 }}
               >
                 <LogIn size={15} color={activeTab === "login" ? C.marigoldDark : C.inkSoft} />
@@ -482,8 +533,8 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                 }}
                 style={{
                   flex: 1,
-                  padding: "9px 0",
-                  borderRadius: 9,
+                  padding: "10px 0",
+                  borderRadius: 10,
                   border: "none",
                   background: activeTab === "signup" ? C.card : "transparent",
                   color: activeTab === "signup" ? C.ink : C.inkSoft,
@@ -494,8 +545,8 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                   alignItems: "center",
                   justifyContent: "center",
                   gap: 6,
-                  boxShadow: activeTab === "signup" ? "0 2px 6px rgba(0,0,0,0.06)" : "none",
-                  transition: "all 0.15s ease",
+                  boxShadow: activeTab === "signup" ? "0 4px 12px rgba(0,0,0,0.08)" : "none",
+                  transition: "all 0.2s ease",
                 }}
               >
                 <UserPlus size={15} color={activeTab === "signup" ? C.teal : C.inkSoft} />
@@ -817,13 +868,14 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                 <button
                   id="btn-submit-login"
                   type="submit"
+                  className="hover:brightness-105 active:scale-[0.99] transition-all"
                   style={{
                     marginTop: 8,
-                    background: C.marigoldDark,
+                    background: "linear-gradient(135deg, #E5850B 0%, #C26A05 100%)",
                     color: "#ffffff",
                     border: "none",
-                    borderRadius: 12,
-                    padding: "13px",
+                    borderRadius: 14,
+                    padding: "13.5px",
                     fontSize: 14,
                     fontWeight: 800,
                     cursor: "pointer",
@@ -831,8 +883,7 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                     alignItems: "center",
                     justifyContent: "center",
                     gap: 8,
-                    boxShadow: "0 4px 12px rgba(227, 154, 45, 0.3)",
-                    transition: "transform 0.1s ease",
+                    boxShadow: "0 8px 24px -4px rgba(229, 133, 11, 0.4)",
                   }}
                 >
                   <LogIn size={16} />
@@ -1290,13 +1341,14 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                   id="btn-submit-signup"
                   type="submit"
                   disabled={isSigningUp}
+                  className="hover:brightness-105 active:scale-[0.99] transition-all"
                   style={{
                     marginTop: 6,
-                    background: C.teal,
+                    background: "linear-gradient(135deg, #0D7A72 0%, #14B8A6 100%)",
                     color: "#ffffff",
                     border: "none",
-                    borderRadius: 12,
-                    padding: "12px",
+                    borderRadius: 14,
+                    padding: "13px",
                     fontSize: 13.5,
                     fontWeight: 800,
                     cursor: isSigningUp ? "not-allowed" : "pointer",
@@ -1304,7 +1356,7 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
                     alignItems: "center",
                     justifyContent: "center",
                     gap: 8,
-                    boxShadow: "0 4px 12px rgba(15, 107, 101, 0.3)",
+                    boxShadow: "0 8px 24px -4px rgba(20, 184, 166, 0.38)",
                     opacity: isSigningUp ? 0.7 : 1,
                   }}
                 >
@@ -1324,7 +1376,7 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
       {/* Footer Info */}
       <footer
         style={{
-          borderTop: `1.5px solid ${C.line}`,
+          borderTop: `1px solid ${C.line}`,
           padding: "16px 24px",
           textAlign: "center",
           fontSize: 12,
@@ -1334,7 +1386,8 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
           justifyContent: "center",
           flexWrap: "wrap",
           gap: 12,
-          background: C.card,
+          background: "var(--c-glass-header, rgba(255, 255, 255, 0.82))",
+          backdropFilter: "blur(14px)",
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>

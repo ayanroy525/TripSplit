@@ -39,11 +39,12 @@ export function ThemeToggle({ variant = "segmented", compact = false }: ThemeTog
         style={{
           display: "inline-flex",
           alignItems: "center",
-          background: "var(--c-paper, #F3F4F6)",
+          background: "var(--c-paperDark, #D3E3E3)",
           padding: 3,
-          borderRadius: 12,
+          borderRadius: 11,
           border: `1px solid ${C.line}`,
           gap: 2,
+          flexShrink: 0,
         }}
       >
         {options.map((opt) => {
@@ -59,12 +60,13 @@ export function ThemeToggle({ variant = "segmented", compact = false }: ThemeTog
               aria-checked={isSelected}
               onClick={() => setTheme(opt.mode)}
               title={`${opt.label} mode`}
+              className={compact ? "px-2 py-1" : "px-2 py-1.5 sm:px-2.5 sm:py-1.5"}
               style={{
                 display: "inline-flex",
                 alignItems: "center",
-                gap: 5,
-                padding: compact ? "5px 8px" : "6px 11px",
-                borderRadius: 9,
+                justifyContent: "center",
+                gap: 4,
+                borderRadius: 8,
                 border: isSelected ? `1px solid ${C.line}` : "1px solid transparent",
                 background: isSelected ? C.card : "transparent",
                 color: isSelected
@@ -72,15 +74,17 @@ export function ThemeToggle({ variant = "segmented", compact = false }: ThemeTog
                     ? "var(--c-marigold, #F59E0B)"
                     : "var(--c-marigoldDark, #B45309)"
                   : "var(--c-inkSoft, #6B7280)",
-                fontSize: 12,
+                fontSize: 11.5,
                 fontWeight: isSelected ? 700 : 500,
                 cursor: "pointer",
                 transition: "all 0.15s ease",
                 boxShadow: isSelected ? "0 1px 3px rgba(0, 0, 0, 0.08)" : "none",
+                whiteSpace: "nowrap",
               }}
             >
               <Icon
                 size={13}
+                style={{ flexShrink: 0 }}
                 color={
                   isSelected
                     ? resolvedTheme === "dark"
@@ -90,7 +94,9 @@ export function ThemeToggle({ variant = "segmented", compact = false }: ThemeTog
                 }
               />
               <span className="hidden sm:inline">{opt.label}</span>
-              <span className="inline sm:hidden">{opt.shortLabel}</span>
+              <span className={isSelected ? "inline sm:hidden" : "hidden min-[400px]:inline sm:hidden"}>
+                {opt.shortLabel}
+              </span>
             </button>
           );
         })}
