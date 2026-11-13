@@ -389,4 +389,21 @@ describe("Backend Authorization & IDOR Security Guard", () => {
       await pool.query("DELETE FROM public.trips WHERE id = $1;", [testTripId]);
     }
   });
+
+  it("rejects unauthenticated /api/auth/update-password requests even when email is supplied in request body", async () => {
+    const res = await fetch(`${baseUrl}/api/auth/update-password`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "update-password",
+        email: "ayanroy525@gmail.com",
+        newPassword: "AttackerAttemptPassword123!",
+      }),
+    });
+
+    expect(res.status).toBe(401);
+    const data = await res.json();
+    expect(data.success).toBe(false);
+    expect(data.token).toBeUndefined();
+  });
 });

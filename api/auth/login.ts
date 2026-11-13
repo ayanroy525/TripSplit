@@ -72,7 +72,7 @@ export default async function handler(req: any, res: any) {
 
   // 2. Handle /api/auth/update-password (or ?action=update-password)
   if (queryAction === "update-password" || url.includes("/update-password")) {
-    const { newPassword, email: bodyEmail } = body;
+    const { newPassword } = body;
     if (!newPassword || typeof newPassword !== "string" || newPassword.length < 6) {
       return sendJson(res, 400, {
         success: false,
@@ -81,7 +81,7 @@ export default async function handler(req: any, res: any) {
     }
 
     let resolvedUserId = "";
-    let resolvedEmail = (bodyEmail || "").trim().toLowerCase();
+    let resolvedEmail = "";
 
     // First check standard backend session / Supabase bearer token via verifyAuthRequest
     const authResult = await verifyAuthRequest(req);
@@ -111,9 +111,9 @@ export default async function handler(req: any, res: any) {
           });
           if (userResp.ok) {
             const supaUser = await userResp.json();
-            if (supaUser && supaUser.email) {
-              resolvedEmail = String(supaUser.email).trim().toLowerCase();
+            if (supaUser && (supaUser.id || supaUser.email)) {
               resolvedUserId = supaUser.id || "";
+              resolvedEmail = supaUser.email ? String(supaUser.email).trim().toLowerCase() : "";
             }
           }
         } catch (err) {
@@ -135,16 +135,25 @@ export default async function handler(req: any, res: any) {
 
     if (pool) {
       try {
-        const updateRes = await pool.query(
-          `UPDATE public.users
-           SET password_hash = $1,
-               token_version = COALESCE(token_version, 1) + 1,
-               updated_at = NOW()
-           WHERE ($2 <> '' AND id = $2)
-              OR ($3 <> '' AND LOWER(TRIM(COALESCE(email, ''))) = $3)
-           RETURNING id, email, name, token_version;`,
-          [newHashed, resolvedUserId, resolvedEmail]
-        );
+        const updateRes = resolvedUserId
+          ? await pool.query(
+              `UPDATE public.users
+               SET password_hash = $1,
+                   token_version = COALESCE(token_version, 1) + 1,
+                   updated_at = NOW()
+               WHERE id = $2
+               RETURNING id, email, name, token_version;`,
+              [newHashed, resolvedUserId]
+            )
+          : await pool.query(
+              `UPDATE public.users
+               SET password_hash = $1,
+                   token_version = COALESCE(token_version, 1) + 1,
+                   updated_at = NOW()
+               WHERE LOWER(TRIM(COALESCE(email, ''))) = $2
+               RETURNING id, email, name, token_version;`,
+              [newHashed, resolvedEmail]
+            );
         updatedUser = updateRes.rows[0];
         if (updatedUser) {
           newTokenVersion = Number(updatedUser.token_version || 1);
@@ -155,10 +164,10 @@ export default async function handler(req: any, res: any) {
     }
 
     const store = getLocalStore();
-    const localU = store.users.find(
-      (u) =>
-        (resolvedUserId && u.id === resolvedUserId) ||
-        (resolvedEmail && u.email && u.email.trim().toLowerCase() === resolvedEmail)
+    const localU = store.users.find((u) =>
+      resolvedUserId
+        ? u.id === resolvedUserId
+        : Boolean(resolvedEmail && u.email && u.email.trim().toLowerCase() === resolvedEmail)
     );
     if (localU) {
       localU.password_hash = newHashed;
@@ -228,34 +237,20 @@ export default async function handler(req: any, res: any) {
 
   if (pool) {
     try {
+      const phoneTail = cleanDigits.length >= 10 ? cleanDigits.slice(-10) : "";
       const usersQuery = `
         SELECT id, email, name, phone, avatar_color, avatar_url, bio, password_hash, COALESCE(token_version, 1) AS token_version, created_at
         FROM public.users
         WHERE LOWER(TRIM(COALESCE(email, ''))) = $1
-           OR ($2 <> '' AND regexp_replace(COALESCE(phone, ''), '\\D', '', 'g') LIKE '%' || $2 || '%')
-           OR LOWER(TRIM(COALESCE(name, ''))) = $1
+           OR ($2 <> '' AND RIGHT(regexp_replace(COALESCE(phone, ''), '\\D', '', 'g'), 10) = $2)
         ORDER BY
           CASE WHEN LOWER(TRIM(COALESCE(email, ''))) = $1 THEN 0 ELSE 1 END,
           updated_at DESC NULLS LAST,
           created_at DESC
-        LIMIT 10;
+        LIMIT 5;
       `;
-      const userRes = await pool.query(usersQuery, [trimmedLower, cleanDigits.length >= 7 ? cleanDigits : ""]);
+      const userRes = await pool.query(usersQuery, [trimmedLower, phoneTail]);
       candidateUsers = userRes.rows || [];
-
-      if (candidateUsers.length === 0 && cleanDigits.length >= 7) {
-        const phoneTail = cleanDigits.length >= 10 ? cleanDigits.slice(-10) : cleanDigits;
-        const phoneUserRes = await pool.query(
-          `SELECT id, email, name, phone, avatar_color, avatar_url, bio, password_hash, COALESCE(token_version, 1) AS token_version, created_at
-           FROM public.users
-           WHERE LENGTH(regexp_replace(COALESCE(phone, ''), '\\D', '', 'g')) >= 7
-             AND RIGHT(regexp_replace(COALESCE(phone, ''), '\\D', '', 'g'), LENGTH($1)) = $1
-           ORDER BY updated_at DESC NULLS LAST, created_at DESC
-           LIMIT 10;`,
-          [phoneTail]
-        );
-        candidateUsers = phoneUserRes.rows || [];
-      }
 
       usedPostgres = true;
     } catch (dbErr: any) {
@@ -286,18 +281,19 @@ export default async function handler(req: any, res: any) {
       process.env.SUPABASE_ANON_KEY ||
       "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ5YW1jaGpqd29haW13cm11cnJ5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAwMTIwOTYsImV4cCI6MjEwNTU4ODA5Nn0.6r-qcinkytxEzCxb4jhRjXNZ0-g4_YTKdsnhUG3De6A"
     ).trim();
+    const serviceRoleKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
 
     try {
       let emailsToTry: string[] = [];
       if (trimmedLower.includes("@")) {
         emailsToTry = [trimmedLower];
-      } else {
+      } else if (serviceRoleKey) {
         const rpcRes = await fetch(`${supabaseUrl}/rest/v1/rpc/resolve_email_for_login`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            apikey: supabaseKey,
-            Authorization: `Bearer ${supabaseKey}`,
+            apikey: serviceRoleKey,
+            Authorization: `Bearer ${serviceRoleKey}`,
           },
           body: JSON.stringify({ p_identifier: rawInput }),
         });
@@ -331,7 +327,7 @@ export default async function handler(req: any, res: any) {
             if (accessToken) {
               try {
                 const profRes = await fetch(
-                  `${supabaseUrl}/rest/v1/users?id=eq.${encodeURIComponent(supaUser.id)}&select=*`,
+                  `${supabaseUrl}/rest/v1/users?id=eq.${encodeURIComponent(supaUser.id)}&select=id,email,name,phone,avatar_color,avatar_url,bio,created_at`,
                   {
                     headers: {
                       apikey: supabaseKey,

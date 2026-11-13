@@ -1,6 +1,0 @@
-{
-  "summary":  "Comprehensive implementation plan for repository-wide security hardening covering credential isolation, fail-fast secrets, bcrypt password migration, strict database TLS, webhook authentication, rate limiting, and CORS allowlisting.",
-  "updatedAt":  "2026-10-30T19:08:53.032255186Z",
-  "requestFeedback":  true,
-  "userFacing":  true
-}

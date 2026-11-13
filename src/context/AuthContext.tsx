@@ -188,7 +188,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         try {
           const { data: profileRow } = await supabase
             .from("users")
-            .select("*")
+            .select("id, name, email, phone, avatar_color, avatar_url, bio, created_at")
             .eq("id", session.user.id)
             .maybeSingle();
 
@@ -229,7 +229,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         try {
           const { data: profileRow } = await supabase
             .from("users")
-            .select("*")
+            .select("id, name, email, phone, avatar_color, avatar_url, bio, created_at")
             .eq("id", session.user.id)
             .maybeSingle();
 
@@ -651,7 +651,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         body: JSON.stringify({
           action: "update-password",
           newPassword,
-          email: supabaseEmail || currentUser?.email || "",
         }),
       });
 
