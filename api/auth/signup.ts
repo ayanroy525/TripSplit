@@ -25,6 +25,14 @@ export default async function handler(req: any, res: any) {
     return sendJson(res, 405, { success: false, error: "Method Not Allowed" });
   }
 
+  if (process.env.NODE_ENV === "production" && (!process.env.SESSION_SECRET || !process.env.SESSION_SECRET.trim())) {
+    console.error("CRITICAL SECURITY ERROR: SESSION_SECRET environment variable is required in production.");
+    return sendJson(res, 500, {
+      success: false,
+      error: "Server configuration error: SESSION_SECRET is missing.",
+    });
+  }
+
   const clientIp = getClientIp(req);
   const ipRate = checkRateLimit(`signup_ip_${clientIp}`, 8, 10 * 60 * 1000);
   if (!ipRate.allowed) {
@@ -52,13 +60,15 @@ export default async function handler(req: any, res: any) {
     return sendJson(res, 400, { success: false, error: "Password must be at least 6 characters long." });
   }
 
-  // Check if account already exists in local store
-  const existingLocal = findLocalUser(trimmedEmail) || (cleanDigits.length >= 7 ? findLocalUser(cleanDigits) : null);
-  if (existingLocal) {
-    return sendJson(res, 409, {
-      success: false,
-      error: "An account with this email or phone already exists. Please log in with your password.",
-    });
+  // Check if account already exists in local store (non-production only)
+  if (process.env.NODE_ENV !== "production") {
+    const existingLocal = findLocalUser(trimmedEmail) || (cleanDigits.length >= 7 ? findLocalUser(cleanDigits) : null);
+    if (existingLocal) {
+      return sendJson(res, 409, {
+        success: false,
+        error: "An account with this email or phone already exists. Please log in with your password.",
+      });
+    }
   }
 
   if (pool) {
@@ -79,24 +89,32 @@ export default async function handler(req: any, res: any) {
       }
     } catch (err) {
       console.warn("Notice: PostgreSQL check during signup:", err);
+      if (process.env.NODE_ENV === "production") {
+        return sendJson(res, 503, { success: false, error: "Database unavailable" });
+      }
     }
+  } else if (process.env.NODE_ENV === "production") {
+    return sendJson(res, 503, { success: false, error: "Database unavailable" });
   }
 
   const userId = `u_${Math.random().toString(36).substring(2, 9)}_${Date.now().toString(36)}`;
   const hashedPassword = hashPasswordNode(inputPassword);
+  const createdAt = new Date().toISOString();
 
-  const localUserRecord: LocalUserRecord = {
-    id: userId,
-    email: trimmedEmail,
-    name: trimmedName,
-    phone: rawPhone || null,
-    avatar_color: avatarColor || "#E39A2D",
-    bio: bio || "Travel Enthusiast",
-    password_hash: hashedPassword,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  };
-  saveLocalUser(localUserRecord);
+  if (process.env.NODE_ENV !== "production") {
+    const localUserRecord: LocalUserRecord = {
+      id: userId,
+      email: trimmedEmail,
+      name: trimmedName,
+      phone: rawPhone || null,
+      avatar_color: avatarColor || "#E39A2D",
+      bio: bio || "Travel Enthusiast",
+      password_hash: hashedPassword,
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+    saveLocalUser(localUserRecord);
+  }
 
   if (pool) {
     try {
@@ -115,6 +133,9 @@ export default async function handler(req: any, res: any) {
       );
     } catch (err) {
       console.warn("Notice: PostgreSQL insert during signup deferred:", err);
+      if (process.env.NODE_ENV === "production") {
+        return sendJson(res, 503, { success: false, error: "Database unavailable" });
+      }
     }
   }
 
@@ -128,7 +149,7 @@ export default async function handler(req: any, res: any) {
     phone: rawPhone || undefined,
     avatarColor: avatarColor || "#E39A2D",
     bio: bio || "Travel Enthusiast",
-    createdAt: localUserRecord.created_at,
+    createdAt,
   };
 
   const sessionToken = generateSessionToken(userId, trimmedEmail, trimmedName);

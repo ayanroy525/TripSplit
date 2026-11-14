@@ -90,6 +90,19 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   },
 });
 
+function generateCryptoInviteCode(): string {
+  const bytes = new Uint8Array(6);
+  if (typeof globalThis !== "undefined" && globalThis.crypto && typeof globalThis.crypto.getRandomValues === "function") {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i++) {
+      bytes[i] = Math.floor(Math.random() * 256);
+    }
+  }
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("").toUpperCase();
+  return `TRIP-${hex}`;
+}
+
 export function mapTripRowToTrip(
   row: any,
   members: Member[] = [],
@@ -109,7 +122,7 @@ export function mapTripRowToTrip(
     ownerId: row.owner_id || "",
     ownerName: row.owner_name || "",
     memberUserIds: Array.isArray(row.member_user_ids) ? row.member_user_ids : [],
-    inviteCode: row.invite_code || `TRIP-${row.id.slice(-6).toUpperCase()}`,
+    inviteCode: row.invite_code || generateCryptoInviteCode(),
     inviteExpiresAt: row.invite_expires_at || undefined,
     createdAt: row.created_at || new Date().toISOString(),
     completedAt: row.completed_at || undefined,
@@ -142,8 +155,8 @@ export function mapTripToRow(trip: Trip): Record<string, any> {
     owner_id: trip.ownerId || "",
     owner_name: trip.ownerName || "Traveler",
     member_user_ids: memberUserIds,
-    invite_code: trip.inviteCode || `TRIP-${trip.id.slice(-6).toUpperCase()}`,
-    invite_expires_at: trip.inviteExpiresAt || null,
+    invite_code: trip.inviteCode || generateCryptoInviteCode(),
+    invite_expires_at: trip.inviteExpiresAt || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
     created_at: trip.createdAt || new Date().toISOString(),
     completed_at: trip.completedAt || null,
     completed_by: trip.completedBy || null,

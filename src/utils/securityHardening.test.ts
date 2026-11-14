@@ -15,6 +15,8 @@ import {
   resetRateLimit,
   saveLocalStore,
   loadLocalStore,
+  generateSecureInviteCode,
+  getDefaultInviteExpiryIso,
   type LocalUserRecord,
 } from "../../api/_shared";
 import { getTelegramWebhookSecret } from "../../api/telegram/_client";
@@ -24,36 +26,30 @@ describe("Security Hardening Suite", () => {
   const baseUrl = "http://localhost:3000";
 
   describe("1. Missing Secret Handling", () => {
-    it("fails fast in production if SESSION_SECRET is missing", () => {
+    it("fails fast in production if SESSION_SECRET is missing (even if SUPABASE_SERVICE_ROLE_KEY or POSTGRES_URL exist)", () => {
       const prevEnv = process.env.NODE_ENV;
       const prevSecret = process.env.SESSION_SECRET;
       const prevAuthSecret = process.env.AUTH_SECRET;
       const prevServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
       const prevPostgres = process.env.POSTGRES_URL;
-      const prevVercelProj = process.env.VERCEL_PROJECT_ID;
-      const prevSupaAnon = process.env.SUPABASE_ANON_KEY;
-      const prevViteSupaAnon = process.env.VITE_SUPABASE_ANON_KEY;
 
       try {
         process.env.NODE_ENV = "production";
         delete process.env.SESSION_SECRET;
-        delete process.env.AUTH_SECRET;
-        delete process.env.SUPABASE_SERVICE_ROLE_KEY;
-        delete process.env.POSTGRES_URL;
-        delete process.env.VERCEL_PROJECT_ID;
-        delete process.env.SUPABASE_ANON_KEY;
-        delete process.env.VITE_SUPABASE_ANON_KEY;
+        process.env.SUPABASE_SERVICE_ROLE_KEY = "some_service_role_key";
+        process.env.POSTGRES_URL = "postgres://user:pass@host:5432/db";
 
-        expect(() => getSessionSecret()).toThrow(/SESSION_SECRET or AUTH_SECRET environment variable is required/);
+        expect(() => getSessionSecret()).toThrow(/SESSION_SECRET environment variable is required/);
       } finally {
         process.env.NODE_ENV = prevEnv;
         if (prevSecret) process.env.SESSION_SECRET = prevSecret;
+        else delete process.env.SESSION_SECRET;
         if (prevAuthSecret) process.env.AUTH_SECRET = prevAuthSecret;
+        else delete process.env.AUTH_SECRET;
         if (prevServiceKey) process.env.SUPABASE_SERVICE_ROLE_KEY = prevServiceKey;
+        else delete process.env.SUPABASE_SERVICE_ROLE_KEY;
         if (prevPostgres) process.env.POSTGRES_URL = prevPostgres;
-        if (prevVercelProj) process.env.VERCEL_PROJECT_ID = prevVercelProj;
-        if (prevSupaAnon) process.env.SUPABASE_ANON_KEY = prevSupaAnon;
-        if (prevViteSupaAnon) process.env.VITE_SUPABASE_ANON_KEY = prevViteSupaAnon;
+        else delete process.env.POSTGRES_URL;
       }
     });
 
@@ -213,20 +209,47 @@ describe("Security Hardening Suite", () => {
   });
 
   describe("5. CORS Policy Allowlist & Preflight", () => {
-    it("allows trusted origins like localhost and *.run.app", () => {
-      expect(isOriginAllowed("http://localhost:3000")).toBe(true);
-      expect(isOriginAllowed("http://127.0.0.1:3000")).toBe(true);
-      expect(isOriginAllowed("https://my-service-xyz.a.run.app")).toBe(true);
+    it("allows only ALLOWED_ORIGINS, APP_URL, and localhost when NODE_ENV is not production", () => {
+      const prevAllowed = process.env.ALLOWED_ORIGINS;
+      const prevAppUrl = process.env.APP_URL;
+      const prevEnv = process.env.NODE_ENV;
+
+      try {
+        process.env.NODE_ENV = "test";
+        process.env.ALLOWED_ORIGINS = "https://app.tripsplit.io, https://staging.tripsplit.io";
+        process.env.APP_URL = "https://tripsplit.vercel.app";
+
+        expect(isOriginAllowed("http://localhost:3000")).toBe(true);
+        expect(isOriginAllowed("http://127.0.0.1:3000")).toBe(true);
+        expect(isOriginAllowed("https://app.tripsplit.io")).toBe(true);
+        expect(isOriginAllowed("https://staging.tripsplit.io")).toBe(true);
+        expect(isOriginAllowed("https://tripsplit.vercel.app")).toBe(true);
+
+        // In production, localhost is rejected
+        process.env.NODE_ENV = "production";
+        expect(isOriginAllowed("http://localhost:3000")).toBe(false);
+        expect(isOriginAllowed("https://app.tripsplit.io")).toBe(true);
+      } finally {
+        process.env.NODE_ENV = prevEnv;
+        if (prevAllowed !== undefined) process.env.ALLOWED_ORIGINS = prevAllowed;
+        else delete process.env.ALLOWED_ORIGINS;
+        if (prevAppUrl !== undefined) process.env.APP_URL = prevAppUrl;
+        else delete process.env.APP_URL;
+      }
     });
 
-    it("rejects untrusted origins, null, and google.com", () => {
+    it("rejects https://tripsplit-evil.vercel.app, *.run.app, null, and untrusted origins", () => {
+      expect(isOriginAllowed("https://tripsplit-evil.vercel.app")).toBe(false);
+      expect(isOriginAllowed("https://spliito-attacker.vercel.app")).toBe(false);
+      expect(isOriginAllowed("https://travelsplit-phish.vercel.app")).toBe(false);
+      expect(isOriginAllowed("https://my-service-xyz.a.run.app")).toBe(false);
       expect(isOriginAllowed("null")).toBe(false);
       expect(isOriginAllowed("https://google.com")).toBe(false);
       expect(isOriginAllowed("https://malicious-site.com")).toBe(false);
       expect(isOriginAllowed("https://attacker.com")).toBe(false);
     });
 
-    it("sets CORS headers strictly without returning wildcards for untrusted origins", () => {
+    it("sets CORS headers strictly and never echoes back disallowed origins like https://tripsplit-evil.vercel.app", () => {
       const headers: Record<string, string> = {};
       const mockRes: any = {
         setHeader: (k: string, v: string) => {
@@ -234,8 +257,10 @@ describe("Security Hardening Suite", () => {
         },
       };
 
+      setCorsHeaders(mockRes, "https://tripsplit-evil.vercel.app");
+      expect(headers["access-control-allow-origin"]).toBeUndefined();
+
       setCorsHeaders(mockRes, "https://evil.com");
-      // Access-Control-Allow-Origin should NOT be https://evil.com or *
       expect(headers["access-control-allow-origin"]).toBeUndefined();
 
       setCorsHeaders(mockRes, "http://localhost:3000");
@@ -484,6 +509,57 @@ describe("Security Hardening Suite", () => {
         store.users = store.users.filter((u) => u.email !== uniqueEmail);
         saveLocalStore(store);
       } catch {}
+    });
+  });
+
+  describe("11. Password Reset & Invite Lookup Security Regression Checks", () => {
+    it("update-password rejects a request with an email in the body but no valid session", async () => {
+      const res = await fetch(`${baseUrl}/api/auth/update-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "update-password",
+          email: "ayanroy525@gmail.com",
+          newPassword: "AttackerNewPassword123!",
+        }),
+      });
+
+      expect(res.status).toBe(401);
+      const data = await res.json();
+      expect(data.success).toBe(false);
+      expect(data.token).toBeUndefined();
+    });
+
+    it("invite lookup returns only trip name and memberCount and does not leak ownerId or member IDs/names", async () => {
+      const res = await fetch(`${baseUrl}/api/trips/invite/lookup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ inviteCode: "TRIP-F25K4S" }),
+      });
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.success).toBe(true);
+      expect(data.trip).toBeDefined();
+      expect(data.trip.title || data.trip.name).toBe("Goa");
+      expect(typeof data.trip.memberCount).toBe("number");
+      // Must NOT leak ownerId, memberUserIds, or members array
+      expect(data.trip.ownerId).toBeUndefined();
+      expect(data.trip.owner_id).toBeUndefined();
+      expect(data.trip.ownerName).toBeUndefined();
+      expect(data.trip.memberUserIds).toBeUndefined();
+      expect(data.trip.member_user_ids).toBeUndefined();
+      expect(data.trip.members).toBeUndefined();
+    });
+
+    it("generates cryptographic invite codes with at least 8 random characters and an expiry date", () => {
+      const code = generateSecureInviteCode();
+      expect(code.startsWith("TRIP-")).toBe(true);
+      const randomPart = code.replace("TRIP-", "");
+      expect(randomPart.length).toBeGreaterThanOrEqual(8);
+
+      const expiry = getDefaultInviteExpiryIso();
+      expect(new Date(expiry).getTime()).toBeGreaterThan(Date.now());
     });
   });
 });

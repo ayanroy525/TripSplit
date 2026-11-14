@@ -27,15 +27,16 @@ describe("Invite Code Lookup & Atomic Join System", () => {
     expect(res.error).toContain("log in");
   });
 
-  it("correctly looks up live trip 'Goa' with valid invite code 'TRIP-F25K4S'", async () => {
+  it("correctly looks up live trip 'Goa' with valid invite code 'TRIP-F25K4S' without leaking member IDs", async () => {
     const res = await getTripByInviteCode("TRIP-F25K4S");
     expect(res.success).toBe(true);
     expect(res.trip).toBeDefined();
     expect(res.trip?.title).toBe("Goa");
-    expect(res.trip?.inviteCode).toBe("TRIP-F25K4S");
-    expect(res.trip?.id).toBe("trip_goa_mucteofh");
-    expect(res.trip?.members).toBeDefined();
-    expect(res.trip?.members.length).toBeGreaterThan(0);
+    expect(typeof res.trip?.memberCount).toBe("number");
+    expect(res.trip?.memberCount).toBeGreaterThan(0);
+    expect(res.trip?.ownerId).toBeUndefined();
+    expect(res.trip?.memberUserIds).toBeUndefined();
+    expect(res.trip?.members).toBeUndefined();
   });
 
   it("normalizes case and whitespace when looking up '  trip-f25k4s  '", async () => {

@@ -19,28 +19,15 @@ export default async function handler(req: any, res: any) {
   if (req.method === "GET") {
     try {
       const config = await getTelegramConfig();
-      // Mask token for security
-      const maskedToken = config.botToken
-        ? config.botToken.slice(0, 5) + "••••••••••" + config.botToken.slice(-4)
-        : "";
-
       return sendJson(res, 200, {
-        success: true,
-        config: {
-          hasToken: Boolean(config.botToken),
-          botTokenMasked: maskedToken,
-          chatId: config.chatId,
-          dailyEnabled: config.dailyEnabled,
-          webhookUrl: config.webhookUrl,
-        },
+        configured: Boolean(config.botToken && config.chatId),
       });
     } catch (err: any) {
-      return sendJson(res, 500, { success: false, error: err?.message });
+      return sendJson(res, 500, { configured: false, error: err?.message });
     }
   }
 
   if (req.method === "POST") {
-
     try {
       let body = req.body;
       if (typeof body === "string") {
@@ -49,28 +36,19 @@ export default async function handler(req: any, res: any) {
         } catch {}
       }
 
-      const { botToken, chatId, dailyEnabled, webhookUrl } = body || {};
+      const { dailyEnabled, webhookUrl } = body || {};
       const updated = await saveTelegramConfig({
-        botToken: botToken !== undefined && !botToken.includes("••••") ? botToken : undefined,
-        chatId,
         dailyEnabled,
         webhookUrl,
       });
 
       return sendJson(res, 200, {
-        success: true,
-        message: "Telegram configuration saved successfully",
-        config: {
-          hasToken: Boolean(updated.botToken),
-          chatId: updated.chatId,
-          dailyEnabled: updated.dailyEnabled,
-          webhookUrl: updated.webhookUrl,
-        },
+        configured: Boolean(updated.botToken && updated.chatId),
       });
     } catch (err: any) {
-      return sendJson(res, 500, { success: false, error: err?.message });
+      return sendJson(res, 500, { configured: false, error: err?.message });
     }
   }
 
-  return sendJson(res, 405, { success: false, error: "Method not allowed" });
+  return sendJson(res, 405, { configured: false, error: "Method not allowed" });
 }

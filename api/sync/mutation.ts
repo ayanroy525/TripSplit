@@ -8,6 +8,8 @@ import {
   parseBody,
   getLocalStore,
   saveLocalStore,
+  generateSecureInviteCode,
+  getDefaultInviteExpiryIso,
 } from "../_shared.js";
 
 export default async function handler(req: any, res: any) {
@@ -37,13 +39,21 @@ export default async function handler(req: any, res: any) {
     return sendJson(res, 400, { success: false, error: "type and tripId are required" });
   }
 
+  if (process.env.NODE_ENV === "production" && !pool) {
+    return sendJson(res, 503, { success: false, error: "Database unavailable" });
+  }
+
   // Authorization check: Verify user is a member of this trip (or creating a genuinely new trip where they are owner)
   let tripExists = false;
   if (pool) {
     try {
       const existsRes = await pool.query("SELECT id FROM public.trips WHERE id = $1 LIMIT 1;", [tripId]);
       tripExists = existsRes.rows.length > 0;
-    } catch {}
+    } catch {
+      if (process.env.NODE_ENV === "production") {
+        return sendJson(res, 503, { success: false, error: "Database unavailable" });
+      }
+    }
   } else {
     const store = getLocalStore();
     tripExists = store.trips.some((t: any) => t.id === tripId);
@@ -338,9 +348,9 @@ export default async function handler(req: any, res: any) {
             await pool.query(
               `INSERT INTO public.trips (
                 id, title, location, destination, start_date, end_date, currency, status,
-                owner_id, owner_name, member_user_ids, invite_code, created_at, updated_at
+                owner_id, owner_name, member_user_ids, invite_code, invite_expires_at, created_at, updated_at
               ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, NOW(), NOW()
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13, NOW(), NOW()
               )
               ON CONFLICT (id) DO UPDATE SET
                 title = EXCLUDED.title,
@@ -351,6 +361,7 @@ export default async function handler(req: any, res: any) {
                 currency = EXCLUDED.currency,
                 status = EXCLUDED.status,
                 member_user_ids = EXCLUDED.member_user_ids,
+                invite_expires_at = COALESCE(public.trips.invite_expires_at, EXCLUDED.invite_expires_at),
                 updated_at = NOW();`,
               [
                 targetTripId,
@@ -364,7 +375,8 @@ export default async function handler(req: any, res: any) {
                 trip.ownerId || userId || "",
                 trip.ownerName || "Traveler",
                 JSON.stringify(memberUserIds),
-                trip.inviteCode || `TRIP-${targetTripId.slice(-6).toUpperCase()}`,
+                trip.inviteCode || generateSecureInviteCode(),
+                trip.inviteExpiresAt || getDefaultInviteExpiryIso(),
               ]
             );
 
@@ -437,10 +449,15 @@ export default async function handler(req: any, res: any) {
       return sendJson(res, 200, { success: true, processedVia: "postgres" });
     } catch (err: any) {
       console.warn("Notice executing mutation in api/sync/mutation:", err?.message || err);
+      if (process.env.NODE_ENV === "production") {
+        return sendJson(res, 503, { success: false, error: "Database unavailable" });
+      }
     }
+  } else if (process.env.NODE_ENV === "production") {
+    return sendJson(res, 503, { success: false, error: "Database unavailable" });
   }
 
-  // Local store fallback (strictly scoped by trip_id)
+  // Local store fallback (strictly scoped by trip_id, non-production only)
   const store = getLocalStore();
   if (type === "RECORD_PAYMENT" && payload?.id) {
     const idx = store.payments.findIndex((p: any) => p.id === payload.id && p.trip_id === tripId);

@@ -41,6 +41,9 @@ import {
   sanitizeReceiptUrl as sharedSanitizeReceiptUrl,
   setCorsHeaders,
   isOriginAllowed,
+  getValidatedSessionSecret,
+  generateSecureInviteCode,
+  getDefaultInviteExpiryIso,
   SESSION_SECRET,
   PASSWORD_SALT,
   ADMIN_EMAILS,
@@ -117,6 +120,7 @@ interface SessionPayload {
 }
 
 function generateSessionToken(userId: string, email?: string, name?: string, tokenVersion: number = 1): string {
+  const secret = getValidatedSessionSecret();
   const payload: SessionPayload = {
     userId,
     email,
@@ -129,7 +133,7 @@ function generateSessionToken(userId: string, email?: string, name?: string, tok
   const headerBase64 = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
   const payloadBase64 = Buffer.from(JSON.stringify(payload)).toString("base64url");
   const signature = crypto
-    .createHmac("sha256", SESSION_SECRET)
+    .createHmac("sha256", secret)
     .update(`${headerBase64}.${payloadBase64}`)
     .digest("base64url");
 
@@ -284,14 +288,21 @@ app.post("/api/auth/revoke-all-sessions", authMiddleware, async (req: AuthReques
       await pool.query("UPDATE public.users SET token_version = COALESCE(token_version, 1) + 1, updated_at = NOW() WHERE id = $1;", [userId]);
     } catch (err: any) {
       console.warn("Notice updating token_version in pool:", err?.message || err);
+      if (process.env.NODE_ENV === "production") {
+        return res.status(503).json({ success: false, error: "Database unavailable" });
+      }
     }
+  } else if (process.env.NODE_ENV === "production") {
+    return res.status(503).json({ success: false, error: "Database unavailable" });
   }
 
-  const store = getLocalStore();
-  const u = store.users.find((u) => u.id === userId);
-  if (u) {
-    (u as any).token_version = ((u as any).token_version || 1) + 1;
-    saveLocalStore(store);
+  if (process.env.NODE_ENV !== "production") {
+    const store = getLocalStore();
+    const u = store.users.find((u) => u.id === userId);
+    if (u) {
+      (u as any).token_version = ((u as any).token_version || 1) + 1;
+      saveLocalStore(store);
+    }
   }
 
   return res.json({ success: true, message: "All existing sessions have been revoked. Please log in again with new credentials." });
@@ -305,18 +316,53 @@ app.get("/api/trips/invite/:code", async (req, res) => {
 
   if (pool) {
     try {
-      const dbRes = await pool.query("SELECT public.get_trip_by_invite_code($1) AS res;", [code]);
-      const payload = dbRes.rows[0]?.res;
-      if (payload && payload.success) {
-        return res.json(payload);
+      const tripRes = await pool.query(
+        `SELECT *,
+                (SELECT COUNT(*)::int FROM public.trip_members tm WHERE tm.trip_id = public.trips.id) AS member_count
+         FROM public.trips
+         WHERE invite_code IS NOT NULL AND TRIM(invite_code) <> '' AND (
+           UPPER(TRIM(invite_code)) = $1
+           OR UPPER(TRIM(invite_code)) = 'TRIP-' || $1
+           OR UPPER(TRIM(REPLACE(invite_code, 'TRIP-', ''))) = $1
+         )
+         LIMIT 1;`,
+        [code]
+      );
+      const trip = tripRes.rows[0];
+      if (trip) {
+        if (trip.invite_expires_at && new Date(trip.invite_expires_at) < new Date()) {
+          return res.status(410).json({
+            success: false,
+            message: "This invite code has expired. Please ask the trip organizer for a new one.",
+          });
+        }
+        return res.json({
+          success: true,
+          trip: {
+            title: trip.title || "Untitled Trip",
+            name: trip.title || "Untitled Trip",
+            memberCount: Number(trip.member_count || 0),
+          },
+        });
+      }
+      if (process.env.NODE_ENV === "production") {
+        return res.status(404).json({ success: false, message: "Invite code is invalid or expired." });
       }
     } catch (err: any) {
       console.warn("Notice: PostgreSQL invite query:", err?.message || err);
+      if (process.env.NODE_ENV === "production") {
+        return res.status(503).json({ success: false, error: "Database unavailable" });
+      }
     }
+  } else if (process.env.NODE_ENV === "production") {
+    return res.status(503).json({ success: false, error: "Database unavailable" });
   }
 
   const store = getLocalStore();
-  const trip = store.trips.find((t) => t.invite_code === code);
+  const trip = store.trips.find((t) => {
+    const codeVal = (t.inviteCode || t.invite_code || "").trim().toUpperCase();
+    return codeVal === code || codeVal === `TRIP-${code}` || codeVal.replace("TRIP-", "").trim() === code;
+  });
   if (!trip) {
     return res.status(404).json({ success: false, message: "Invite code is invalid or expired." });
   }
@@ -324,10 +370,8 @@ app.get("/api/trips/invite/:code", async (req, res) => {
   return res.json({
     success: true,
     trip: {
-      id: trip.id,
-      name: trip.name,
-      description: trip.description,
-      currency: trip.currency,
+      title: trip.title || trip.name || "Untitled Trip",
+      name: trip.name || trip.title || "Untitled Trip",
       memberCount: store.trip_members.filter((m) => m.trip_id === trip.id).length,
     },
   });
@@ -357,7 +401,12 @@ app.post("/api/trips/join", authMiddleware, async (req: AuthRequest, res) => {
       }
     } catch (err: any) {
       console.warn("Notice: PostgreSQL join trip:", err?.message || err);
+      if (process.env.NODE_ENV === "production") {
+        return res.status(503).json({ success: false, error: "Database unavailable" });
+      }
     }
+  } else if (process.env.NODE_ENV === "production") {
+    return res.status(503).json({ success: false, error: "Database unavailable" });
   }
 
   const store = getLocalStore();
@@ -464,15 +513,20 @@ app.get("/api/user-trips", authMiddleware, async (req: AuthRequest, res) => {
 
       return res.json({ success: true, trips: fullTrips });
     } catch (err: any) {
-      console.warn("Notice: PostgreSQL in user-trips, using local server store:", err?.message || err);
+      console.warn("Notice: PostgreSQL in user-trips:", err?.message || err);
+      if (process.env.NODE_ENV === "production") {
+        return res.status(503).json({ success: false, error: "Database unavailable" });
+      }
     }
+  } else if (process.env.NODE_ENV === "production") {
+    return res.status(503).json({ success: false, error: "Database unavailable" });
   }
 
   const userTrips = getFullTripsForUser(userId);
   return res.json({ success: true, trips: userTrips });
 });
 
-// Robust Invite Code Lookup & Preview (Strictly scoped to invite_code, strips member PII)
+// Robust Invite Code Lookup & Preview (Returns ONLY trip name and memberCount)
 app.post("/api/trips/invite/lookup", async (req, res) => {
   let { inviteCode } = req.body || {};
   let raw = String(inviteCode || "").trim();
@@ -494,7 +548,9 @@ app.post("/api/trips/invite/lookup", async (req, res) => {
   if (pool) {
     try {
       const tripRes = await pool.query(
-        `SELECT * FROM public.trips
+        `SELECT *,
+                (SELECT COUNT(*)::int FROM public.trip_members tm WHERE tm.trip_id = public.trips.id) AS member_count
+         FROM public.trips
          WHERE invite_code IS NOT NULL AND TRIM(invite_code) <> '' AND (
            UPPER(TRIM(invite_code)) = $1
            OR UPPER(TRIM(invite_code)) = 'TRIP-' || $1
@@ -513,48 +569,32 @@ app.post("/api/trips/invite/lookup", async (req, res) => {
           });
         }
 
-        const membersRes = await pool.query(
-          "SELECT id, user_id, name, role, avatar_color, joined_at FROM public.trip_members WHERE trip_id = $1;",
-          [trip.id]
-        );
-
         return res.json({
           success: true,
           trip: {
-            id: trip.id,
-            title: trip.title,
-            location: trip.location || trip.destination || "",
-            destination: trip.destination || trip.location || "",
-            startDate: trip.start_date,
-            endDate: trip.end_date,
-            currency: trip.currency || "INR",
-            status: trip.status || "ACTIVE",
-            ownerId: trip.owner_id,
-            ownerName: trip.owner_name,
-            inviteCode: trip.invite_code,
-            inviteExpiresAt: trip.invite_expires_at,
-            memberUserIds: Array.isArray(trip.member_user_ids) ? trip.member_user_ids : [],
-            createdAt: trip.created_at,
-            members: membersRes.rows.map((m: any) => ({
-              id: m.id,
-              userId: m.user_id || m.id,
-              name: m.name || "Traveler",
-              role: m.role || "participant",
-              avatarColor: m.avatar_color || "#0F6B65",
-              joinedAt: m.joined_at,
-            })),
-            expenses: [],
-            payments: [],
-            activities: [],
+            title: trip.title || "Untitled Trip",
+            name: trip.title || "Untitled Trip",
+            memberCount: Number(trip.member_count || 0),
           },
+        });
+      }
+      if (process.env.NODE_ENV === "production") {
+        return res.status(404).json({
+          success: false,
+          error: `Invite code '${clean}' is invalid or expired. Please check with your trip organizer.`,
         });
       }
     } catch (err: any) {
       console.warn("PostgreSQL invite lookup notice:", err?.message || err);
+      if (process.env.NODE_ENV === "production") {
+        return res.status(503).json({ success: false, error: "Database unavailable" });
+      }
     }
+  } else if (process.env.NODE_ENV === "production") {
+    return res.status(503).json({ success: false, error: "Database unavailable" });
   }
 
-  // 2. Try local store (Strictly match inviteCode only, strip email/phone PII from preview)
+  // 2. Try local store (non-production only; return only trip name and memberCount)
   const store = getLocalStore();
   const trip = store.trips.find((t: any) => {
     const codeVal = (t.inviteCode || t.invite_code || "").trim().toUpperCase();
@@ -575,24 +615,13 @@ app.post("/api/trips/invite/lookup", async (req, res) => {
       });
     }
 
-    const members = store.trip_members
-      .filter((m: any) => m.trip_id === trip.id)
-      .map((m: any) => ({
-        id: m.id,
-        userId: m.user_id || m.userId || m.id,
-        name: m.name || "Traveler",
-        role: m.role || "participant",
-        avatarColor: m.avatar_color || m.avatarColor || "#0F6B65",
-        joinedAt: m.joined_at || m.joinedAt,
-      }));
+    const memberCount = store.trip_members.filter((m: any) => m.trip_id === trip.id).length;
     return res.json({
       success: true,
       trip: {
-        ...trip,
-        members,
-        expenses: [],
-        payments: [],
-        activities: [],
+        title: trip.title || trip.name || "Untitled Trip",
+        name: trip.title || trip.name || "Untitled Trip",
+        memberCount,
       },
     });
   }
@@ -669,144 +698,151 @@ app.post("/api/trips/invite/join", async (req: AuthRequest, res) => {
       );
 
       const trip = tripRes.rows[0];
-      if (!trip) {
+      if (!trip && process.env.NODE_ENV === "production") {
         return res.status(404).json({
           success: false,
           error: `Invite code '${clean}' is invalid or expired. Please check with your trip organizer.`,
         });
       }
 
-      if (trip.invite_expires_at && new Date(trip.invite_expires_at) < new Date()) {
-        return res.status(410).json({
-          success: false,
-          error: "This invite code has expired. Please ask the trip organizer for a new one.",
-        });
-      }
-
-      if (!authHeader.startsWith("Bearer ") && trip.owner_id === userId) {
-        return res.status(401).json({
-          success: false,
-          error: "Authorization token required.",
-        });
-      }
-
-      // Check if already a member
-      const existingMemberRes = await pool.query(
-        "SELECT * FROM public.trip_members WHERE trip_id = $1 AND (user_id = $2 OR id = $2) LIMIT 1;",
-        [trip.id, userId]
-      );
-
-      let memberId = userId;
-      let alreadyMember = false;
-
-      if (existingMemberRes.rows.length > 0) {
-        alreadyMember = true;
-        memberId = existingMemberRes.rows[0].id;
-      } else {
-        // Check for invited placeholder member with matching email or phone
-        let placeholderRes: any = { rows: [] };
-        if (userEmail || userPhone) {
-          placeholderRes = await pool.query(
-            `SELECT * FROM public.trip_members
-             WHERE trip_id = $1 AND (
-               ($2 <> '' AND LOWER(email) = $2)
-               OR ($3 <> '' AND phone IS NOT NULL AND RIGHT(REGEXP_REPLACE(phone, '\\D', '', 'g'), 10) = RIGHT(REGEXP_REPLACE($3, '\\D', '', 'g'), 10))
-             ) LIMIT 1;`,
-            [trip.id, userEmail, userPhone]
-          );
+      if (trip) {
+        if (trip.invite_expires_at && new Date(trip.invite_expires_at) < new Date()) {
+          return res.status(410).json({
+            success: false,
+            error: "This invite code has expired. Please ask the trip organizer for a new one.",
+          });
         }
 
-        if (placeholderRes.rows.length > 0) {
-          const ph = placeholderRes.rows[0];
-          memberId = ph.id;
-          await pool.query(
-            `UPDATE public.trip_members
-             SET user_id = $1,
-                 name = COALESCE(NULLIF(name, 'Traveler'), $2),
-                 avatar_color = COALESCE(avatar_color, $3),
-                 phone = COALESCE(phone, $4),
-                 email = COALESCE(email, $5),
-                 status = 'active'
-             WHERE id = $6 AND trip_id = $7;`,
-            [userId, userName, userAvatar, userPhone || null, userEmail || null, ph.id, trip.id]
-          );
+        if (!authHeader.startsWith("Bearer ") && trip.owner_id === userId) {
+          return res.status(401).json({
+            success: false,
+            error: "Authorization token required.",
+          });
+        }
+
+        // Check if already a member
+        const existingMemberRes = await pool.query(
+          "SELECT * FROM public.trip_members WHERE trip_id = $1 AND (user_id = $2 OR id = $2) LIMIT 1;",
+          [trip.id, userId]
+        );
+
+        let memberId = userId;
+        let alreadyMember = false;
+
+        if (existingMemberRes.rows.length > 0) {
+          alreadyMember = true;
+          memberId = existingMemberRes.rows[0].id;
         } else {
-          // Insert new member
+          // Check for invited placeholder member with matching email or phone
+          let placeholderRes: any = { rows: [] };
+          if (userEmail || userPhone) {
+            placeholderRes = await pool.query(
+              `SELECT * FROM public.trip_members
+               WHERE trip_id = $1 AND (
+                 ($2 <> '' AND LOWER(email) = $2)
+                 OR ($3 <> '' AND phone IS NOT NULL AND RIGHT(REGEXP_REPLACE(phone, '\\D', '', 'g'), 10) = RIGHT(REGEXP_REPLACE($3, '\\D', '', 'g'), 10))
+               ) LIMIT 1;`,
+              [trip.id, userEmail, userPhone]
+            );
+          }
+
+          if (placeholderRes.rows.length > 0) {
+            const ph = placeholderRes.rows[0];
+            memberId = ph.id;
+            await pool.query(
+              `UPDATE public.trip_members
+               SET user_id = $1,
+                   name = COALESCE(NULLIF(name, 'Traveler'), $2),
+                   avatar_color = COALESCE(avatar_color, $3),
+                   phone = COALESCE(phone, $4),
+                   email = COALESCE(email, $5),
+                   status = 'active'
+               WHERE id = $6 AND trip_id = $7;`,
+              [userId, userName, userAvatar, userPhone || null, userEmail || null, ph.id, trip.id]
+            );
+          } else {
+            // Insert new member
+            await pool.query(
+              `INSERT INTO public.trip_members (
+                id, trip_id, user_id, name, role, avatar_color, phone, email, joined_at, status
+              ) VALUES ($1, $2, $3, $4, 'participant', $5, $6, $7, NOW(), 'active')
+              ON CONFLICT (id) DO UPDATE SET
+                user_id = EXCLUDED.user_id,
+                name = EXCLUDED.name,
+                avatar_color = EXCLUDED.avatar_color,
+                phone = COALESCE(EXCLUDED.phone, trip_members.phone),
+                email = COALESCE(EXCLUDED.email, trip_members.email)
+              WHERE public.trip_members.trip_id = EXCLUDED.trip_id;`,
+              [memberId, trip.id, userId, userName, userAvatar, userPhone || null, userEmail || null]
+            );
+          }
+
+          // Atomically update trips.member_user_ids array
+          const currentIds: string[] = Array.isArray(trip.member_user_ids) ? trip.member_user_ids : [];
+          const updatedIds = Array.from(new Set([...currentIds, userId, trip.owner_id].filter(Boolean)));
+          await pool.query("UPDATE public.trips SET member_user_ids = $1, updated_at = NOW() WHERE id = $2;", [
+            JSON.stringify(updatedIds),
+            trip.id,
+          ]);
+
+          // Insert audit log
           await pool.query(
-            `INSERT INTO public.trip_members (
-              id, trip_id, user_id, name, role, avatar_color, phone, email, joined_at, status
-            ) VALUES ($1, $2, $3, $4, 'participant', $5, $6, $7, NOW(), 'active')
-            ON CONFLICT (id) DO UPDATE SET
-              user_id = EXCLUDED.user_id,
-              name = EXCLUDED.name,
-              avatar_color = EXCLUDED.avatar_color,
-              phone = COALESCE(EXCLUDED.phone, trip_members.phone),
-              email = COALESCE(EXCLUDED.email, trip_members.email)
-            WHERE public.trip_members.trip_id = EXCLUDED.trip_id;`,
-            [memberId, trip.id, userId, userName, userAvatar, userPhone || null, userEmail || null]
+            `INSERT INTO public.activities (id, trip_id, ts, user_name, action, detail, actor_id, created_at)
+             VALUES ($1, $2, 'Just now', $3, 'joined', $4, $5, NOW());`,
+            [
+              `act_${Date.now()}`,
+              trip.id,
+              userName,
+              `${userName} joined the trip via invite code`,
+              userId,
+            ]
           );
         }
 
-        // Atomically update trips.member_user_ids array
-        const currentIds: string[] = Array.isArray(trip.member_user_ids) ? trip.member_user_ids : [];
-        const updatedIds = Array.from(new Set([...currentIds, userId, trip.owner_id].filter(Boolean)));
-        await pool.query("UPDATE public.trips SET member_user_ids = $1, updated_at = NOW() WHERE id = $2;", [
-          JSON.stringify(updatedIds),
-          trip.id,
+        // Fetch updated full trip
+        const [membersRes, expensesRes, paymentsRes, activitiesRes] = await Promise.all([
+          pool.query("SELECT * FROM public.trip_members WHERE trip_id = $1 ORDER BY joined_at ASC;", [trip.id]),
+          pool.query("SELECT * FROM public.expenses WHERE trip_id = $1 AND COALESCE(deleted, false) = false ORDER BY created_at DESC;", [trip.id]),
+          pool.query("SELECT * FROM public.payments WHERE trip_id = $1 ORDER BY created_at DESC;", [trip.id]),
+          pool.query("SELECT * FROM public.activities WHERE trip_id = $1 ORDER BY created_at DESC LIMIT 50;", [trip.id]),
         ]);
 
-        // Insert audit log
-        await pool.query(
-          `INSERT INTO public.activities (id, trip_id, ts, user_name, action, detail, actor_id, created_at)
-           VALUES ($1, $2, 'Just now', $3, 'joined', $4, $5, NOW());`,
-          [
-            `act_${Date.now()}`,
-            trip.id,
-            userName,
-            `${userName} joined the trip via invite code`,
-            userId,
-          ]
-        );
+        return res.json({
+          success: true,
+          alreadyMember,
+          trip: {
+            id: trip.id,
+            title: trip.title,
+            location: trip.location || trip.destination || "",
+            destination: trip.destination || trip.location || "",
+            startDate: trip.start_date,
+            endDate: trip.end_date,
+            currency: trip.currency || "INR",
+            status: trip.status || "ACTIVE",
+            ownerId: trip.owner_id,
+            ownerName: trip.owner_name,
+            inviteCode: trip.invite_code,
+            inviteExpiresAt: trip.invite_expires_at,
+            memberUserIds: Array.isArray(trip.member_user_ids) ? trip.member_user_ids : [],
+            createdAt: trip.created_at,
+            members: membersRes.rows,
+            expenses: expensesRes.rows,
+            payments: paymentsRes.rows,
+            activities: activitiesRes.rows,
+          },
+        });
       }
-
-      // Fetch updated full trip
-      const [membersRes, expensesRes, paymentsRes, activitiesRes] = await Promise.all([
-        pool.query("SELECT * FROM public.trip_members WHERE trip_id = $1 ORDER BY joined_at ASC;", [trip.id]),
-        pool.query("SELECT * FROM public.expenses WHERE trip_id = $1 AND COALESCE(deleted, false) = false ORDER BY created_at DESC;", [trip.id]),
-        pool.query("SELECT * FROM public.payments WHERE trip_id = $1 ORDER BY created_at DESC;", [trip.id]),
-        pool.query("SELECT * FROM public.activities WHERE trip_id = $1 ORDER BY created_at DESC LIMIT 50;", [trip.id]),
-      ]);
-
-      return res.json({
-        success: true,
-        alreadyMember,
-        trip: {
-          id: trip.id,
-          title: trip.title,
-          location: trip.location || trip.destination || "",
-          destination: trip.destination || trip.location || "",
-          startDate: trip.start_date,
-          endDate: trip.end_date,
-          currency: trip.currency || "INR",
-          status: trip.status || "ACTIVE",
-          ownerId: trip.owner_id,
-          ownerName: trip.owner_name,
-          inviteCode: trip.invite_code,
-          inviteExpiresAt: trip.invite_expires_at,
-          memberUserIds: Array.isArray(trip.member_user_ids) ? trip.member_user_ids : [],
-          createdAt: trip.created_at,
-          members: membersRes.rows,
-          expenses: expensesRes.rows,
-          payments: paymentsRes.rows,
-          activities: activitiesRes.rows,
-        },
-      });
     } catch (err: any) {
-      console.warn("PostgreSQL join error, falling back to local store:", err?.message || err);
+      console.warn("PostgreSQL join error:", err?.message || err);
+      if (process.env.NODE_ENV === "production") {
+        return res.status(503).json({ success: false, error: "Database unavailable" });
+      }
     }
+  } else if (process.env.NODE_ENV === "production") {
+    return res.status(503).json({ success: false, error: "Database unavailable" });
   }
 
-  // Local fallback
+  // Local fallback (non-production only)
   const store = getLocalStore();
   const trip = store.trips.find((t: any) => {
     const codeVal = (t.inviteCode || t.invite_code || "").trim().toUpperCase();
@@ -870,6 +906,10 @@ app.get("/api/trips/:tripId", authMiddleware, async (req: AuthRequest, res) => {
     return res.status(400).json({ success: false, error: "tripId is required" });
   }
 
+  if (process.env.NODE_ENV === "production" && !pool) {
+    return res.status(503).json({ success: false, error: "Database unavailable" });
+  }
+
   const authCheck = await checkTripAuthorization(tripId, userId, pool);
   if (!authCheck.canAccess) {
     return res.status(403).json({ success: false, error: "Access denied. You are not a member of this trip." });
@@ -898,8 +938,14 @@ app.get("/api/trips/:tripId", authMiddleware, async (req: AuthRequest, res) => {
           },
         });
       }
+      if (process.env.NODE_ENV === "production") {
+        return res.status(404).json({ success: false, error: "Trip not found" });
+      }
     } catch (err: any) {
-      console.warn("Notice: PostgreSQL in trip detail, using local server store:", err?.message || err);
+      console.warn("Notice: PostgreSQL in trip detail:", err?.message || err);
+      if (process.env.NODE_ENV === "production") {
+        return res.status(503).json({ success: false, error: "Database unavailable" });
+      }
     }
   }
 
@@ -927,13 +973,21 @@ app.post("/api/sync/mutation", authMiddleware, async (req: AuthRequest, res) => 
     return res.status(400).json({ success: false, error: "type and tripId are required" });
   }
 
+  if (process.env.NODE_ENV === "production" && !pool) {
+    return res.status(503).json({ success: false, error: "Database unavailable" });
+  }
+
   // Authorization check: Verify user is a member of this trip (or creating a genuinely new trip where they are owner)
   let tripExists = false;
   if (pool) {
     try {
       const existsRes = await pool.query("SELECT id FROM public.trips WHERE id = $1 LIMIT 1;", [tripId]);
       tripExists = existsRes.rows.length > 0;
-    } catch {}
+    } catch (err: any) {
+      if (process.env.NODE_ENV === "production") {
+        return res.status(503).json({ success: false, error: "Database unavailable" });
+      }
+    }
   } else {
     const store = getLocalStore();
     tripExists = store.trips.some((t: any) => t.id === tripId);
@@ -1220,9 +1274,9 @@ app.post("/api/sync/mutation", authMiddleware, async (req: AuthRequest, res) => 
             await pool.query(
               `INSERT INTO public.trips (
                 id, title, location, destination, start_date, end_date, currency, status,
-                owner_id, owner_name, member_user_ids, invite_code, created_at, updated_at
+                owner_id, owner_name, member_user_ids, invite_code, invite_expires_at, created_at, updated_at
               ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, NOW(), NOW()
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13, NOW(), NOW()
               )
               ON CONFLICT (id) DO UPDATE SET
                 title = EXCLUDED.title,
@@ -1233,6 +1287,7 @@ app.post("/api/sync/mutation", authMiddleware, async (req: AuthRequest, res) => 
                 currency = EXCLUDED.currency,
                 status = EXCLUDED.status,
                 member_user_ids = EXCLUDED.member_user_ids,
+                invite_expires_at = COALESCE(public.trips.invite_expires_at, EXCLUDED.invite_expires_at),
                 updated_at = NOW();`,
               [
                 targetTripId,
@@ -1246,7 +1301,8 @@ app.post("/api/sync/mutation", authMiddleware, async (req: AuthRequest, res) => 
                 trip.ownerId || req.userId || "",
                 trip.ownerName || "Traveler",
                 JSON.stringify(memberUserIds),
-                trip.inviteCode || `TRIP-${targetTripId.slice(-6).toUpperCase()}`,
+                trip.inviteCode || generateSecureInviteCode(),
+                trip.inviteExpiresAt || getDefaultInviteExpiryIso(),
               ]
             );
 
@@ -1319,10 +1375,15 @@ app.post("/api/sync/mutation", authMiddleware, async (req: AuthRequest, res) => 
       return res.json({ success: true, processedVia: "postgres" });
     } catch (err: any) {
       console.warn("Notice executing mutation in PostgreSQL:", err?.message || err);
+      if (process.env.NODE_ENV === "production") {
+        return res.status(503).json({ success: false, error: "Database unavailable" });
+      }
     }
+  } else if (process.env.NODE_ENV === "production") {
+    return res.status(503).json({ success: false, error: "Database unavailable" });
   }
 
-  // Local store fallback (strictly scoped by trip_id)
+  // Local store fallback (strictly scoped by trip_id, non-production only)
   const store = getLocalStore();
   if (type === "RECORD_PAYMENT" && payload?.id) {
     const idx = store.payments.findIndex((p: any) => p.id === payload.id && p.trip_id === tripId);

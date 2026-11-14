@@ -53,12 +53,10 @@ export const SystemHealthModal: React.FC<SystemHealthModalProps> = ({ isOpen, on
   const [activeTab, setActiveTab] = useState<"overview" | "history" | "telegram">("overview");
 
   // Telegram settings state
-  const [botToken, setBotToken] = useState("");
-  const [showBotToken, setShowBotToken] = useState(false);
   const [chatId, setChatId] = useState("");
   const [dailyTelegramEnabled, setDailyTelegramEnabled] = useState(true);
   const [webhookUrl, setWebhookUrl] = useState("");
-  const [hasExistingToken, setHasExistingToken] = useState(false);
+  const [isConfigured, setIsConfigured] = useState(false);
   const [isSavingTelegram, setIsSavingTelegram] = useState(false);
   const [isSendingTest, setIsSendingTest] = useState(false);
   const [isRegisteringWebhook, setIsRegisteringWebhook] = useState(false);
@@ -115,19 +113,10 @@ export const SystemHealthModal: React.FC<SystemHealthModalProps> = ({ isOpen, on
       });
       if (res.ok) {
         const data = await res.json();
-        if (data.success && data.config) {
-          setHasExistingToken(Boolean(data.config.hasToken));
-          if (data.config.hasToken) {
-            setBotToken(data.config.botTokenMasked || "••••••••••••••••");
-          }
-          if (data.config.chatId) setChatId(data.config.chatId);
-          if (data.config.dailyEnabled !== undefined) setDailyTelegramEnabled(Boolean(data.config.dailyEnabled));
-          
-          const defaultWebhook = typeof window !== "undefined"
-            ? `${window.location.origin}/api/telegram/webhook`
-            : "";
-          setWebhookUrl(data.config.webhookUrl || defaultWebhook);
-        }
+        setIsConfigured(Boolean(data.configured));
+        const defaultWebhook =
+          typeof window !== "undefined" ? `${window.location.origin}/api/telegram/webhook` : "";
+        setWebhookUrl((prev) => prev || defaultWebhook);
       }
     } catch (err) {
       console.warn("Could not load telegram settings:", err);
@@ -181,16 +170,14 @@ export const SystemHealthModal: React.FC<SystemHealthModalProps> = ({ isOpen, on
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAuthHeaders() },
         body: JSON.stringify({
-          botToken: botToken.includes("••••") ? undefined : botToken,
-          chatId,
           dailyEnabled: dailyTelegramEnabled,
           webhookUrl,
         }),
       });
       const data = await res.json();
-      if (data.success) {
+      if (res.ok && typeof data.configured === "boolean") {
+        setIsConfigured(Boolean(data.configured));
         setTelegramFeedback({ type: "success", message: "Telegram settings saved to database successfully!" });
-        await fetchTelegramSettings();
       } else {
         setTelegramFeedback({ type: "error", message: data.error || "Failed to save settings." });
       }
@@ -209,8 +196,7 @@ export const SystemHealthModal: React.FC<SystemHealthModalProps> = ({ isOpen, on
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAuthHeaders() },
         body: JSON.stringify({
-          botToken: botToken.includes("••••") ? undefined : botToken,
-          chatId,
+          chatId: chatId || undefined,
         }),
       });
       const data = await res.json();
@@ -222,7 +208,7 @@ export const SystemHealthModal: React.FC<SystemHealthModalProps> = ({ isOpen, on
       } else {
         setTelegramFeedback({
           type: "error",
-          message: data.error || "Failed to send test message. Please verify Bot Token and Chat ID.",
+          message: data.error || "Failed to send test message. Please verify TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.",
         });
       }
     } catch (err: any) {
@@ -660,30 +646,14 @@ export const SystemHealthModal: React.FC<SystemHealthModalProps> = ({ isOpen, on
 
               {/* Telegram Form */}
               <div className="space-y-4 bg-slate-950/40 border border-slate-800 p-5 rounded-xl">
-                {/* Bot Token Input */}
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">
-                    Telegram Bot Token
-                  </label>
-                  <div className="relative">
-                    <input
-                      type={showBotToken ? "text" : "password"}
-                      value={botToken}
-                      onChange={(e) => setBotToken(e.target.value)}
-                      placeholder="e.g. 1234567890:ABCdefGHIjklMNOpqrsTUVwxyz"
-                      className="w-full px-3.5 py-2 pr-10 text-xs font-mono bg-slate-900 border border-slate-700/80 rounded-lg text-slate-100 placeholder-slate-500 focus:outline-none focus:border-teal-500 transition-colors"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowBotToken(!showBotToken)}
-                      className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-200 cursor-pointer"
-                      title={showBotToken ? "Hide Token" : "Show Token"}
-                    >
-                      {showBotToken ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
-                  <span className="text-[11px] text-slate-400 mt-1 block">
-                    Create a bot with <span className="text-teal-400 font-mono">@BotFather</span> on Telegram and paste the token above.
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-semibold text-slate-300">Telegram Bot Configuration</span>
+                  <span
+                    className={`font-semibold ${
+                      isConfigured ? "text-emerald-400" : "text-amber-400"
+                    }`}
+                  >
+                    {isConfigured ? "Configured" : "Not Configured"}
                   </span>
                 </div>
 
@@ -781,7 +751,7 @@ export const SystemHealthModal: React.FC<SystemHealthModalProps> = ({ isOpen, on
                   <button
                     type="button"
                     onClick={handleSendTestMessage}
-                    disabled={isSendingTest || (!botToken && !hasExistingToken) || !chatId}
+                    disabled={isSendingTest || !isConfigured}
                     className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-teal-300 bg-teal-950/60 border border-teal-500/40 hover:bg-teal-900/60 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
                   >
                     <Send className={`w-3.5 h-3.5 ${isSendingTest ? "animate-spin" : ""}`} />

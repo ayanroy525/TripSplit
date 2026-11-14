@@ -1267,6 +1267,23 @@ export function saveStateToStorage(state: StorageSchema): boolean {
 /**
  * Wipes/resets state in Supabase and localStorage.
  */
+function generateClientInviteCode(): string {
+  const bytes = new Uint8Array(6);
+  if (typeof globalThis !== "undefined" && globalThis.crypto && typeof globalThis.crypto.getRandomValues === "function") {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i++) {
+      bytes[i] = Math.floor(Math.random() * 256);
+    }
+  }
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("").toUpperCase();
+  return `TRIP-${hex}`;
+}
+
+function getDefaultClientInviteExpiry(): string {
+  return new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+}
+
 export function resetStorageState(
   _mode: "clean_scratch" = "clean_scratch",
   customUser?: UserAccount
@@ -1296,7 +1313,8 @@ export function resetStorageState(
     status: "ACTIVE",
     ownerId: user.id,
     ownerName: user.name,
-    inviteCode: `TRIP-${freshTripId.slice(-6).toUpperCase()}`,
+    inviteCode: generateClientInviteCode(),
+    inviteExpiresAt: getDefaultClientInviteExpiry(),
     members: [ownerMember],
     expenses: [],
     payments: [],
@@ -1389,7 +1407,8 @@ export function createNewTripObject(
     status: "ACTIVE",
     ownerId: user.id,
     ownerName: user.name,
-    inviteCode: `TRIP-${tripId.slice(-6).toUpperCase()}`,
+    inviteCode: generateClientInviteCode(),
+    inviteExpiresAt: getDefaultClientInviteExpiry(),
     members: allMembers,
     expenses: [],
     payments: [],
@@ -1409,8 +1428,7 @@ export function createNewTripObject(
 
 /**
  * Validates and retrieves trip preview by its invite code.
- * Uses secure Postgres SECURITY DEFINER stored procedure (RPC) so non-members
- * can preview the trip without violating Row Level Security.
+ * Returns only the trip name and member count (no owner ID, member user IDs, or member names).
  */
 export async function getTripByInviteCode(
   inviteCode: string
@@ -1420,7 +1438,7 @@ export async function getTripByInviteCode(
     return { success: false, error: "Please enter an invite code." };
   }
 
-  // 1. Primary: Same-Origin API lookup (reliable in all network and iframe environments)
+  // Primary: Same-Origin API lookup (/api/trips/invite/lookup)
   try {
     const baseUrl = typeof window !== "undefined" ? "" : "http://localhost:3000";
     const apiRes = await fetch(`${baseUrl}/api/trips/invite/lookup`, {
@@ -1428,89 +1446,23 @@ export async function getTripByInviteCode(
       headers: getAuthHeaders(),
       body: JSON.stringify({ inviteCode: code }),
     });
-    if (apiRes.ok) {
-      const data = await apiRes.json();
-      if (data.success && data.trip) {
-        return { success: true, trip: data.trip };
-      }
-      if (data.error) {
-        return { success: false, error: data.error };
-      }
+    const data = await apiRes.json().catch(() => ({}));
+    if (apiRes.ok && data.success && data.trip) {
+      return {
+        success: true,
+        trip: {
+          title: data.trip.title || data.trip.name || "Untitled Trip",
+          name: data.trip.name || data.trip.title || "Untitled Trip",
+          memberCount: Number(data.trip.memberCount ?? 0),
+        } as any,
+      };
+    }
+    if (data.error) {
+      return { success: false, error: data.error };
     }
   } catch (apiErr) {
-    console.warn("API invite lookup notice, falling back to Supabase RPC:", apiErr);
+    console.warn("API invite lookup notice:", apiErr);
   }
-
-  // 2. Secondary: Direct Supabase RPC stored procedure fallback
-  try {
-    const { data, error } = await supabase.rpc("get_trip_by_invite_code", {
-      p_invite_code: code,
-    });
-
-    if (error) {
-      console.warn("Notice in get_trip_by_invite_code RPC:", error.message);
-    } else if (data) {
-      if (data.success && data.trip) {
-        const tripData = data.trip;
-        const trip: Trip = {
-          id: tripData.id,
-          title: tripData.title || "Trip",
-          location: tripData.location || tripData.destination || "",
-          destination: tripData.destination || tripData.location || "",
-          startDate: tripData.startDate || "",
-          endDate: tripData.endDate || "",
-          currency: tripData.currency || "INR",
-          status: tripData.status || "ACTIVE",
-          ownerId: tripData.ownerId || "",
-          ownerName: tripData.ownerName || "Organizer",
-          inviteCode: tripData.inviteCode || code,
-          inviteExpiresAt: tripData.inviteExpiresAt || undefined,
-          memberUserIds: Array.isArray(tripData.memberUserIds) ? tripData.memberUserIds : [],
-          createdAt: tripData.createdAt || new Date().toISOString(),
-          members: (tripData.members || []).map((m: any) => ({
-            id: m.id,
-            userId: m.userId || m.id,
-            name: m.name || "Traveler",
-            role: m.role || "participant",
-            avatarColor: m.avatarColor || "#0F6B65",
-            phone: m.phone || "",
-            email: m.email || "",
-            joinedAt: m.joinedAt || new Date().toISOString(),
-            status: "active",
-          })),
-          expenses: [],
-          payments: [],
-          activities: [],
-        };
-        return { success: true, trip };
-      }
-
-      if (data.success === false) {
-        return {
-          success: false,
-          error:
-            data.message ||
-            `Invite code '${code}' is invalid or expired. Please check with your trip organizer.`,
-        };
-      }
-    }
-  } catch (err: any) {
-    console.warn("Exception calling get_trip_by_invite_code RPC:", err);
-  }
-
-  // Fallback: direct query in case RPC is unavailable
-  try {
-    const { data: tripRows } = await supabase
-      .from("trips")
-      .select("*")
-      .ilike("invite_code", code)
-      .limit(1);
-
-    if (tripRows && tripRows.length > 0) {
-      const full = await getTripFromDatabase(tripRows[0].id);
-      if (full) return { success: true, trip: full };
-    }
-  } catch (e) {}
 
   return {
     success: false,

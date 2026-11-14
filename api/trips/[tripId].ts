@@ -47,7 +47,9 @@ export default async function handler(req: any, res: any) {
     if (pool) {
       try {
         const tripRes = await pool.query(
-          `SELECT * FROM public.trips
+          `SELECT *,
+                  (SELECT COUNT(*)::int FROM public.trip_members tm WHERE tm.trip_id = public.trips.id) AS member_count
+           FROM public.trips
            WHERE invite_code IS NOT NULL AND TRIM(invite_code) <> '' AND (
              UPPER(TRIM(invite_code)) = $1
              OR UPPER(TRIM(invite_code)) = 'TRIP-' || $1
@@ -65,45 +67,29 @@ export default async function handler(req: any, res: any) {
             });
           }
 
-          const membersRes = await pool.query(
-            "SELECT id, user_id, name, role, avatar_color, joined_at FROM public.trip_members WHERE trip_id = $1;",
-            [trip.id]
-          );
-
           return sendJson(res, 200, {
             success: true,
             trip: {
-              id: trip.id,
-              title: trip.title,
-              location: trip.location || trip.destination || "",
-              destination: trip.destination || trip.location || "",
-              startDate: trip.start_date,
-              endDate: trip.end_date,
-              currency: trip.currency || "INR",
-              status: trip.status || "ACTIVE",
-              ownerId: trip.owner_id,
-              ownerName: trip.owner_name,
-              inviteCode: trip.invite_code,
-              inviteExpiresAt: trip.invite_expires_at,
-              memberUserIds: Array.isArray(trip.member_user_ids) ? trip.member_user_ids : [],
-              createdAt: trip.created_at,
-              members: membersRes.rows.map((m: any) => ({
-                id: m.id,
-                userId: m.user_id || m.id,
-                name: m.name || "Traveler",
-                role: m.role || "participant",
-                avatarColor: m.avatar_color || "#0F6B65",
-                joinedAt: m.joined_at,
-              })),
-              expenses: [],
-              payments: [],
-              activities: [],
+              title: trip.title || "Untitled Trip",
+              name: trip.title || "Untitled Trip",
+              memberCount: Number(trip.member_count || 0),
             },
+          });
+        }
+        if (process.env.NODE_ENV === "production") {
+          return sendJson(res, 404, {
+            success: false,
+            error: `Invite code '${clean}' is invalid or expired. Please check with your trip organizer.`,
           });
         }
       } catch (err: any) {
         console.warn("PostgreSQL invite lookup notice:", err?.message || err);
+        if (process.env.NODE_ENV === "production") {
+          return sendJson(res, 503, { success: false, error: "Database unavailable" });
+        }
       }
+    } else if (process.env.NODE_ENV === "production") {
+      return sendJson(res, 503, { success: false, error: "Database unavailable" });
     }
 
     const store = getLocalStore();
@@ -125,24 +111,13 @@ export default async function handler(req: any, res: any) {
           error: "This invite code has expired. Please ask the trip organizer for a new one.",
         });
       }
-      const members = store.trip_members
-        .filter((m: any) => m.trip_id === trip.id)
-        .map((m: any) => ({
-          id: m.id,
-          userId: m.user_id || m.userId || m.id,
-          name: m.name || "Traveler",
-          role: m.role || "participant",
-          avatarColor: m.avatar_color || m.avatarColor || "#0F6B65",
-          joinedAt: m.joined_at || m.joinedAt,
-        }));
+      const memberCount = store.trip_members.filter((m: any) => m.trip_id === trip.id).length;
       return sendJson(res, 200, {
         success: true,
         trip: {
-          ...trip,
-          members,
-          expenses: [],
-          payments: [],
-          activities: [],
+          title: trip.title || trip.name || "Untitled Trip",
+          name: trip.title || trip.name || "Untitled Trip",
+          memberCount,
         },
       });
     }
@@ -319,7 +294,12 @@ export default async function handler(req: any, res: any) {
         });
       } catch (err: any) {
         console.warn("PostgreSQL join error in serverless handler:", err?.message || err);
+        if (process.env.NODE_ENV === "production") {
+          return sendJson(res, 503, { success: false, error: "Database unavailable" });
+        }
       }
+    } else if (process.env.NODE_ENV === "production") {
+      return sendJson(res, 503, { success: false, error: "Database unavailable" });
     }
 
     const store = getLocalStore();

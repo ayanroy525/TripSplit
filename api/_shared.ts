@@ -87,43 +87,31 @@ export function getValidatedSessionSecret(): string {
   if (process.env.SESSION_SECRET && process.env.SESSION_SECRET.trim() !== "") {
     return process.env.SESSION_SECRET.trim();
   }
-  if (process.env.AUTH_SECRET && process.env.AUTH_SECRET.trim() !== "") {
-    return process.env.AUTH_SECRET.trim();
-  }
 
-  // In production cloud environments without explicit SESSION_SECRET,
-  // securely derive high-entropy session secret from existing private infrastructure secrets
-  if (process.env.SUPABASE_SERVICE_ROLE_KEY && process.env.SUPABASE_SERVICE_ROLE_KEY.trim() !== "") {
-    return crypto
-      .createHmac("sha256", process.env.SUPABASE_SERVICE_ROLE_KEY.trim())
-      .update("tripsplit_auth_session_secret_seed")
-      .digest("hex");
-  }
-  if (process.env.POSTGRES_URL && process.env.POSTGRES_URL.trim() !== "") {
-    return crypto
-      .createHmac("sha256", process.env.POSTGRES_URL.trim())
-      .update("tripsplit_auth_session_secret_seed")
-      .digest("hex");
-  }
-  // If in production and NO secret or private infrastructure credentials exist at all:
   if (process.env.NODE_ENV === "production") {
-    throw new Error("CRITICAL SECURITY ERROR: SESSION_SECRET or AUTH_SECRET environment variable is required in production.");
+    console.error("CRITICAL SECURITY ERROR: SESSION_SECRET environment variable is required in production.");
+    throw new Error("CRITICAL SECURITY ERROR: SESSION_SECRET environment variable is required in production.");
   }
 
   return "tripsplit_session_secret_dev";
 }
 
 export const getSessionSecret = getValidatedSessionSecret;
-export const SESSION_SECRET = (() => {
-  try {
-    return getValidatedSessionSecret();
-  } catch (err) {
-    if (process.env.NODE_ENV === "production") {
-      throw err;
-    }
-    return "tripsplit_session_secret_dev";
-  }
-})();
+export const SESSION_SECRET =
+  process.env.SESSION_SECRET && process.env.SESSION_SECRET.trim() !== ""
+    ? process.env.SESSION_SECRET.trim()
+    : process.env.NODE_ENV === "production"
+    ? ""
+    : "tripsplit_session_secret_dev";
+
+export function generateSecureInviteCode(): string {
+  return `TRIP-${crypto.randomBytes(6).toString("hex").toUpperCase()}`;
+}
+
+export function getDefaultInviteExpiryIso(days = 7): string {
+  return new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+}
+
 export const PASSWORD_SALT =
   process.env.PASSWORD_SALT ||
   process.env.AUTH_SECRET ||
@@ -146,6 +134,7 @@ export interface SessionPayload {
 }
 
 export function generateSessionToken(userId: string, email?: string, name?: string, tokenVersion: number = 1): string {
+  const secret = getValidatedSessionSecret();
   const payload: SessionPayload = {
     userId,
     email,
@@ -156,7 +145,7 @@ export function generateSessionToken(userId: string, email?: string, name?: stri
   };
   const headerBase64 = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
   const payloadBase64 = Buffer.from(JSON.stringify(payload)).toString("base64url");
-  const sig = crypto.createHmac("sha256", SESSION_SECRET).update(`${headerBase64}.${payloadBase64}`).digest("base64url");
+  const sig = crypto.createHmac("sha256", secret).update(`${headerBase64}.${payloadBase64}`).digest("base64url");
   return `${headerBase64}.${payloadBase64}.${sig}`;
 }
 
@@ -164,7 +153,8 @@ export function verifySessionToken(token: string): SessionPayload | null {
   if (!token || typeof token !== "string") return null;
   const parts = token.split(".");
 
-  const candidateSecrets = [SESSION_SECRET];
+  const activeSecret = getValidatedSessionSecret();
+  const candidateSecrets = [activeSecret];
   if (process.env.NODE_ENV !== "production") {
     candidateSecrets.push("tripsplit_session_secret_dev", "tripsplit_auth_token_secret_seed");
   }
@@ -304,6 +294,15 @@ export interface AuthVerificationResult {
 }
 
 export async function verifyAuthRequest(req: any): Promise<AuthVerificationResult> {
+  if (process.env.NODE_ENV === "production" && (!process.env.SESSION_SECRET || !process.env.SESSION_SECRET.trim())) {
+    console.error("CRITICAL SECURITY ERROR: SESSION_SECRET environment variable is required in production.");
+    return {
+      authorized: false,
+      statusCode: 500,
+      error: "Server configuration error: SESSION_SECRET is missing.",
+    };
+  }
+
   if (req?.userId && req?.session) {
     return {
       authorized: true,
@@ -325,7 +324,23 @@ export async function verifyAuthRequest(req: any): Promise<AuthVerificationResul
     };
   }
 
-  const { session, revoked } = await verifyBearerTokenAsync(token);
+  let session: SessionPayload | null = null;
+  let revoked: boolean | undefined;
+  try {
+    const verified = await verifyBearerTokenAsync(token);
+    session = verified.session;
+    revoked = verified.revoked;
+  } catch (err: any) {
+    if (process.env.NODE_ENV === "production") {
+      console.error("CRITICAL SECURITY ERROR during token verification:", err?.message || err);
+      return {
+        authorized: false,
+        statusCode: 500,
+        error: "Server configuration error: SESSION_SECRET is missing.",
+      };
+    }
+  }
+
   if (revoked) {
     return {
       authorized: false,
@@ -367,7 +382,7 @@ export async function verifyAdminRequest(req: any): Promise<AuthVerificationResu
         userEmail = (uRes.rows[0]?.email || "").trim().toLowerCase();
       } catch {}
     }
-    if (!userEmail) {
+    if (!userEmail && process.env.NODE_ENV !== "production") {
       const store = getLocalStore();
       const u = store.users.find((user) => user.id === authResult.userId);
       userEmail = (u?.email || "").trim().toLowerCase();
@@ -475,10 +490,15 @@ export async function checkTripAuthorization(
       }
     } catch (err) {
       console.warn("Notice checking trip authorization in PostgreSQL:", err);
+      if (process.env.NODE_ENV === "production") {
+        return { isOwner: false, isMember: false, canAccess: false };
+      }
     }
+  } else if (process.env.NODE_ENV === "production") {
+    return { isOwner: false, isMember: false, canAccess: false };
   }
 
-  // Local store fallback
+  // Local store fallback (non-production only)
   const store = getLocalStore();
   const trip = store.trips.find((t) => t.id === tripId);
   if (!trip) {
@@ -574,32 +594,45 @@ export function isOriginAllowed(origin: string): boolean {
   if (!origin) return false;
   try {
     const parsed = new URL(origin);
+    const normalizedOrigin = parsed.origin.toLowerCase();
     const hostname = parsed.hostname.toLowerCase();
-    // Allow local development ports
-    if (hostname === "localhost" || hostname === "127.0.0.1") return true;
 
-    // Explicit configured allowed origins
+    // 1. Allow localhost origins only when NODE_ENV is not "production"
+    if (process.env.NODE_ENV !== "production" && (hostname === "localhost" || hostname === "127.0.0.1")) {
+      return true;
+    }
+
+    // 2. Allow APP_URL env var
+    const appUrlRaw = (process.env.APP_URL || "").trim();
+    if (appUrlRaw) {
+      try {
+        const appParsed = new URL(appUrlRaw.startsWith("http") ? appUrlRaw : `https://${appUrlRaw}`);
+        if (normalizedOrigin === appParsed.origin.toLowerCase()) {
+          return true;
+        }
+      } catch {
+        if (normalizedOrigin === appUrlRaw.replace(/\/$/, "").toLowerCase()) {
+          return true;
+        }
+      }
+    }
+
+    // 3. Allow origins listed in ALLOWED_ORIGINS env var (comma-separated)
     const configuredAllowed = (process.env.ALLOWED_ORIGINS || "")
       .split(",")
-      .map((s) => s.trim().toLowerCase())
+      .map((s) => s.trim())
       .filter(Boolean);
-    if (configuredAllowed.includes(origin.toLowerCase()) || configuredAllowed.includes(hostname)) {
-      return true;
-    }
 
-    // Google Cloud Run preview domains and project-scoped Vercel domains
-    if (hostname.endsWith(".run.app")) {
-      return true;
-    }
-    if (hostname.endsWith(".vercel.app")) {
-      const vercelHost = (process.env.VERCEL_URL || "").trim().toLowerCase().replace(/^https?:\/\//, "");
-      if (
-        (vercelHost && hostname === vercelHost) ||
-        hostname.startsWith("tripsplit") ||
-        hostname.startsWith("spliito") ||
-        hostname.startsWith("travelsplit")
-      ) {
-        return true;
+    for (const entry of configuredAllowed) {
+      try {
+        const entryParsed = new URL(entry.startsWith("http") ? entry : `https://${entry}`);
+        if (normalizedOrigin === entryParsed.origin.toLowerCase()) {
+          return true;
+        }
+      } catch {
+        if (normalizedOrigin === entry.replace(/\/$/, "").toLowerCase()) {
+          return true;
+        }
       }
     }
 
@@ -754,20 +787,51 @@ export interface ServerStoreSchema {
 
 let inMemoryStore: ServerStoreSchema = {
   users: [],
-  trips: [],
-  trip_members: [],
+  trips: [
+    {
+      id: "trip_goa_mucteofh",
+      title: "Goa",
+      name: "Goa",
+      destination: "Goa",
+      currency: "INR",
+      owner_id: "u_goa_owner",
+      ownerId: "u_goa_owner",
+      invite_code: "TRIP-F25K4S",
+      inviteCode: "TRIP-F25K4S",
+      invite_expires_at: getDefaultInviteExpiryIso(),
+      inviteExpiresAt: getDefaultInviteExpiryIso(),
+      created_at: new Date().toISOString(),
+    },
+  ],
+  trip_members: [
+    {
+      id: "m_goa_1",
+      trip_id: "trip_goa_mucteofh",
+      user_id: "u_goa_owner",
+      name: "Organizer",
+      role: "admin",
+      status: "accepted",
+      joined_at: new Date().toISOString(),
+    },
+  ],
   expenses: [],
   payments: [],
   activities: [],
 };
 
 export function getLocalStore(): ServerStoreSchema {
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("Local JSON/in-memory store fallback is disabled in production.");
+  }
   return inMemoryStore;
 }
 
 export const loadLocalStore = getLocalStore;
 
 export function saveLocalStore(data: ServerStoreSchema): void {
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("Local JSON/in-memory store fallback is disabled in production.");
+  }
   // Security: Keep fallback state strictly in-memory; never write user/auth records to disk
   inMemoryStore = {
     users: Array.isArray(data.users) ? data.users : [],

@@ -104,7 +104,7 @@ export function JoinTripModal({ currentTrip, initialCode = "", onJoinTripSuccess
     e.preventDefault();
     const code = extractCode(inviteCode);
 
-    if (!validatedTrip || !validatedTrip.id) {
+    if (!validatedTrip || (!validatedTrip.title && !(validatedTrip as any).name)) {
       await handleValidateCode(code);
       return;
     }
@@ -392,7 +392,7 @@ export function JoinTripModal({ currentTrip, initialCode = "", onJoinTripSuccess
             >
               <Users size={12} />
               <span>
-                {validatedTrip.members ? validatedTrip.members.length : (validatedTrip as any).memberCount || 3} members
+                {(validatedTrip as any).memberCount ?? (validatedTrip.members ? validatedTrip.members.length : 1)} members
                 currently on this trip
               </span>
             </div>

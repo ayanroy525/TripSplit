@@ -30,6 +30,14 @@ export default async function handler(req: any, res: any) {
     return sendJson(res, 405, { success: false, error: "Method Not Allowed" });
   }
 
+  if (process.env.NODE_ENV === "production" && (!process.env.SESSION_SECRET || !process.env.SESSION_SECRET.trim())) {
+    console.error("CRITICAL SECURITY ERROR: SESSION_SECRET environment variable is required in production.");
+    return sendJson(res, 500, {
+      success: false,
+      error: "Server configuration error: SESSION_SECRET is missing.",
+    });
+  }
+
   const url = String(req.url || "");
   const body = parseBody(req);
   const queryAction = String(req.query?.action || body?.action || "").trim();
@@ -53,14 +61,21 @@ export default async function handler(req: any, res: any) {
         );
       } catch (err: any) {
         console.warn("Notice updating token_version in pool:", err?.message || err);
+        if (process.env.NODE_ENV === "production") {
+          return sendJson(res, 503, { success: false, error: "Database unavailable" });
+        }
       }
+    } else if (process.env.NODE_ENV === "production") {
+      return sendJson(res, 503, { success: false, error: "Database unavailable" });
     }
 
-    const store = getLocalStore();
-    const u = store.users.find((u) => u.id === userId);
-    if (u) {
-      (u as any).token_version = ((u as any).token_version || 1) + 1;
-      saveLocalStore(store);
+    if (process.env.NODE_ENV !== "production") {
+      const store = getLocalStore();
+      const u = store.users.find((u) => u.id === userId);
+      if (u) {
+        (u as any).token_version = ((u as any).token_version || 1) + 1;
+        saveLocalStore(store);
+      }
     }
 
     logSecurityEvent("AUTH_SESSIONS_REVOKED", { userId, ip: getClientIp(req) });
@@ -160,23 +175,30 @@ export default async function handler(req: any, res: any) {
         }
       } catch (err: any) {
         console.warn("Notice updating password in PostgreSQL:", err?.message || err);
+        if (process.env.NODE_ENV === "production") {
+          return sendJson(res, 503, { success: false, error: "Database unavailable" });
+        }
       }
+    } else if (process.env.NODE_ENV === "production") {
+      return sendJson(res, 503, { success: false, error: "Database unavailable" });
     }
 
-    const store = getLocalStore();
-    const localU = store.users.find((u) =>
-      resolvedUserId
-        ? u.id === resolvedUserId
-        : Boolean(resolvedEmail && u.email && u.email.trim().toLowerCase() === resolvedEmail)
-    );
-    if (localU) {
-      localU.password_hash = newHashed;
-      localU.updated_at = new Date().toISOString();
-      (localU as any).token_version = ((localU as any).token_version || 1) + 1;
-      newTokenVersion = (localU as any).token_version;
-      saveLocalStore(store);
-      if (!updatedUser) {
-        updatedUser = localU;
+    if (process.env.NODE_ENV !== "production") {
+      const store = getLocalStore();
+      const localU = store.users.find((u) =>
+        resolvedUserId
+          ? u.id === resolvedUserId
+          : Boolean(resolvedEmail && u.email && u.email.trim().toLowerCase() === resolvedEmail)
+      );
+      if (localU) {
+        localU.password_hash = newHashed;
+        localU.updated_at = new Date().toISOString();
+        (localU as any).token_version = ((localU as any).token_version || 1) + 1;
+        newTokenVersion = (localU as any).token_version;
+        saveLocalStore(store);
+        if (!updatedUser) {
+          updatedUser = localU;
+        }
       }
     }
 
@@ -234,6 +256,7 @@ export default async function handler(req: any, res: any) {
 
   let candidateUsers: any[] = [];
   let usedPostgres = false;
+  let dbDownError = false;
 
   if (pool) {
     try {
@@ -254,12 +277,15 @@ export default async function handler(req: any, res: any) {
 
       usedPostgres = true;
     } catch (dbErr: any) {
+      dbDownError = true;
       console.warn("Notice: PostgreSQL unavailable in api/auth/login:", dbErr?.message || dbErr);
     }
+  } else {
+    dbDownError = true;
   }
 
-  // In-memory fallback (strictly checks registered users only; never auto-creates or overwrites accounts from trip_members)
-  if (candidateUsers.length === 0) {
+  // In-memory fallback (non-production only)
+  if (candidateUsers.length === 0 && process.env.NODE_ENV !== "production") {
     const localUser = findLocalUser(rawInput);
     if (localUser) {
       candidateUsers = [localUser];
@@ -273,109 +299,117 @@ export default async function handler(req: any, res: any) {
       process.env.VITE_SUPABASE_URL ||
       process.env.NEXT_PUBLIC_SUPABASE_URL ||
       process.env.SUPABASE_URL ||
-      "https://ryamchjjwoaimwrmurry.supabase.co"
+      ""
     ).replace(/\/$/, "");
     const supabaseKey = (
       process.env.VITE_SUPABASE_ANON_KEY ||
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
       process.env.SUPABASE_ANON_KEY ||
-      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ5YW1jaGpqd29haW13cm11cnJ5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAwMTIwOTYsImV4cCI6MjEwNTU4ODA5Nn0.6r-qcinkytxEzCxb4jhRjXNZ0-g4_YTKdsnhUG3De6A"
+      ""
     ).trim();
     const serviceRoleKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
 
-    try {
-      let emailsToTry: string[] = [];
-      if (trimmedLower.includes("@")) {
-        emailsToTry = [trimmedLower];
-      } else if (serviceRoleKey) {
-        const rpcRes = await fetch(`${supabaseUrl}/rest/v1/rpc/resolve_email_for_login`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            apikey: serviceRoleKey,
-            Authorization: `Bearer ${serviceRoleKey}`,
-          },
-          body: JSON.stringify({ p_identifier: rawInput }),
-        });
-        if (rpcRes.ok) {
-          const rows = await rpcRes.json();
-          if (Array.isArray(rows)) {
-            emailsToTry = rows.map((r: any) => String(r?.email || "").trim().toLowerCase()).filter(Boolean);
-          }
-        }
-      }
-
-      for (const emailCandidate of emailsToTry) {
-        const tokenRes = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            apikey: supabaseKey,
-          },
-          body: JSON.stringify({
-            email: emailCandidate,
-            password: inputPassword,
-          }),
-        });
-
-        if (tokenRes.ok) {
-          const authData = await tokenRes.json();
-          const supaUser = authData?.user;
-          const accessToken = authData?.access_token;
-          if (supaUser && supaUser.id) {
-            let profileRow: any = null;
-            if (accessToken) {
-              try {
-                const profRes = await fetch(
-                  `${supabaseUrl}/rest/v1/users?id=eq.${encodeURIComponent(supaUser.id)}&select=id,email,name,phone,avatar_color,avatar_url,bio,created_at`,
-                  {
-                    headers: {
-                      apikey: supabaseKey,
-                      Authorization: `Bearer ${accessToken}`,
-                    },
-                  }
-                );
-                if (profRes.ok) {
-                  const profRows = await profRes.json();
-                  if (Array.isArray(profRows) && profRows[0]) {
-                    profileRow = profRows[0];
-                  }
-                }
-              } catch {}
+    if (supabaseUrl && supabaseKey) {
+      try {
+        let emailsToTry: string[] = [];
+        if (trimmedLower.includes("@")) {
+          emailsToTry = [trimmedLower];
+        } else if (serviceRoleKey) {
+          const rpcRes = await fetch(`${supabaseUrl}/rest/v1/rpc/resolve_email_for_login`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              apikey: serviceRoleKey,
+              Authorization: `Bearer ${serviceRoleKey}`,
+            },
+            body: JSON.stringify({ p_identifier: rawInput }),
+          });
+          if (rpcRes.ok) {
+            const rows = await rpcRes.json();
+            if (Array.isArray(rows)) {
+              emailsToTry = rows.map((r: any) => String(r?.email || "").trim().toLowerCase()).filter(Boolean);
             }
-
-            const meta = supaUser.user_metadata || {};
-            const userAccount = {
-              id: profileRow?.id || supaUser.id,
-              name: profileRow?.name || meta.name || (supaUser.email ? supaUser.email.split("@")[0] : "Traveler"),
-              email: profileRow?.email || supaUser.email || emailCandidate,
-              phone: profileRow?.phone || meta.phone || undefined,
-              avatarColor: profileRow?.avatar_color || meta.avatarColor || meta.avatar_color || "#E39A2D",
-              avatarUrl: profileRow?.avatar_url || meta.avatarUrl || undefined,
-              bio: profileRow?.bio || meta.bio || "Travel Enthusiast",
-              createdAt: profileRow?.created_at || supaUser.created_at || new Date().toISOString(),
-            };
-
-            resetRateLimit(accountKey);
-            logSecurityEvent("AUTH_LOGIN_SUCCESS", {
-              ip: clientIp,
-              userId: userAccount.id,
-              via: "supabase_https_fallback",
-            });
-
-            const sessionToken = generateSessionToken(userAccount.id, userAccount.email, userAccount.name, 1);
-            return sendJson(res, 200, {
-              success: true,
-              token: sessionToken,
-              supabaseAccessToken: accessToken,
-              user: userAccount,
-            });
           }
         }
+
+        for (const emailCandidate of emailsToTry) {
+          const tokenRes = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              apikey: supabaseKey,
+            },
+            body: JSON.stringify({
+              email: emailCandidate,
+              password: inputPassword,
+            }),
+          });
+
+          if (tokenRes.ok) {
+            const authData = await tokenRes.json();
+            const supaUser = authData?.user;
+            const accessToken = authData?.access_token;
+            if (supaUser && supaUser.id) {
+              let profileRow: any = null;
+              if (accessToken) {
+                try {
+                  const profRes = await fetch(
+                    `${supabaseUrl}/rest/v1/users?id=eq.${encodeURIComponent(supaUser.id)}&select=id,name,email,phone,avatar_color,avatar_url,bio,created_at`,
+                    {
+                      headers: {
+                        apikey: supabaseKey,
+                        Authorization: `Bearer ${accessToken}`,
+                      },
+                    }
+                  );
+                  if (profRes.ok) {
+                    const profRows = await profRes.json();
+                    if (Array.isArray(profRows) && profRows[0]) {
+                      profileRow = profRows[0];
+                    }
+                  }
+                } catch {}
+              }
+
+              const meta = supaUser.user_metadata || {};
+              const userAccount = {
+                id: profileRow?.id || supaUser.id,
+                name: profileRow?.name || meta.name || (supaUser.email ? supaUser.email.split("@")[0] : "Traveler"),
+                email: profileRow?.email || supaUser.email || emailCandidate,
+                phone: profileRow?.phone || meta.phone || undefined,
+                avatarColor: profileRow?.avatar_color || meta.avatarColor || meta.avatar_color || "#E39A2D",
+                avatarUrl: profileRow?.avatar_url || meta.avatarUrl || undefined,
+                bio: profileRow?.bio || meta.bio || "Travel Enthusiast",
+                createdAt: profileRow?.created_at || supaUser.created_at || new Date().toISOString(),
+              };
+
+              resetRateLimit(accountKey);
+              logSecurityEvent("AUTH_LOGIN_SUCCESS", {
+                ip: clientIp,
+                userId: userAccount.id,
+                via: "supabase_https_fallback",
+              });
+
+              const sessionToken = generateSessionToken(userAccount.id, userAccount.email, userAccount.name, 1);
+              return sendJson(res, 200, {
+                success: true,
+                token: sessionToken,
+                supabaseAccessToken: accessToken,
+                user: userAccount,
+              });
+            }
+          }
+        }
+      } catch (supaErr: any) {
+        console.warn("Notice: Supabase HTTPS auth fallback in api/auth/login:", supaErr?.message || supaErr);
       }
-    } catch (supaErr: any) {
-      console.warn("Notice: Supabase HTTPS auth fallback in api/auth/login:", supaErr?.message || supaErr);
+    } else if (process.env.NODE_ENV === "production" && dbDownError) {
+      return sendJson(res, 503, { success: false, error: "Database unavailable" });
     }
+  }
+
+  if (process.env.NODE_ENV === "production" && dbDownError && candidateUsers.length === 0) {
+    return sendJson(res, 503, { success: false, error: "Database unavailable" });
   }
 
   if (candidateUsers.length === 0) {
@@ -432,8 +466,10 @@ export default async function handler(req: any, res: any) {
         ]);
       } catch (e) {}
     }
-    foundUser.password_hash = modernHash;
-    saveLocalUser(foundUser);
+    if (process.env.NODE_ENV !== "production") {
+      foundUser.password_hash = modernHash;
+      saveLocalUser(foundUser);
+    }
   }
 
   // Server-side smart member linking: link any invited placeholder trip_members matching this user's email/phone

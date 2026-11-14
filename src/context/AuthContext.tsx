@@ -44,39 +44,6 @@ function buildUserFromSupabase(user: any, extraProfile?: Partial<UserAccount>): 
   };
 }
 
-/**
- * Upserts a user's profile to public.users table.
- * ONLY runs when an active authenticated Supabase session exists to satisfy RLS.
- */
-async function syncUserProfileToDatabase(user: any, extraProfile?: Partial<UserAccount>): Promise<void> {
-  if (!user || !user.id) return;
-  try {
-    const meta = user.user_metadata || {};
-    const email = user.email || "";
-    const name = extraProfile?.name || meta.name || email.split("@")[0] || "Traveler";
-    const phone = extraProfile?.phone !== undefined ? extraProfile.phone : (meta.phone || null);
-    const avatar_color = extraProfile?.avatarColor || meta.avatarColor || "#0F6B65";
-    const avatar_url = extraProfile?.avatarUrl || meta.avatarUrl || null;
-    const bio = extraProfile?.bio || meta.bio || "Travel Enthusiast";
-
-    const { error } = await supabase.from("users").upsert({
-      id: user.id,
-      email,
-      name,
-      phone,
-      avatar_color,
-      avatar_url,
-      bio,
-    });
-    if (error) {
-      console.warn("Notice syncing user profile to Supabase:", error.message);
-    }
-  } catch (err) {
-    console.warn("Could not sync user profile to database:", err);
-  }
-}
-
-
 export interface LocalStoredUserRecord {
   id: string;
   name: string;
@@ -151,6 +118,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     return false;
   });
+  const [profileToast, setProfileToast] = useState<string | null>(null);
 
   const persistUser = (user: UserAccount | null) => {
     setCurrentUser(user);
@@ -182,7 +150,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (!existingServerToken) {
           setTokenState(session.access_token);
         }
-        await syncUserProfileToDatabase(session.user);
 
         let extraProfile: Partial<UserAccount> | undefined;
         try {
@@ -223,7 +190,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (!existingServerToken) {
           setTokenState(session.access_token);
         }
-        await syncUserProfileToDatabase(session.user);
 
         let extraProfile: Partial<UserAccount> | undefined;
         try {
@@ -277,6 +243,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const cleanDigits = rawInput.replace(/\D/g, "");
 
     // 1. Primary Auth: Secure Server-side PostgreSQL login endpoint
+    let serverErrorMsg = "";
     try {
       const response = await fetch("/api/auth/login", {
         method: "POST",
@@ -305,79 +272,63 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }
 
           return { success: true, user: userAccount };
-        } else if (response.status === 429 || response.status === 400) {
-          // Authoritative rate-limit or validation error from server
+        }
+        serverErrorMsg = resData.error || "Invalid credentials. Please verify your email/phone and password.";
+        if (response.status === 429 || response.status === 400 || !trimmedInput.includes("@")) {
+          // Phone and name logins are resolved only by /api/auth/login
           return {
             success: false,
-            error: resData.error || "Invalid credentials. Please verify your email/phone and password.",
+            error: serverErrorMsg,
           };
         }
       }
     } catch (apiErr) {
-      console.warn("Backend auth endpoint unreachable, checking Supabase Auth:", apiErr);
-    }
-
-    // 2. Secondary Auth: Attempt standard Supabase Auth signInWithPassword if server endpoint was unreachable or returned 5xx
-    let candidateEmails: string[] = [];
-    if (trimmedInput.includes("@")) {
-      candidateEmails = [trimmedInput];
-    } else {
-      try {
-        const { data: resolvedRows } = await supabase.rpc("resolve_email_for_login", {
-          p_identifier: rawInput,
-        });
-        if (Array.isArray(resolvedRows)) {
-          candidateEmails = resolvedRows
-            .map((r: any) => (r?.email || "").trim().toLowerCase())
-            .filter(Boolean);
-        }
-      } catch (rpcErr) {
-        console.warn("Could not resolve email for phone/name login:", rpcErr);
+      console.warn("Backend auth endpoint unreachable:", apiErr);
+      if (!trimmedInput.includes("@")) {
+        return {
+          success: false,
+          error: "Unable to sign in. Please verify your credentials or try again.",
+        };
       }
     }
 
-    let lastAuthError: any = null;
-    for (const emailCandidate of candidateEmails) {
+    // 2. Secondary Auth: Attempt standard Supabase Auth signInWithPassword for email login if server endpoint was unreachable
+    if (trimmedInput.includes("@")) {
       try {
         const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-          email: emailCandidate,
+          email: trimmedInput,
           password,
         });
 
         if (!authError && authData.session && authData.user) {
           setTokenState(authData.session.access_token);
-          await syncUserProfileToDatabase(authData.user);
 
           const userAccount = buildUserFromSupabase(authData.user);
           persistUser(userAccount);
           setAccounts((prev) => [userAccount, ...prev.filter((a) => a.id !== userAccount.id)]);
           return { success: true, user: userAccount };
         } else if (authError) {
-          lastAuthError = authError;
+          const msg = authError.message?.toLowerCase() || "";
+          if (msg.includes("email not confirmed") || msg.includes("confirm your email")) {
+            return {
+              success: false,
+              isEmailNotConfirmed: true,
+              error: "Please check your email and click the confirmation link before logging in.",
+            };
+          }
+          return {
+            success: false,
+            error: serverErrorMsg || authError.message || "Invalid email/phone or password.",
+          };
         }
       } catch (err) {
         console.warn("Supabase auth login notice:", err);
       }
     }
 
-    if (lastAuthError) {
-      const msg = lastAuthError.message?.toLowerCase() || "";
-      if (msg.includes("email not confirmed") || msg.includes("confirm your email")) {
-        return {
-          success: false,
-          isEmailNotConfirmed: true,
-          error: "Please check your email and click the confirmation link before logging in.",
-        };
-      }
-      return {
-        success: false,
-        error: lastAuthError.message || "Invalid email/phone or password.",
-      };
-    }
-
     return {
       success: false,
-      error: "Unable to sign in. Please verify your credentials or create an account.",
+      error: serverErrorMsg || "Unable to sign in. Please verify your credentials or create an account.",
     };
   };
 
@@ -755,17 +706,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         });
       }
 
-      await supabase.from("users").upsert({
-        id: updated.id,
-        email: updated.email,
-        name: updated.name,
-        phone: updated.phone || null,
-        avatar_color: updated.avatarColor,
-        avatar_url: updated.avatarUrl || null,
-        bio: updated.bio || null,
+      const { error } = await supabase.rpc("update_my_profile", {
+        p_name: updated.name,
+        p_phone: updated.phone || null,
+        p_avatar_color: updated.avatarColor,
+        p_avatar_url: updated.avatarUrl || null,
+        p_bio: updated.bio || null,
       });
+
+      if (error) {
+        setProfileToast("Profile couldn't be saved.");
+        setTimeout(() => setProfileToast(null), 4000);
+      }
     } catch (e) {
       console.warn("Could not sync updated profile to Supabase:", e);
+      setProfileToast("Profile couldn't be saved.");
+      setTimeout(() => setProfileToast(null), 4000);
     }
 
     setAccounts((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
@@ -800,6 +756,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }}
     >
       {children}
+      {profileToast && (
+        <div
+          role="alert"
+          className="fixed bottom-20 left-1/2 -translate-x-1/2 z-[100] bg-rose-600 text-white text-xs font-semibold px-4 py-2.5 rounded-xl shadow-lg"
+        >
+          {profileToast}
+        </div>
+      )}
     </AuthContext.Provider>
   );
 }

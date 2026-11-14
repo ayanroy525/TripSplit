@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { setCorsHeaders, sendJson, verifyAdminRequest } from "../_shared.js";
 import { getTelegramWebhookSecret, registerTelegramWebhook, saveTelegramConfig } from "./_client.js";
 import { processTelegramUpdate } from "./_processor.js";
@@ -58,13 +59,21 @@ export default async function handler(req: any, res: any) {
     return sendJson(res, 405, { success: false, error: "Method not allowed" });
   }
 
-  // Security: Enforce secret token header verification
+  // Security: Enforce secret token header verification using crypto.timingSafeEqual
   const expectedSecret = getTelegramWebhookSecret();
-  const incomingSecret =
+  const incomingSecretRaw =
     req.headers?.["x-telegram-bot-api-secret-token"] ||
     req.headers?.["X-Telegram-Bot-Api-Secret-Token"];
+  const incomingSecret = typeof incomingSecretRaw === "string" ? incomingSecretRaw : "";
 
-  if (!incomingSecret || incomingSecret !== expectedSecret) {
+  const expectedBuf = Buffer.from(expectedSecret, "utf-8");
+  const incomingBuf = Buffer.from(incomingSecret, "utf-8");
+  const isValidSecret =
+    incomingSecret.length > 0 &&
+    expectedBuf.length === incomingBuf.length &&
+    crypto.timingSafeEqual(expectedBuf, incomingBuf);
+
+  if (!isValidSecret) {
     return sendJson(res, 403, {
       success: false,
       error: "Forbidden: Missing or invalid Telegram webhook secret token",
@@ -77,6 +86,18 @@ export default async function handler(req: any, res: any) {
       try {
         update = JSON.parse(update);
       } catch {}
+    }
+
+    const expectedChatId = (process.env.TELEGRAM_CHAT_ID || "").trim();
+    const incomingChatId = String(
+      update?.message?.chat?.id ??
+        update?.edited_message?.chat?.id ??
+        update?.callback_query?.message?.chat?.id ??
+        ""
+    ).trim();
+
+    if (!expectedChatId || !incomingChatId || incomingChatId !== expectedChatId) {
+      return sendJson(res, 200, { ok: true, ignored: true });
     }
 
     const result = await processTelegramUpdate(update);

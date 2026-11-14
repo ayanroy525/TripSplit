@@ -14,8 +14,10 @@ export interface TelegramConfig {
  * Get current Telegram settings from DB, local store, or environment
  */
 export async function getTelegramConfig(): Promise<TelegramConfig> {
-  let botToken = process.env.TELEGRAM_BOT_TOKEN || "";
-  let chatId = process.env.TELEGRAM_CHAT_ID || "";
+  const envToken = (process.env.TELEGRAM_BOT_TOKEN || "").trim();
+  const envChatId = (process.env.TELEGRAM_CHAT_ID || "").trim();
+  let botToken = envToken;
+  let chatId = envChatId;
   let dailyEnabled = true;
   let webhookUrl = process.env.TELEGRAM_WEBHOOK_URL || "";
 
@@ -26,8 +28,8 @@ export async function getTelegramConfig(): Promise<TelegramConfig> {
       );
       if (res.rows.length > 0) {
         const row = res.rows[0];
-        if (row.telegram_bot_token) botToken = row.telegram_bot_token;
-        if (row.telegram_chat_id) chatId = row.telegram_chat_id;
+        if (!botToken && row.telegram_bot_token) botToken = row.telegram_bot_token;
+        if (!chatId && row.telegram_chat_id) chatId = row.telegram_chat_id;
         if (row.daily_telegram_enabled !== undefined && row.daily_telegram_enabled !== null) {
           dailyEnabled = Boolean(row.daily_telegram_enabled);
         }
@@ -38,14 +40,14 @@ export async function getTelegramConfig(): Promise<TelegramConfig> {
     }
   }
 
-  // Fallback to local file config if DB had no token
-  if (!botToken) {
+  // Fallback to local file config if DB had no values (non-production only)
+  if ((!botToken || !chatId) && process.env.NODE_ENV !== "production") {
     try {
       const localFile = path.resolve(process.cwd(), "data", "telegram_config.json");
       if (fs.existsSync(localFile)) {
         const data = JSON.parse(fs.readFileSync(localFile, "utf-8"));
-        if (data.botToken) botToken = data.botToken;
-        if (data.chatId) chatId = data.chatId;
+        if (!botToken && data.botToken) botToken = data.botToken;
+        if (!chatId && data.chatId) chatId = data.chatId;
         if (data.dailyEnabled !== undefined) dailyEnabled = Boolean(data.dailyEnabled);
         if (data.webhookUrl) webhookUrl = data.webhookUrl;
       }
@@ -56,13 +58,13 @@ export async function getTelegramConfig(): Promise<TelegramConfig> {
 }
 
 /**
- * Save Telegram settings to PostgreSQL and local file store
+ * Save Telegram settings to PostgreSQL (only daily_telegram_enabled and webhook_url; never writes token or chat_id)
  */
 export async function saveTelegramConfig(config: Partial<TelegramConfig>): Promise<TelegramConfig> {
   const current = await getTelegramConfig();
   const updated: TelegramConfig = {
-    botToken: config.botToken !== undefined ? config.botToken.trim() : current.botToken,
-    chatId: config.chatId !== undefined ? config.chatId.trim() : current.chatId,
+    botToken: current.botToken,
+    chatId: current.chatId,
     dailyEnabled: config.dailyEnabled !== undefined ? Boolean(config.dailyEnabled) : current.dailyEnabled,
     webhookUrl: config.webhookUrl !== undefined ? config.webhookUrl.trim() : current.webhookUrl,
   };
@@ -70,27 +72,31 @@ export async function saveTelegramConfig(config: Partial<TelegramConfig>): Promi
   if (pool) {
     try {
       await pool.query(
-        `INSERT INTO public.health_checks_config (id, telegram_bot_token, telegram_chat_id, daily_telegram_enabled, webhook_url, updated_at)
-         VALUES ('default', $1, $2, $3, $4, NOW())
+        `INSERT INTO public.health_checks_config (id, daily_telegram_enabled, webhook_url, updated_at)
+         VALUES ('default', $1, $2, NOW())
          ON CONFLICT (id) DO UPDATE SET
-           telegram_bot_token = EXCLUDED.telegram_bot_token,
-           telegram_chat_id = EXCLUDED.telegram_chat_id,
            daily_telegram_enabled = EXCLUDED.daily_telegram_enabled,
            webhook_url = EXCLUDED.webhook_url,
            updated_at = NOW();`,
-        [updated.botToken, updated.chatId, updated.dailyEnabled, updated.webhookUrl]
+        [updated.dailyEnabled, updated.webhookUrl]
       );
     } catch (err: any) {
       console.warn("Notice saving telegram config to DB:", err?.message);
     }
-  } else {
-    // Only write to local file if database pool is unavailable
+  } else if (process.env.NODE_ENV !== "production") {
     try {
       const dir = path.resolve(process.cwd(), "data");
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(
         path.resolve(dir, "telegram_config.json"),
-        JSON.stringify(updated, null, 2),
+        JSON.stringify(
+          {
+            dailyEnabled: updated.dailyEnabled,
+            webhookUrl: updated.webhookUrl,
+          },
+          null,
+          2
+        ),
         "utf-8"
       );
     } catch {}

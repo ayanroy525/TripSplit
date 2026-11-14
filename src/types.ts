@@ -156,6 +156,8 @@ export interface Activity {
 export interface Trip {
   id: string;
   title: string;
+  name?: string;
+  memberCount?: number;
   location: string;
   destination?: string;
   startDate: string;
