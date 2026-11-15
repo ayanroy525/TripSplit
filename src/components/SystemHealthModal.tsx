@@ -117,6 +117,11 @@ export const SystemHealthModal: React.FC<SystemHealthModalProps> = ({ isOpen, on
         const defaultWebhook =
           typeof window !== "undefined" ? `${window.location.origin}/api/telegram/webhook` : "";
         setWebhookUrl((prev) => prev || defaultWebhook);
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        if (errData?.error) {
+          setTelegramFeedback({ type: "error", message: errData.error });
+        }
       }
     } catch (err) {
       console.warn("Could not load telegram settings:", err);
@@ -751,7 +756,7 @@ export const SystemHealthModal: React.FC<SystemHealthModalProps> = ({ isOpen, on
                   <button
                     type="button"
                     onClick={handleSendTestMessage}
-                    disabled={isSendingTest || !isConfigured}
+                    disabled={isSendingTest}
                     className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-teal-300 bg-teal-950/60 border border-teal-500/40 hover:bg-teal-900/60 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
                   >
                     <Send className={`w-3.5 h-3.5 ${isSendingTest ? "animate-spin" : ""}`} />

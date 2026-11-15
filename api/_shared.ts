@@ -271,7 +271,7 @@ export async function verifyBearerTokenAsync(token: string): Promise<{
           return { session: null, revoked: true };
         }
       } catch {}
-    } else {
+    } else if (process.env.NODE_ENV !== "production") {
       const localStore = getLocalStore();
       const localUser = localStore.users.find((u) => u.id === session!.userId);
       const currentVersion = (localUser as any)?.token_version ?? 1;

@@ -88,11 +88,12 @@ export default async function handler(req: any, res: any) {
       } catch {}
     }
 
-    const expectedChatId = (process.env.TELEGRAM_CHAT_ID || "").trim();
+    const expectedChatId = (process.env.TELEGRAM_CHAT_ID || "").trim().replace(/^["']|["']$/g, "").trim();
     const incomingChatId = String(
       update?.message?.chat?.id ??
         update?.edited_message?.chat?.id ??
         update?.callback_query?.message?.chat?.id ??
+        update?.callback_query?.from?.id ??
         ""
     ).trim();
 

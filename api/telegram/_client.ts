@@ -10,16 +10,20 @@ export interface TelegramConfig {
   webhookUrl: string;
 }
 
+function cleanEnvValue(val?: string): string {
+  return (val || "").trim().replace(/^["']|["']$/g, "").trim();
+}
+
 /**
  * Get current Telegram settings from DB, local store, or environment
  */
 export async function getTelegramConfig(): Promise<TelegramConfig> {
-  const envToken = (process.env.TELEGRAM_BOT_TOKEN || "").trim();
-  const envChatId = (process.env.TELEGRAM_CHAT_ID || "").trim();
+  const envToken = cleanEnvValue(process.env.TELEGRAM_BOT_TOKEN);
+  const envChatId = cleanEnvValue(process.env.TELEGRAM_CHAT_ID);
   let botToken = envToken;
   let chatId = envChatId;
   let dailyEnabled = true;
-  let webhookUrl = process.env.TELEGRAM_WEBHOOK_URL || "";
+  let webhookUrl = cleanEnvValue(process.env.TELEGRAM_WEBHOOK_URL);
 
   if (pool) {
     try {
