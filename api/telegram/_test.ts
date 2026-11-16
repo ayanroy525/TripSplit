@@ -81,7 +81,7 @@ export default async function handler(req: any, res: any) {
     if (process.env.VERCEL) {
       const host = req.headers?.["x-forwarded-host"] || req.headers?.host;
       const proto = req.headers?.["x-forwarded-proto"] || "https";
-      const targetWebhook = config.webhookUrl || (host ? `${proto}://${host}/api/telegram/webhook` : "");
+      const targetWebhook = host ? `${proto}://${host}/api/telegram/webhook` : config.webhookUrl;
       if (targetWebhook && targetWebhook.startsWith("https://")) {
         await registerTelegramWebhook(targetWebhook, targetToken).catch(() => {});
       }

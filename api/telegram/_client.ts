@@ -234,12 +234,24 @@ export async function answerCallbackQuery(
 
 /**
  * Get or derive secure Telegram Webhook secret token
+ * Telegram setWebhook requires 1-256 chars using only A-Z, a-z, 0-9, _ and -
  */
 export function getTelegramWebhookSecret(): string {
-  if (process.env.TELEGRAM_WEBHOOK_SECRET) {
-    return process.env.TELEGRAM_WEBHOOK_SECRET.trim();
+  const rawSecret = cleanEnvValue(process.env.TELEGRAM_WEBHOOK_SECRET);
+  if (rawSecret) {
+    const sanitized = rawSecret.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 256);
+    if (sanitized.length > 0) {
+      return sanitized;
+    }
   }
-  return crypto.createHmac("sha256", process.env.SESSION_SECRET || process.env.AUTH_SECRET || "tripsplit_auth_token_secret_seed").update("telegram_webhook_secret_token").digest("hex").slice(0, 32);
+  return crypto
+    .createHmac(
+      "sha256",
+      process.env.SESSION_SECRET || process.env.AUTH_SECRET || "tripsplit_auth_token_secret_seed"
+    )
+    .update("telegram_webhook_secret_token")
+    .digest("hex")
+    .slice(0, 32);
 }
 
 /**

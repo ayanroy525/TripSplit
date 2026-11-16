@@ -21,13 +21,13 @@ export default async function handler(req: any, res: any) {
       const config = await getTelegramConfig();
       const configured = Boolean(config.botToken && config.chatId);
 
-      // On Vercel, automatically ensure the webhook is registered with the current secret token
+      // On Vercel, await webhook registration so serverless execution does not freeze before setWebhook completes
       if (configured && process.env.VERCEL) {
         const host = req.headers?.["x-forwarded-host"] || req.headers?.host;
         const proto = req.headers?.["x-forwarded-proto"] || "https";
-        const targetWebhook = config.webhookUrl || (host ? `${proto}://${host}/api/telegram/webhook` : "");
+        const targetWebhook = host ? `${proto}://${host}/api/telegram/webhook` : config.webhookUrl;
         if (targetWebhook && targetWebhook.startsWith("https://")) {
-          registerTelegramWebhook(targetWebhook).catch(() => {});
+          await registerTelegramWebhook(targetWebhook).catch(() => {});
         }
       }
 

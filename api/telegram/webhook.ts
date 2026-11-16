@@ -1,8 +1,8 @@
 import crypto from "crypto";
 import { setCorsHeaders, sendJson, verifyAdminRequest } from "../_shared.js";
-import { getTelegramWebhookSecret, registerTelegramWebhook, saveTelegramConfig } from "./_client.js";
+import { getTelegramConfig, getTelegramWebhookSecret, registerTelegramWebhook, saveTelegramConfig } from "./_client.js";
 import { processTelegramUpdate } from "./_processor.js";
-import { startTelegramPoller } from "./_poller.js";
+import { startTelegramPoller, recordDetectedTelegramUser } from "./_poller.js";
 
 export default async function handler(req: any, res: any) {
   setCorsHeaders(res, req);
@@ -24,7 +24,7 @@ export default async function handler(req: any, res: any) {
     if (queryUrl && typeof queryUrl === "string") {
       try {
         await saveTelegramConfig({ webhookUrl: queryUrl.trim() });
-        if (process.env.VERCEL) {
+        if (process.env.VERCEL || queryUrl.trim().startsWith("https://")) {
           const reg = await registerTelegramWebhook(queryUrl.trim());
           return sendJson(res, reg.success ? 200 : 400, {
             success: reg.success,
@@ -64,7 +64,7 @@ export default async function handler(req: any, res: any) {
   const incomingSecretRaw =
     req.headers?.["x-telegram-bot-api-secret-token"] ||
     req.headers?.["X-Telegram-Bot-Api-Secret-Token"];
-  const incomingSecret = typeof incomingSecretRaw === "string" ? incomingSecretRaw : "";
+  const incomingSecret = typeof incomingSecretRaw === "string" ? incomingSecretRaw.trim() : "";
 
   const expectedBuf = Buffer.from(expectedSecret, "utf-8");
   const incomingBuf = Buffer.from(incomingSecret, "utf-8");
@@ -88,7 +88,13 @@ export default async function handler(req: any, res: any) {
       } catch {}
     }
 
-    const expectedChatId = (process.env.TELEGRAM_CHAT_ID || "").trim().replace(/^["']|["']$/g, "").trim();
+    recordDetectedTelegramUser(update);
+
+    const config = await getTelegramConfig();
+    const expectedChatId = String(process.env.TELEGRAM_CHAT_ID || config.chatId || "")
+      .trim()
+      .replace(/^["']|["']$/g, "")
+      .trim();
     const incomingChatId = String(
       update?.message?.chat?.id ??
         update?.edited_message?.chat?.id ??

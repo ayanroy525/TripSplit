@@ -58,13 +58,17 @@ export async function startTelegramPoller() {
     return;
   }
 
-  // Ensure webhook is deleted so getUpdates receives callback_query buttons immediately
+  // Do not delete active webhooks; if a webhook is registered (e.g. on Vercel), let the webhook handle updates
   try {
-    const delRes = await fetch(`https://api.telegram.org/bot${token}/deleteWebhook?drop_pending_updates=false`);
-    const delData = await delRes.json();
-    console.log("[Telegram Poller] Webhook reset for long-polling:", delData.description || delData.ok);
+    const infoRes = await fetch(`https://api.telegram.org/bot${token}/getWebhookInfo`);
+    const infoData = await infoRes.json();
+    if (infoData?.ok && infoData?.result?.url) {
+      console.log("[Telegram Poller] Active webhook detected, skipping long-polling:", infoData.result.url);
+      isPolling = false;
+      return;
+    }
   } catch (e: any) {
-    console.warn("[Telegram Poller] Notice resetting webhook:", e?.message);
+    console.warn("[Telegram Poller] Notice checking webhook info:", e?.message);
   }
 
   // Poll loop
@@ -95,14 +99,11 @@ export async function startTelegramPoller() {
             }
           }
         } else {
-          // If 409 Conflict (e.g. webhook was set elsewhere), reset webhook in non-Vercel server mode and wait 3s
-          if (res.status === 409 && !process.env.VERCEL) {
-            try {
-              const cfg = await getTelegramConfig();
-              if (cfg.botToken) {
-                await fetch(`https://api.telegram.org/bot${cfg.botToken}/deleteWebhook?drop_pending_updates=false`);
-              }
-            } catch {}
+          // If 409 Conflict, a webhook is active on Telegram (e.g. Vercel deployment); stop polling instead of deleting the webhook
+          if (res.status === 409) {
+            console.log("[Telegram Poller] Webhook is active on Telegram (409 Conflict); stopping local poller.");
+            shouldStop = true;
+            break;
           }
           await new Promise((r) => setTimeout(r, 3000));
         }
