@@ -1,1617 +1,1601 @@
+import { Trip, Expense, Payment, Member, Activity, UserAccount } from "../types";
 import {
-  Trip,
-  UserAccount,
-  StorageSchema,
-  Member,
-  Expense,
-  Payment,
-  Activity,
-} from "../types";
-import { uid, nowStr } from "./calculations";
-import {
-  supabase,
-  mapTripRowToTrip,
-  mapTripToRow,
-  mapMemberRowToMember,
-  mapMemberToRow,
-  mapExpenseRowToExpense,
-  mapExpenseToRow,
-  mapPaymentRowToPayment,
-  mapPaymentToRow,
-  mapActivityRowToActivity,
-  mapActivityToRow,
-} from "./supabaseClient";
-import { enqueueOfflineMutation } from "./offlineSync";
+  enqueueMutation,
+  getAuthHeaders,
+  getApiUrl,
+  handleApiUnauthorized,
+  notifyTripMutated,
+} from "./offlineSync";
 
-export type Unsubscribe = () => void;
+const STORAGE_KEY_PREFIX = "trip_expense_splitter_state_v5_";
+const LEGACY_STORAGE_KEY = "trip_expense_splitter_state_v4";
 
-export const SCHEMA_VERSION = 3;
-export const STORAGE_KEY = `trip_expense_splitter_v${SCHEMA_VERSION}`;
-export const USER_STORAGE_KEY = "trip_expense_splitter_auth_user_v3";
-
-export function getUserTripsStorageKey(userId: string): string {
-  return `tripExpenseSplitter:user:${userId}:trips`;
+export interface AppState {
+  trips: Trip[];
+  activeTripId: string;
+  currentUserId: string;
 }
 
-export function getAuthHeaders(): Record<string, string> {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-  if (typeof window !== "undefined") {
-    try {
-      const token = localStorage.getItem("trip_expense_splitter_auth_token_v1");
-      if (token) {
-        headers["Authorization"] = `Bearer ${token}`;
-      }
-    } catch {}
-  }
-  return headers;
-}
+// ============================================================================
+// Row Mappers: PostgreSQL Relational Schema <-> TypeScript Domain Objects
+// ============================================================================
 
-export function getUserActiveTripStorageKey(userId: string): string {
-  return `tripExpenseSplitter:user:${userId}:activeTrip`;
-}
-
-export function getUserSettingsStorageKey(userId: string): string {
-  return `tripExpenseSplitter:user:${userId}:settings`;
-}
-
-/**
- * Verifies if a user is an authorized owner or member of a trip.
- */
-export function isUserAuthorizedForTrip(trip: Partial<Trip>, userId: string): boolean {
-  if (!userId || !trip) return false;
-  if (trip.ownerId === userId) return true;
-  if (Array.isArray((trip as any).memberUserIds) && (trip as any).memberUserIds.includes(userId)) return true;
-  if (Array.isArray((trip as any).member_user_ids) && (trip as any).member_user_ids.includes(userId)) return true;
-  if (Array.isArray(trip.members) && trip.members.some((m) => m.userId === userId || m.id === userId)) return true;
-  return false;
-}
-
-export const DEFAULT_AUTH_USER: UserAccount = {
-  id: "user_guest",
-  name: "Guest Explorer",
-  email: "guest@splittrip.local",
-  phone: "",
-  avatarColor: "#0F6B65",
-  bio: "Trip traveler",
-  createdAt: new Date().toISOString(),
-};
-
-/**
- * Dummy quota handler for compatibility.
- */
-export function checkAndSetQuotaExhaustion(_err: any): boolean {
-  return false;
-}
-
-export function isQuotaExhaustedActive(): boolean {
-  return false;
-}
-
-export function sanitizeData<T extends Record<string, any>>(obj: T): T {
-  const clean: any = {};
-  for (const key of Object.keys(obj)) {
-    const val = obj[key];
-    if (val !== undefined) {
-      if (val !== null && typeof val === "object" && !Array.isArray(val)) {
-        clean[key] = sanitizeData(val);
-      } else {
-        clean[key] = val;
-      }
-    }
-  }
-  return clean;
-}
-
-export function extractTripDocData(trip: Trip): Record<string, any> {
-  return mapTripToRow(trip);
-}
-
-function isClientOffline(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    typeof navigator !== "undefined" &&
-    navigator.onLine === false
+function mapTripToRow(trip: Trip, fallbackInviteCode?: string) {
+  const memberUserIds = Array.from(
+    new Set(
+      [
+        trip.ownerId,
+        ...(trip.memberUserIds || []),
+        ...(trip.members || []).map((m) => m.userId || m.id),
+      ].filter(Boolean)
+    )
   );
+
+  return {
+    id: trip.id,
+    title: trip.title || "Untitled Trip",
+    location: trip.location || trip.destination || "Destination",
+    destination: trip.destination || trip.location || "Destination",
+    start_date: trip.startDate || new Date().toISOString().split("T")[0],
+    end_date: trip.endDate || new Date().toISOString().split("T")[0],
+    currency: trip.currency || "INR",
+    status: trip.status || "ACTIVE",
+    owner_id: trip.ownerId || "",
+    owner_name: trip.ownerName || "Traveler",
+    member_user_ids: memberUserIds,
+    invite_code:
+      trip.inviteCode ||
+      fallbackInviteCode ||
+      `TRIP-${Math.random().toString(36).substring(2, 8).toUpperCase()}`,
+    updated_at: new Date().toISOString(),
+  };
 }
 
-/**
- * Attempts to persist a mutation immediately via the authenticated backend (/api/sync/mutation)
- * when online, falling back to the localStorage offline queue only if offline or unreachable.
- */
-async function syncOrEnqueueMutation(
-  type:
-    | "SAVE_TRIP_SNAPSHOT"
-    | "DELETE_TRIP"
-    | "SAVE_EXPENSE"
-    | "DELETE_EXPENSE"
-    | "RECORD_PAYMENT"
-    | "DELETE_PAYMENT"
-    | "SAVE_MEMBER"
-    | "DELETE_MEMBER",
-  tripId: string,
-  payload: any
-): Promise<void> {
-  if (!isClientOffline()) {
-    const headers = getAuthHeaders();
-    if (headers.Authorization && typeof fetch === "function") {
-      try {
-        const res = await fetch("/api/sync/mutation", {
-          method: "POST",
-          headers,
-          body: JSON.stringify({ type, tripId, payload }),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (data?.success) {
-            return;
-          }
-        }
-      } catch {
-        // Proceed to offline queue fallback
-      }
-    }
-  }
-  enqueueOfflineMutation(type, tripId, payload);
+function mapMemberToRow(tripId: string, m: Member) {
+  return {
+    id: m.id,
+    trip_id: tripId,
+    user_id: m.userId || m.id,
+    name: m.name || "Member",
+    role: m.role || "participant",
+    avatar_color: m.avatarColor || "#0F6B65",
+    phone: m.phone || null,
+    email: m.email || null,
+    joined_at: m.joinedAt || new Date().toISOString(),
+    status: m.status || "active",
+  };
 }
 
+function mapRowToMember(row: any): Member {
+  return {
+    id: row.id,
+    tripId: row.trip_id,
+    userId: row.user_id || row.id,
+    name: row.name || "Member",
+    role: row.role || "participant",
+    avatarColor: row.avatar_color || "#0F6B65",
+    phone: row.phone || undefined,
+    email: row.email || undefined,
+    joinedAt: row.joined_at || new Date().toISOString(),
+    status: row.status || "active",
+  };
+}
+
+function mapExpenseToRow(tripId: string, e: Expense) {
+  return {
+    id: e.id,
+    trip_id: tripId,
+    title: e.title || "Expense",
+    amount: Number(e.amount) || 0,
+    category: e.category || "General",
+    date: e.date || new Date().toISOString().split("T")[0],
+    paid_by: e.paidBy,
+    payers: e.payers || null,
+    created_by: e.createdBy || e.paidBy,
+    method: e.method || "equal",
+    split_type: e.splitType || e.method || "equal",
+    participants: Array.isArray(e.participants) ? e.participants : [],
+    splits: e.splits || {},
+    split_percentages: e.splitPercentages || null,
+    split_shares: e.splitShares || null,
+    items: e.items || null,
+    audit_logs: e.auditLogs || [],
+    notes: e.notes || null,
+    receipt_url: e.receiptUrl || null,
+    original_amount: e.originalAmount ?? null,
+    original_currency: e.currency ?? null,
+    exchange_rate: e.exchangeRate ?? null,
+    deleted: Boolean(e.deleted),
+    deleted_at: e.deletedAt || null,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function mapRowToExpense(row: any): Expense {
+  return {
+    id: row.id,
+    tripId: row.trip_id,
+    title: row.title || "Expense",
+    amount: Number(row.amount) || 0,
+    category: row.category || "General",
+    date: row.date || new Date().toISOString().split("T")[0],
+    paidBy: row.paid_by,
+    payers: row.payers || undefined,
+    createdBy: row.created_by || row.paid_by,
+    method: row.method || "equal",
+    splitType: row.split_type || row.method || "equal",
+    participants: Array.isArray(row.participants) ? row.participants : [],
+    splits: row.splits || {},
+    splitPercentages: row.split_percentages || undefined,
+    splitShares: row.split_shares || undefined,
+    items: Array.isArray(row.items) ? row.items : undefined,
+    auditLogs: Array.isArray(row.audit_logs) ? row.audit_logs : undefined,
+    notes: row.notes || undefined,
+    receiptUrl: row.receipt_url || undefined,
+    originalAmount: row.original_amount != null ? Number(row.original_amount) : undefined,
+    currency: row.original_currency || undefined,
+    exchangeRate: row.exchange_rate != null ? Number(row.exchange_rate) : undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    deleted: Boolean(row.deleted),
+    deletedAt: row.deleted_at || undefined,
+  };
+}
+
+function mapPaymentToRow(tripId: string, p: Payment) {
+  return {
+    id: p.id,
+    trip_id: tripId,
+    from_member_id: p.from,
+    to_member_id: p.to,
+    from_user_id: p.fromUserId || p.from,
+    to_user_id: p.toUserId || p.to,
+    amount: Number(p.amount) || 0,
+    status: p.status || "confirmed",
+    method: p.method || "Cash",
+    note: p.note || null,
+    original_amount: p.originalAmount ?? null,
+    original_currency: p.currency ?? null,
+    exchange_rate: p.exchangeRate ?? null,
+    confirmed_by: p.confirmedBy || null,
+    confirmed_at: p.confirmedAt || null,
+    cancelled_by: p.cancelledBy || null,
+    cancelled_at: p.cancelledAt || null,
+    audit_logs: p.auditLogs || [],
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function mapRowToPayment(row: any): Payment {
+  return {
+    id: row.id,
+    settlementId: row.id,
+    tripId: row.trip_id,
+    from: row.from_member_id,
+    to: row.to_member_id,
+    fromUserId: row.from_user_id || row.from_member_id,
+    toUserId: row.to_user_id || row.to_member_id,
+    amount: Number(row.amount) || 0,
+    status: row.status || "confirmed",
+    method: row.method || "Cash",
+    ts: row.created_at ? new Date(row.created_at).toLocaleDateString() : "Just now",
+    note: row.note || undefined,
+    originalAmount: row.original_amount != null ? Number(row.original_amount) : undefined,
+    currency: row.original_currency || undefined,
+    exchangeRate: row.exchange_rate != null ? Number(row.exchange_rate) : undefined,
+    createdAt: row.created_at || new Date().toISOString(),
+    confirmedAt: row.confirmed_at || undefined,
+    confirmedBy: row.confirmed_by || undefined,
+    cancelledAt: row.cancelled_at || undefined,
+    cancelledBy: row.cancelled_by || undefined,
+    auditLogs: Array.isArray(row.audit_logs) ? row.audit_logs : undefined,
+  };
+}
+
+function mapActivityToRow(tripId: string, a: Activity) {
+  return {
+    id: a.id,
+    trip_id: tripId,
+    ts: a.ts || "Just now",
+    user_name: a.user || "Traveler",
+    action: a.action || "",
+    detail: a.detail || "",
+    actor_id: a.actorId || null,
+  };
+}
+
+function mapRowToActivity(row: any): Activity {
+  return {
+    id: row.id,
+    ts: row.ts || "Just now",
+    user: row.user_name || "Traveler",
+    action: row.action || "",
+    detail: row.detail || "",
+    actorId: row.actor_id || undefined,
+  };
+}
+
+// ============================================================================
+// Server-Mediated Database Operations (/api/*)
+// ============================================================================
+
 /**
- * Saves or updates an entire Trip including all sub-tables into Supabase.
- * If offline or if the network request fails, transparently syncs via backend API or enqueues mutation.
+ * Save or update an entire trip document across relational tables via POST /api/trips
  */
 export async function saveTripToDatabase(trip: Trip): Promise<void> {
-  if (isClientOffline()) {
-    enqueueOfflineMutation("SAVE_TRIP_SNAPSHOT", trip.id, trip);
-    return;
-  }
+  if (!trip || !trip.id) return;
 
   try {
-    // 1. Root Trip
-    const tripRow = mapTripToRow(trip);
-    const { error: tripError } = await supabase.from("trips").upsert(tripRow);
-    if (tripError) {
-      await syncOrEnqueueMutation("SAVE_TRIP_SNAPSHOT", trip.id, trip);
+    const res = await fetch(getApiUrl("/api/trips"), {
+      method: "POST",
+      headers: getAuthHeaders(true),
+      body: JSON.stringify(trip),
+    });
+
+    if (handleApiUnauthorized(res)) {
       return;
     }
 
-    // 2. Members
-    if (trip.members && trip.members.length > 0) {
-      const memberRows = trip.members.map((m) => mapMemberToRow(trip.id, m));
-      const { error: memError } = await supabase.from("trip_members").upsert(memberRows);
-      if (memError) {
-        console.warn("Supabase members upsert notice:", memError.message);
+    if (!res.ok) {
+      if (res.status >= 500) {
+        enqueueMutation("SAVE_TRIP_SNAPSHOT", trip.id, trip);
       }
+      return;
     }
 
-    // 3. Expenses
-    if (trip.expenses && trip.expenses.length > 0) {
-      const expenseRows = trip.expenses.map((e) => mapExpenseToRow(trip.id, e));
-      const { error: expError } = await supabase.from("expenses").upsert(expenseRows);
-      if (expError) {
-        console.warn("Supabase expenses upsert notice:", expError.message);
-      }
-    }
-
-    // 4. Payments
-    if (trip.payments && trip.payments.length > 0) {
-      const paymentRows = trip.payments.map((p) => mapPaymentToRow(trip.id, p));
-      const { error: payError } = await supabase.from("payments").upsert(paymentRows);
-      if (payError) {
-        console.warn("Supabase payments upsert notice:", payError.message);
-      }
-    }
-
-    // 5. Activities
-    if (trip.activities && trip.activities.length > 0) {
-      const activityRows = trip.activities.map((a) => mapActivityToRow(trip.id, a));
-      const { error: actError } = await supabase.from("activities").upsert(activityRows);
-      if (actError) {
-        console.warn("Supabase activities upsert notice:", actError.message);
-      }
-    }
-  } catch (error: any) {
-    console.warn(`Network error saving trip ${trip.id} to Supabase, syncing via backend/offline queue:`, error);
-    await syncOrEnqueueMutation("SAVE_TRIP_SNAPSHOT", trip.id, trip);
+    notifyTripMutated(trip.id);
+  } catch (err) {
+    console.warn("Network error saving trip to server API, queueing offline mutation:", err);
+    enqueueMutation("SAVE_TRIP_SNAPSHOT", trip.id, trip);
   }
 }
 
 /**
- * Fetches a single trip with all its relational rows from Supabase.
+ * Fetch a single trip by ID from GET /api/trips/:tripId
  */
 export async function getTripFromDatabase(tripId: string): Promise<Trip | null> {
+  if (!tripId) return null;
+
   try {
-    const { data: tripRow, error: tripErr } = await supabase
-      .from("trips")
-      .select("*")
-      .eq("id", tripId)
-      .maybeSingle();
+    const res = await fetch(getApiUrl(`/api/trips/${encodeURIComponent(tripId)}`), {
+      method: "GET",
+      headers: getAuthHeaders(false),
+    });
 
-    const authHeaders = getAuthHeaders();
-    if (authHeaders.Authorization) {
-      try {
-        const apiRes = await fetch(`/api/trips/${encodeURIComponent(tripId)}`, {
-          headers: authHeaders,
-        });
-        if (apiRes.ok) {
-          const apiData = await apiRes.json();
-          if (apiData.success && apiData.trip) {
-            const t = apiData.trip;
-            return mapTripRowToTrip(
-              t,
-              (t.members || []).map(mapMemberRowToMember),
-              (t.expenses || []).map(mapExpenseRowToExpense),
-              (t.payments || []).map(mapPaymentRowToPayment),
-              (t.activities || []).map(mapActivityRowToActivity)
-            );
-          }
-        }
-      } catch (e) {}
-    }
-
-    if (tripErr || !tripRow) {
-      try {
-        const apiRes = await fetch(`/api/trips/${encodeURIComponent(tripId)}`, {
-          headers: authHeaders,
-        });
-        if (apiRes.ok) {
-          const apiData = await apiRes.json();
-          if (apiData.success && apiData.trip) {
-            const t = apiData.trip;
-            return mapTripRowToTrip(
-              t,
-              (t.members || []).map(mapMemberRowToMember),
-              (t.expenses || []).map(mapExpenseRowToExpense),
-              (t.payments || []).map(mapPaymentRowToPayment),
-              (t.activities || []).map(mapActivityRowToActivity)
-            );
-          }
-        }
-      } catch (e) {}
-
-      try {
-        if (typeof localStorage !== "undefined") {
-          const storedUser = localStorage.getItem("trip_expense_splitter_auth_user_v3");
-          const userId = storedUser ? JSON.parse(storedUser)?.id : "";
-          if (userId) {
-            const { data: rpcTrips } = await supabase.rpc("get_user_trips_data", { p_user_id: userId });
-            const found = Array.isArray(rpcTrips) ? rpcTrips.find((t: any) => t.id === tripId) : null;
-            if (found) {
-              return mapTripRowToTrip(
-                found,
-                (found.members || []).map(mapMemberRowToMember),
-                (found.expenses || []).map(mapExpenseRowToExpense),
-                (found.payments || []).map(mapPaymentRowToPayment),
-                (found.activities || []).map(mapActivityRowToActivity)
-              );
-            }
-          }
-        }
-      } catch (e) {}
-
+    if (handleApiUnauthorized(res)) {
       return null;
     }
 
-    const [membersRes, expensesRes, paymentsRes, activitiesRes] = await Promise.all([
-      supabase.from("trip_members").select("*").eq("trip_id", tripId),
-      supabase.from("expenses").select("*").eq("trip_id", tripId),
-      supabase.from("payments").select("*").eq("trip_id", tripId),
-      supabase.from("activities").select("*").eq("trip_id", tripId),
-    ]);
+    if (!res.ok) {
+      return null;
+    }
 
-    const members = (membersRes.data || []).map(mapMemberRowToMember);
-    const expenses = (expensesRes.data || []).map(mapExpenseRowToExpense);
-    const payments = (paymentsRes.data || []).map(mapPaymentRowToPayment);
-    const activities = (activitiesRes.data || []).map(mapActivityRowToActivity);
-
-    return mapTripRowToTrip(tripRow, members, expenses, payments, activities);
-  } catch (err) {
-    console.error("Error loading trip from Supabase:", err);
-    try {
-      const apiRes = await fetch(`/api/trips/${encodeURIComponent(tripId)}`, {
-        headers: getAuthHeaders(),
-      });
-      if (apiRes.ok) {
-        const apiData = await apiRes.json();
-        if (apiData.success && apiData.trip) {
-          const t = apiData.trip;
-          return mapTripRowToTrip(
-            t,
-            (t.members || []).map(mapMemberRowToMember),
-            (t.expenses || []).map(mapExpenseRowToExpense),
-            (t.payments || []).map(mapPaymentRowToPayment),
-            (t.activities || []).map(mapActivityRowToActivity)
-          );
-        }
+    const ct = res.headers.get("content-type") || "";
+    if (ct.includes("application/json")) {
+      const json = await res.json();
+      if (json.success && json.trip) {
+        return mapServerTripToClientTrip(json.trip);
       }
-    } catch (e) {}
-    return null;
+    }
+  } catch (err) {
+    console.warn("Error fetching trip from /api/trips/:tripId:", err);
   }
+
+  return null;
 }
 
-// Backwards compatibility alias
 export const getTripFromFirestore = getTripFromDatabase;
 
 /**
- * Fetches all trips from Supabase.
+ * Fetch all trips for the authenticated user from GET /api/user-trips
  */
 export async function getAllTripsFromDatabase(): Promise<Trip[]> {
   try {
-    const { data: tripRows, error: tripErr } = await supabase
-      .from("trips")
-      .select("*")
-      .order("created_at", { ascending: false });
+    const res = await fetch(getApiUrl("/api/user-trips"), {
+      method: "GET",
+      headers: getAuthHeaders(false),
+    });
 
-    if (tripErr || !tripRows) {
+    if (handleApiUnauthorized(res)) {
       return [];
     }
 
-    const trips: Trip[] = [];
-    for (const row of tripRows) {
-      const full = await getTripFromDatabase(row.id);
-      if (full) {
-        trips.push(full);
+    if (!res.ok) {
+      return [];
+    }
+
+    const ct = res.headers.get("content-type") || "";
+    if (ct.includes("application/json")) {
+      const json = await res.json();
+      if (json.success && Array.isArray(json.trips)) {
+        return json.trips.map((t: any) => mapServerTripToClientTrip(t));
       }
     }
-    return trips;
   } catch (err) {
-    console.error("Error loading all trips from Supabase:", err);
-    return [];
+    console.warn("Error fetching trips from /api/user-trips:", err);
   }
+
+  return [];
 }
 
-// Backwards compatibility alias
 export const getAllTripsFromFirestore = getAllTripsFromDatabase;
 
 /**
- * Subscribes to real-time updates for a single trip.
+ * Poll a specific trip document every 12 seconds while the tab is visible,
+ * plus refetch immediately on visibilitychange or after any mutation.
  */
 export function subscribeToTrip(
   tripId: string,
   onTripUpdate: (trip: Trip | null) => void,
-  _onError?: (err: Error) => void
-): Unsubscribe {
-  // 1. Initial load
-  getTripFromDatabase(tripId).then((trip) => {
-    onTripUpdate(trip);
-  });
+  onError?: (err: Error) => void
+): () => void {
+  if (!tripId) return () => {};
 
-  // 2. Realtime listener
-  const channel = supabase
-    .channel(`trip-${tripId}`)
-    .on(
-      "postgres_changes",
-      { event: "*", schema: "public", table: "trips", filter: `id=eq.${tripId}` },
-      () => {
-        getTripFromDatabase(tripId).then((trip) => onTripUpdate(trip));
+  let isDisposed = false;
+  let isFetching = false;
+
+  const fetchLatest = async () => {
+    if (isDisposed || isFetching) return;
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+      return;
+    }
+    isFetching = true;
+    try {
+      const trip = await getTripFromDatabase(tripId);
+      if (!isDisposed) {
+        onTripUpdate(trip);
       }
-    )
-    .on(
-      "postgres_changes",
-      { event: "*", schema: "public", table: "trip_members", filter: `trip_id=eq.${tripId}` },
-      () => {
-        getTripFromDatabase(tripId).then((trip) => onTripUpdate(trip));
+    } catch (err: any) {
+      if (!isDisposed && onError) {
+        onError(err instanceof Error ? err : new Error(String(err)));
       }
-    )
-    .on(
-      "postgres_changes",
-      { event: "*", schema: "public", table: "expenses", filter: `trip_id=eq.${tripId}` },
-      () => {
-        getTripFromDatabase(tripId).then((trip) => onTripUpdate(trip));
-      }
-    )
-    .on(
-      "postgres_changes",
-      { event: "*", schema: "public", table: "payments", filter: `trip_id=eq.${tripId}` },
-      () => {
-        getTripFromDatabase(tripId).then((trip) => onTripUpdate(trip));
-      }
-    )
-    .subscribe();
+    } finally {
+      isFetching = false;
+    }
+  };
+
+  fetchLatest();
+
+  const pollTimer = setInterval(fetchLatest, 12000);
+
+  const onVisibilityChange = () => {
+    if (typeof document !== "undefined" && document.visibilityState === "visible") {
+      fetchLatest();
+    }
+  };
+
+  const onTripMutated = (e: Event) => {
+    const customEvent = e as CustomEvent<{ tripId?: string }>;
+    if (!customEvent.detail?.tripId || customEvent.detail.tripId === tripId) {
+      fetchLatest();
+    }
+  };
+
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", onVisibilityChange);
+  }
+  if (typeof window !== "undefined") {
+    window.addEventListener("tripsplit:trip-mutated", onTripMutated);
+  }
 
   return () => {
-    supabase.removeChannel(channel);
+    isDisposed = true;
+    clearInterval(pollTimer);
+    if (typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    }
+    if (typeof window !== "undefined") {
+      window.removeEventListener("tripsplit:trip-mutated", onTripMutated);
+    }
   };
 }
 
 /**
- * Robust phone number matching helper
- * Handles various phone number formats (country code +91, national 0 prefix, spaces, dashes, etc.)
+ * Helper to check if a user is authorized to view/access a trip
  */
-export function isPhoneMatch(p1?: string | null, p2?: string | null): boolean {
-  if (!p1 || !p2) return false;
-  const d1 = p1.replace(/\D/g, "");
-  const d2 = p2.replace(/\D/g, "");
-  if (d1.length < 7 || d2.length < 7) return false;
-  if (d1 === d2) return true;
-  if (d1.endsWith(d2) || d2.endsWith(d1)) return true;
-  // If both have at least 10 digits (standard national mobile number length), compare last 10 digits
-  if (d1.length >= 10 && d2.length >= 10 && d1.slice(-10) === d2.slice(-10)) {
-    return true;
-  }
+export function isUserAuthorizedForTrip(trip: Trip, userId: string): boolean {
+  if (!trip || !userId) return false;
+  if (trip.ownerId === userId) return true;
+  if (Array.isArray(trip.memberUserIds) && trip.memberUserIds.includes(userId)) return true;
+  if (Array.isArray(trip.members) && trip.members.some((m) => m.id === userId || m.userId === userId)) return true;
   return false;
 }
 
 /**
- * Robust email matching helper
+ * Helper to normalize phone numbers for comparison
  */
-export function isEmailMatch(e1?: string | null, e2?: string | null): boolean {
-  if (!e1 || !e2) return false;
-  const clean1 = e1.trim().toLowerCase();
-  const clean2 = e2.trim().toLowerCase();
-  return clean1.length > 0 && clean1 === clean2;
+function normalizePhone(phone?: string | null): string {
+  if (!phone) return "";
+  const digits = phone.replace(/\D/g, "");
+  if (digits.length > 10 && digits.startsWith("91")) {
+    return digits.slice(2);
+  }
+  if (digits.length === 11 && digits.startsWith("0")) {
+    return digits.slice(1);
+  }
+  return digits;
+}
+
+export function isPhoneMatch(phoneA?: string | null, phoneB?: string | null): boolean {
+  const cleanA = normalizePhone(phoneA);
+  const cleanB = normalizePhone(phoneB);
+  if (cleanA.length < 7 || cleanB.length < 7) return false;
+  if (cleanA === cleanB) return true;
+  if (cleanA.length >= 10 && cleanB.length >= 10) {
+    return cleanA.slice(-10) === cleanB.slice(-10);
+  }
+  return false;
+}
+
+export function isEmailMatch(emailA?: string | null, emailB?: string | null): boolean {
+  if (!emailA || !emailB) return false;
+  const cleanA = emailA.trim().toLowerCase();
+  const cleanB = emailB.trim().toLowerCase();
+  if (!cleanA || !cleanB) return false;
+  return cleanA === cleanB;
 }
 
 /**
  * Smart User-Member Linking:
- * When a user signs up or logs in, searches all trip_members records for matches by phone or email.
- * Automatically updates matching member records with the authenticated user_id and adds user_id to
- * trips.member_user_ids so the trip instantly appears on the user's dashboard.
+ * Automatically links an authenticated user to any trip_members rows via POST /api/trips/link-members
  */
 export async function linkUserToExistingTripMembers(
   user: UserAccount
 ): Promise<{ linkedTripsCount: number; linkedMembersCount: number }> {
   if (!user || !user.id) return { linkedTripsCount: 0, linkedMembersCount: 0 };
 
-  const trimmedEmail = (user.email || "").trim().toLowerCase();
-  const cleanPhoneDigits = (user.phone || "").replace(/\D/g, "");
+  const cleanUserPhone = normalizePhone(user.phone);
+  const cleanUserEmail = user.email ? user.email.trim().toLowerCase() : "";
 
-  if (!trimmedEmail && cleanPhoneDigits.length < 7) {
+  if (!cleanUserPhone && !cleanUserEmail) {
     return { linkedTripsCount: 0, linkedMembersCount: 0 };
   }
 
-  let linkedMembersCount = 0;
-  const linkedTripIds = new Set<string>();
-
   try {
-    // 1. Query trip_members matching this user's email or phone tail (falling back cleanly if mock returns direct promise)
-    const candidateMap = new Map<string, any>();
-
-    if (trimmedEmail) {
-      const selQuery: any = supabase.from("trip_members").select("*");
-      const { data: emailRows } =
-        typeof selQuery?.ilike === "function"
-          ? await selQuery.ilike("email", trimmedEmail)
-          : await selQuery;
-      if (Array.isArray(emailRows)) {
-        for (const r of emailRows) {
-          if (r && r.id) candidateMap.set(r.id, r);
-        }
-      }
-    }
-
-    if (cleanPhoneDigits.length >= 7) {
-      const phoneTail = cleanPhoneDigits.length >= 10 ? cleanPhoneDigits.slice(-10) : cleanPhoneDigits.slice(-7);
-      const selQuery: any = supabase.from("trip_members").select("*");
-      const { data: phoneRows } =
-        typeof selQuery?.ilike === "function"
-          ? await selQuery.ilike("phone", `%${phoneTail}%`)
-          : await selQuery;
-      if (Array.isArray(phoneRows)) {
-        for (const r of phoneRows) {
-          if (r && r.id) candidateMap.set(r.id, r);
-        }
-      }
-    }
-
-    const candidateMembers = Array.from(candidateMap.values());
-    if (candidateMembers.length === 0) {
-      return { linkedTripsCount: 0, linkedMembersCount: 0 };
-    }
-
-    // 2. Identify unlinked or placeholder member rows matching this user's email or phone
-    const matchingMembers = candidateMembers.filter((m) => {
-      if (!m) return false;
-      if (m.user_id === user.id) return false;
-      if (isEmailMatch(m.email, user.email)) return true;
-      if (isPhoneMatch(m.phone, user.phone)) return true;
-      return false;
+    const res = await fetch(getApiUrl("/api/trips/link-members"), {
+      method: "POST",
+      headers: getAuthHeaders(true),
+      body: JSON.stringify({
+        name: user.name,
+        email: cleanUserEmail,
+        phone: user.phone || "",
+      }),
     });
 
-    if (matchingMembers.length === 0) {
+    if (handleApiUnauthorized(res)) {
       return { linkedTripsCount: 0, linkedMembersCount: 0 };
     }
 
-    // 3. Update matching trip_members records with authenticated user_id
-    for (const member of matchingMembers) {
-      linkedTripIds.add(member.trip_id);
-      linkedMembersCount++;
-
-      const updatePayload: Record<string, any> = {
-        user_id: user.id,
-      };
-      if (!member.email && user.email) {
-        updatePayload.email = user.email;
+    if (res.ok) {
+      const data = await res.json();
+      const linkedTripsCount = Number(data?.linkedTripsCount || 0);
+      const linkedMembersCount = Number(data?.linkedMembersCount || 0);
+      if (linkedMembersCount > 0) {
+        notifyTripMutated();
       }
-      if (!member.phone && user.phone) {
-        updatePayload.phone = user.phone;
-      }
-      if (
-        !member.name ||
-        member.name.trim() === "" ||
-        member.name === "Member" ||
-        member.name === "Guest" ||
-        member.name === "Traveler"
-      ) {
-        if (user.name) {
-          updatePayload.name = user.name;
-        }
-      }
-
-      await supabase
-        .from("trip_members")
-        .update(updatePayload)
-        .eq("id", member.id);
+      return { linkedTripsCount, linkedMembersCount };
     }
-
-    // 4. Update the trips table member_user_ids array for all affected trips
-    for (const tripId of linkedTripIds) {
-      try {
-        const { data: tripRow } = await supabase
-          .from("trips")
-          .select("member_user_ids, id")
-          .eq("id", tripId)
-          .maybeSingle();
-
-        if (tripRow) {
-          const currentMemberUserIds = Array.isArray(tripRow.member_user_ids)
-            ? tripRow.member_user_ids
-            : [];
-          if (!currentMemberUserIds.includes(user.id)) {
-            const updatedIds = Array.from(new Set([...currentMemberUserIds, user.id]));
-            await supabase
-              .from("trips")
-              .update({
-                member_user_ids: updatedIds,
-                updated_at: new Date().toISOString(),
-              })
-              .eq("id", tripId);
-          }
-        }
-      } catch (err) {
-        console.warn(`Notice updating member_user_ids for trip ${tripId}:`, err);
-      }
-    }
-  } catch (error) {
-    console.warn("Smart User-Member Linking notice:", error);
+  } catch (err) {
+    console.warn("Error in linkUserToExistingTripMembers:", err);
   }
 
-  return {
-    linkedTripsCount: linkedTripIds.size,
-    linkedMembersCount,
-  };
+  return { linkedTripsCount: 0, linkedMembersCount: 0 };
 }
 
 /**
- * Subscribes to all trips for a given user.
+ * Poll trips belonging to a specific user via GET /api/user-trips every 12 seconds
+ * while the tab is visible, plus refetch immediately on visibilitychange or mutation.
  */
 export function subscribeToUserTrips(
   userId: string,
   onTripsUpdate: (trips: Trip[]) => void,
-  _onError?: (err: Error) => void
-): Unsubscribe {
-  if (!userId) return () => {};
+  onError?: (err: Error) => void
+): () => void {
+  if (!userId) {
+    onTripsUpdate([]);
+    return () => {};
+  }
 
-  const loadTrips = async () => {
+  let isDisposed = false;
+  let isFetching = false;
+
+  const fetchUserTrips = async () => {
+    if (isDisposed || isFetching) return;
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+      return;
+    }
+
+    isFetching = true;
     try {
-      const authHeaders = getAuthHeaders();
-      if (authHeaders.Authorization) {
-        try {
-          const apiRes = await fetch(`/api/user-trips`, {
-            headers: authHeaders,
-          });
-          if (apiRes.ok) {
-            const apiData = await apiRes.json();
-            if (apiData.success && Array.isArray(apiData.trips) && apiData.trips.length > 0) {
-              const mapped = apiData.trips.map((t: any) =>
-                mapTripRowToTrip(
-                  t,
-                  (t.members || []).map(mapMemberRowToMember),
-                  (t.expenses || []).map(mapExpenseRowToExpense),
-                  (t.payments || []).map(mapPaymentRowToPayment),
-                  (t.activities || []).map(mapActivityRowToActivity)
-                )
-              );
-              onTripsUpdate(mapped);
-              return;
-            }
-          }
-        } catch (e) {}
-      }
-
-      // Fast timeout: If Supabase doesn't respond in 2.5s, fall back to local/server cache
-      const fetchPromise = Promise.all([
-        supabase.from("trips").select("*").order("created_at", { ascending: false }),
-        supabase.from("trip_members").select("trip_id").eq("user_id", userId),
-      ]);
-
-      const timeoutPromise = new Promise<{ data: null; error: Error }>((resolve) =>
-        setTimeout(() => resolve({ data: null, error: new Error("Supabase timeout") }), 2500)
+      const apiRes = await fetch(
+        getApiUrl(`/api/user-trips?userId=${encodeURIComponent(userId)}`),
+        {
+          headers: getAuthHeaders(false),
+        }
       );
 
-      const [tripsRes, memberRes] = (await Promise.race([
-        fetchPromise,
-        timeoutPromise.then((t) => [t, t]),
-      ])) as [any, any];
-
-      const tripRows = tripsRes?.data;
-      if (tripsRes?.error || !tripRows || tripRows.length === 0) {
-        // 1. Fall back to server API (for Node / Vercel serverless)
-        try {
-          const apiRes = await fetch(`/api/user-trips`, {
-            headers: getAuthHeaders(),
-          });
-          if (apiRes.ok) {
-            const apiData = await apiRes.json();
-            if (apiData.success && Array.isArray(apiData.trips)) {
-              const mapped = apiData.trips.map((t: any) =>
-                mapTripRowToTrip(
-                  t,
-                  (t.members || []).map(mapMemberRowToMember),
-                  (t.expenses || []).map(mapExpenseRowToExpense),
-                  (t.payments || []).map(mapPaymentRowToPayment),
-                  (t.activities || []).map(mapActivityRowToActivity)
-                )
-              );
-              if (mapped.length > 0) {
-                onTripsUpdate(mapped);
-                return;
-              }
-            }
-          }
-        } catch (e) {}
-
-        // 2. Fall back to direct Supabase RPC (for Cloudflare Pages / static hosting)
-        try {
-          const { data: rpcTrips, error: rpcErr } = await supabase.rpc("get_user_trips_data", {
-            p_user_id: userId,
-          });
-          if (!rpcErr && Array.isArray(rpcTrips) && rpcTrips.length > 0) {
-            const mapped = rpcTrips.map((t: any) =>
-              mapTripRowToTrip(
-                t,
-                (t.members || []).map(mapMemberRowToMember),
-                (t.expenses || []).map(mapExpenseRowToExpense),
-                (t.payments || []).map(mapPaymentRowToPayment),
-                (t.activities || []).map(mapActivityRowToActivity)
-              )
-            );
-            onTripsUpdate(mapped);
-            return;
-          }
-        } catch (rpcErr) {}
-
-        const cached = loadUserLocalState(userId);
-        if (cached.trips && cached.trips.length > 0) {
-          onTripsUpdate(cached.trips);
-        }
+      if (handleApiUnauthorized(apiRes)) {
         return;
       }
 
-      const myMemberTripIds = new Set((memberRes?.data || []).map((r: any) => r.trip_id));
-
-      const matchingRows = tripRows.filter((row: any) => {
-        const isOwner = row.owner_id === userId;
-        const inMembers =
-          Array.isArray(row.member_user_ids) && row.member_user_ids.includes(userId);
-        const inMemberRows = myMemberTripIds.has(row.id);
-        return isOwner || inMembers || inMemberRows;
-      });
-
-      // Fetch trips concurrently in parallel
-      const fullTrips: Trip[] = (
-        await Promise.all(
-          matchingRows.map(async (row: any) => {
-            try {
-              return await getTripFromDatabase(row.id);
-            } catch {
-              return null;
+      if (apiRes.ok) {
+        const ct = apiRes.headers.get("content-type") || "";
+        if (ct.includes("application/json")) {
+          const json = await apiRes.json();
+          if (json.success && Array.isArray(json.trips)) {
+            const mappedTrips: Trip[] = json.trips.map((t: any) => mapServerTripToClientTrip(t));
+            if (!isDisposed) {
+              onTripsUpdate(mappedTrips);
             }
-          })
-        )
-      ).filter(Boolean) as Trip[];
-
-      if (fullTrips.length > 0) {
-        onTripsUpdate(fullTrips);
-      } else {
-        try {
-          const apiRes = await fetch(`/api/user-trips`, {
-            headers: getAuthHeaders(),
-          });
-          if (apiRes.ok) {
-            const apiData = await apiRes.json();
-            if (apiData.success && Array.isArray(apiData.trips) && apiData.trips.length > 0) {
-              const mapped = apiData.trips.map((t: any) =>
-                mapTripRowToTrip(
-                  t,
-                  (t.members || []).map(mapMemberRowToMember),
-                  (t.expenses || []).map(mapExpenseRowToExpense),
-                  (t.payments || []).map(mapPaymentRowToPayment),
-                  (t.activities || []).map(mapActivityRowToActivity)
-                )
-              );
-              onTripsUpdate(mapped);
-              return;
-            }
+            return;
           }
-        } catch (e) {}
-
-        const cached = loadUserLocalState(userId);
-        if (cached.trips && cached.trips.length > 0) {
-          onTripsUpdate(cached.trips);
-        } else {
-          onTripsUpdate([]);
         }
       }
-    } catch (err) {
+    } catch (err: any) {
       console.warn("Notice in subscribeToUserTrips, using local cache:", err);
       const cached = loadUserLocalState(userId);
-      if (cached.trips && cached.trips.length > 0) {
+      if (!isDisposed && cached.trips && cached.trips.length > 0) {
         onTripsUpdate(cached.trips);
+      } else if (!isDisposed && onError) {
+        onError(err instanceof Error ? err : new Error(String(err)));
       }
+    } finally {
+      isFetching = false;
     }
   };
 
-  // Initial fetch
-  loadTrips();
+  fetchUserTrips();
 
-  // Supabase Realtime channel
-  const channel = supabase
-    .channel(`user-trips-${userId}`)
-    .on("postgres_changes", { event: "*", schema: "public", table: "trips" }, () => {
-      loadTrips();
-    })
-    .on("postgres_changes", { event: "*", schema: "public", table: "trip_members" }, () => {
-      loadTrips();
-    })
-    .subscribe();
+  const pollTimer = setInterval(fetchUserTrips, 12000);
+
+  const onVisibilityChange = () => {
+    if (typeof document !== "undefined" && document.visibilityState === "visible") {
+      fetchUserTrips();
+    }
+  };
+
+  const onTripMutated = () => {
+    fetchUserTrips();
+  };
+
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", onVisibilityChange);
+  }
+  if (typeof window !== "undefined") {
+    window.addEventListener("tripsplit:trip-mutated", onTripMutated);
+  }
 
   return () => {
-    supabase.removeChannel(channel);
+    isDisposed = true;
+    clearInterval(pollTimer);
+    if (typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    }
+    if (typeof window !== "undefined") {
+      window.removeEventListener("tripsplit:trip-mutated", onTripMutated);
+    }
   };
 }
 
 /**
- * Subscribes to all trips across the app.
+ * Poll all trips via GET /api/user-trips every 12 seconds while tab is visible
  */
 export function subscribeToAllTrips(
   onTripsUpdate: (trips: Trip[]) => void,
-  _onError?: (err: Error) => void
-): Unsubscribe {
-  const loadAll = async () => {
-    const trips = await getAllTripsFromDatabase();
-    onTripsUpdate(trips);
+  onError?: (err: Error) => void
+): () => void {
+  let isDisposed = false;
+  let isFetching = false;
+
+  const refresh = async () => {
+    if (isDisposed || isFetching) return;
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+      return;
+    }
+    isFetching = true;
+    try {
+      const trips = await getAllTripsFromDatabase();
+      if (!isDisposed) {
+        onTripsUpdate(trips);
+      }
+    } catch (err: any) {
+      if (!isDisposed && onError) {
+        onError(err instanceof Error ? err : new Error(String(err)));
+      }
+    } finally {
+      isFetching = false;
+    }
   };
 
-  loadAll();
+  refresh();
 
-  const channel = supabase
-    .channel("all-trips")
-    .on("postgres_changes", { event: "*", schema: "public", table: "trips" }, () => {
-      loadAll();
-    })
-    .subscribe();
+  const pollTimer = setInterval(refresh, 12000);
+
+  const onVisibilityChange = () => {
+    if (typeof document !== "undefined" && document.visibilityState === "visible") {
+      refresh();
+    }
+  };
+
+  const onTripMutated = () => {
+    refresh();
+  };
+
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", onVisibilityChange);
+  }
+  if (typeof window !== "undefined") {
+    window.addEventListener("tripsplit:trip-mutated", onTripMutated);
+  }
 
   return () => {
-    supabase.removeChannel(channel);
+    isDisposed = true;
+    clearInterval(pollTimer);
+    if (typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    }
+    if (typeof window !== "undefined") {
+      window.removeEventListener("tripsplit:trip-mutated", onTripMutated);
+    }
   };
 }
 
-/**
- * Granular Table Operations
- */
+// ============================================================================
+// Granular Entity Mutations via Server API (/api/trips/:tripId/*)
+// ============================================================================
 
 export async function addExpenseToDatabase(tripId: string, expense: Expense): Promise<void> {
-  if (isClientOffline()) {
-    enqueueOfflineMutation("SAVE_EXPENSE", tripId, expense);
-    return;
-  }
+  if (!tripId || !expense) return;
+
   try {
-    const row = mapExpenseToRow(tripId, expense);
-    const { error } = await supabase.from("expenses").upsert(row);
-    if (error) {
-      await syncOrEnqueueMutation("SAVE_EXPENSE", tripId, expense);
+    const res = await fetch(getApiUrl(`/api/trips/${encodeURIComponent(tripId)}/expenses`), {
+      method: "POST",
+      headers: getAuthHeaders(true),
+      body: JSON.stringify(expense),
+    });
+
+    if (handleApiUnauthorized(res)) {
+      return;
     }
+
+    if (!res.ok) {
+      if (res.status >= 500) {
+        enqueueMutation("SAVE_EXPENSE", tripId, expense);
+      }
+      return;
+    }
+
+    notifyTripMutated(tripId);
   } catch (err) {
-    await syncOrEnqueueMutation("SAVE_EXPENSE", tripId, expense);
+    console.warn("Network error adding expense, queueing offline mutation:", err);
+    enqueueMutation("SAVE_EXPENSE", tripId, expense);
   }
 }
 
 export async function updateExpenseInDatabase(tripId: string, expense: Expense): Promise<void> {
-  if (isClientOffline()) {
-    enqueueOfflineMutation("SAVE_EXPENSE", tripId, expense);
-    return;
-  }
+  if (!tripId || !expense) return;
+
   try {
-    const row = mapExpenseToRow(tripId, expense);
-    const { error } = await supabase.from("expenses").upsert(row);
-    if (error) {
-      await syncOrEnqueueMutation("SAVE_EXPENSE", tripId, expense);
+    const res = await fetch(
+      getApiUrl(`/api/trips/${encodeURIComponent(tripId)}/expenses/${encodeURIComponent(expense.id)}`),
+      {
+        method: "PUT",
+        headers: getAuthHeaders(true),
+        body: JSON.stringify(expense),
+      }
+    );
+
+    if (handleApiUnauthorized(res)) {
+      return;
     }
+
+    if (!res.ok) {
+      if (res.status >= 500) {
+        enqueueMutation("SAVE_EXPENSE", tripId, expense);
+      }
+      return;
+    }
+
+    notifyTripMutated(tripId);
   } catch (err) {
-    await syncOrEnqueueMutation("SAVE_EXPENSE", tripId, expense);
+    console.warn("Network error updating expense, queueing offline mutation:", err);
+    enqueueMutation("SAVE_EXPENSE", tripId, expense);
   }
 }
 
 export async function deleteExpenseFromDatabase(tripId: string, expenseId: string): Promise<void> {
-  if (isClientOffline()) {
-    enqueueOfflineMutation("DELETE_EXPENSE", tripId, { expenseId });
-    return;
-  }
+  if (!tripId || !expenseId) return;
+
   try {
-    const { error } = await supabase.from("expenses").delete().eq("id", expenseId);
-    if (error) {
-      await syncOrEnqueueMutation("DELETE_EXPENSE", tripId, { expenseId });
+    const res = await fetch(
+      getApiUrl(`/api/trips/${encodeURIComponent(tripId)}/expenses/${encodeURIComponent(expenseId)}`),
+      {
+        method: "DELETE",
+        headers: getAuthHeaders(true),
+        body: JSON.stringify({ expenseId }),
+      }
+    );
+
+    if (handleApiUnauthorized(res)) {
+      return;
     }
+
+    if (!res.ok) {
+      if (res.status >= 500) {
+        enqueueMutation("DELETE_EXPENSE", tripId, { expenseId });
+      }
+      return;
+    }
+
+    notifyTripMutated(tripId);
   } catch (err) {
-    await syncOrEnqueueMutation("DELETE_EXPENSE", tripId, { expenseId });
+    console.warn("Network error deleting expense, queueing offline mutation:", err);
+    enqueueMutation("DELETE_EXPENSE", tripId, { expenseId });
   }
 }
 
 /**
- * ATOMIC OPERATIONS via Postgres RPC Stored Procedures
- * Guarantees transaction safety for settlements, payments, expenses, and activity trails.
+ * Atomic Expense + Activity Persistence via POST /api/trips/:tripId/expenses
  */
-
 export async function saveExpenseAtomic(
   tripId: string,
   expense: Expense,
   activity?: Activity
 ): Promise<void> {
-  if (isClientOffline()) {
-    enqueueOfflineMutation("SAVE_EXPENSE", tripId, expense);
-    if (activity) {
-      addActivityToDatabase(tripId, activity).catch(() => {});
-    }
-    return;
-  }
+  if (!tripId || !expense) return;
 
   try {
-    const expenseRow = mapExpenseToRow(tripId, expense);
-    const activityRow = activity ? mapActivityToRow(tripId, activity) : null;
-
-    const { data, error } = await supabase.rpc("save_expense_atomic", {
-      p_trip_id: tripId,
-      p_expense: expenseRow,
-      p_activity: activityRow,
+    const res = await fetch(getApiUrl(`/api/trips/${encodeURIComponent(tripId)}/expenses`), {
+      method: "POST",
+      headers: getAuthHeaders(true),
+      body: JSON.stringify({
+        ...expense,
+        activity,
+      }),
     });
 
-    if (error) {
-      console.warn("RPC save_expense_atomic warning, falling back to granular upsert:", error.message);
-      await addExpenseToDatabase(tripId, expense);
-      if (activity) await addActivityToDatabase(tripId, activity);
+    if (handleApiUnauthorized(res)) {
+      return;
     }
+
+    if (!res.ok) {
+      if (res.status >= 500) {
+        enqueueMutation("SAVE_EXPENSE", tripId, { ...expense, activity });
+      }
+      return;
+    }
+
+    notifyTripMutated(tripId);
   } catch (err) {
-    console.warn("Network error in saveExpenseAtomic, falling back:", err);
-    await addExpenseToDatabase(tripId, expense);
-    if (activity) await addActivityToDatabase(tripId, activity);
+    console.warn("Network error in saveExpenseAtomic, queueing offline mutation:", err);
+    enqueueMutation("SAVE_EXPENSE", tripId, { ...expense, activity });
   }
 }
 
+/**
+ * Atomic Payment Settlement + Activity Persistence via POST /api/trips/:tripId/payments
+ */
 export async function recordPaymentAtomic(
   tripId: string,
   payment: Payment,
   activity?: Activity
 ): Promise<void> {
-  if (isClientOffline()) {
-    enqueueOfflineMutation("RECORD_PAYMENT", tripId, payment);
-    if (activity) {
-      addActivityToDatabase(tripId, activity).catch(() => {});
-    }
-    return;
-  }
+  if (!tripId || !payment) return;
 
   try {
-    const paymentRow = mapPaymentToRow(tripId, payment);
-    const activityRow = activity ? mapActivityToRow(tripId, activity) : null;
-
-    const { data, error } = await supabase.rpc("record_payment_atomic", {
-      p_trip_id: tripId,
-      p_payment: paymentRow,
-      p_activity: activityRow,
+    const res = await fetch(getApiUrl(`/api/trips/${encodeURIComponent(tripId)}/payments`), {
+      method: "POST",
+      headers: getAuthHeaders(true),
+      body: JSON.stringify({
+        ...payment,
+        activity,
+      }),
     });
 
-    if (error) {
-      console.warn("RPC record_payment_atomic warning, falling back to granular upsert:", error.message);
-      await addPaymentToDatabase(tripId, payment);
-      if (activity) await addActivityToDatabase(tripId, activity);
+    if (handleApiUnauthorized(res)) {
+      return;
     }
+
+    if (!res.ok) {
+      if (res.status >= 500) {
+        enqueueMutation("RECORD_PAYMENT", tripId, { ...payment, activity });
+      }
+      return;
+    }
+
+    notifyTripMutated(tripId);
   } catch (err) {
-    console.warn("Network error in recordPaymentAtomic, falling back:", err);
-    await addPaymentToDatabase(tripId, payment);
-    if (activity) await addActivityToDatabase(tripId, activity);
+    console.warn("Network error in recordPaymentAtomic, queueing offline mutation:", err);
+    enqueueMutation("RECORD_PAYMENT", tripId, { ...payment, activity });
   }
 }
 
+/**
+ * Atomic Payment Confirmation + Activity Persistence via PUT /api/trips/:tripId/payments/:paymentId
+ */
 export async function confirmPaymentAtomic(
   tripId: string,
   paymentId: string,
   confirmedBy: string,
   activity?: Activity
 ): Promise<void> {
-  if (isClientOffline()) {
-    enqueueOfflineMutation("RECORD_PAYMENT", tripId, { id: paymentId, status: "confirmed", confirmedBy });
-    if (activity) {
-      addActivityToDatabase(tripId, activity).catch(() => {});
-    }
-    return;
-  }
+  if (!tripId || !paymentId) return;
+
+  const payload = {
+    id: paymentId,
+    status: "confirmed",
+    confirmedBy,
+    confirmedAt: new Date().toISOString(),
+    activity,
+  };
 
   try {
-    const activityRow = activity ? mapActivityToRow(tripId, activity) : null;
-    const { data, error } = await supabase.rpc("confirm_payment_atomic", {
-      p_trip_id: tripId,
-      p_payment_id: paymentId,
-      p_confirmed_by: confirmedBy,
-      p_activity: activityRow,
-    });
+    const res = await fetch(
+      getApiUrl(`/api/trips/${encodeURIComponent(tripId)}/payments/${encodeURIComponent(paymentId)}`),
+      {
+        method: "PUT",
+        headers: getAuthHeaders(true),
+        body: JSON.stringify(payload),
+      }
+    );
 
-    if (error) {
-      console.warn("RPC confirm_payment_atomic warning, falling back:", error.message);
-      const { error: updErr } = await supabase
-        .from("payments")
-        .update({
-          status: "confirmed",
-          confirmed_by: confirmedBy,
-          confirmed_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", paymentId);
-      if (updErr) console.warn("Fallback payment update error:", updErr.message);
-      if (activity) await addActivityToDatabase(tripId, activity);
+    if (handleApiUnauthorized(res)) {
+      return;
     }
+
+    if (!res.ok) {
+      if (res.status >= 500) {
+        enqueueMutation("RECORD_PAYMENT", tripId, payload);
+      }
+      return;
+    }
+
+    notifyTripMutated(tripId);
   } catch (err) {
-    console.warn("Network error in confirmPaymentAtomic, falling back:", err);
-    if (activity) await addActivityToDatabase(tripId, activity);
+    console.warn("Network error in confirmPaymentAtomic, queueing offline mutation:", err);
+    enqueueMutation("RECORD_PAYMENT", tripId, payload);
   }
 }
 
 export async function addPaymentToDatabase(tripId: string, payment: Payment): Promise<void> {
-  if (isClientOffline()) {
-    enqueueOfflineMutation("RECORD_PAYMENT", tripId, payment);
-    return;
-  }
+  if (!tripId || !payment) return;
+
   try {
-    const row = mapPaymentToRow(tripId, payment);
-    const { error } = await supabase.from("payments").upsert(row);
-    if (error) {
-      await syncOrEnqueueMutation("RECORD_PAYMENT", tripId, payment);
+    const res = await fetch(getApiUrl(`/api/trips/${encodeURIComponent(tripId)}/payments`), {
+      method: "POST",
+      headers: getAuthHeaders(true),
+      body: JSON.stringify(payment),
+    });
+
+    if (handleApiUnauthorized(res)) {
+      return;
     }
+
+    if (!res.ok) {
+      if (res.status >= 500) {
+        enqueueMutation("RECORD_PAYMENT", tripId, payment);
+      }
+      return;
+    }
+
+    notifyTripMutated(tripId);
   } catch (err) {
-    await syncOrEnqueueMutation("RECORD_PAYMENT", tripId, payment);
+    console.warn("Network error adding payment, queueing offline mutation:", err);
+    enqueueMutation("RECORD_PAYMENT", tripId, payment);
   }
 }
 
 export async function updatePaymentInDatabase(tripId: string, payment: Payment): Promise<void> {
-  if (isClientOffline()) {
-    enqueueOfflineMutation("RECORD_PAYMENT", tripId, payment);
-    return;
-  }
+  if (!tripId || !payment) return;
+
   try {
-    const row = mapPaymentToRow(tripId, payment);
-    const { error } = await supabase.from("payments").upsert(row);
-    if (error) {
-      await syncOrEnqueueMutation("RECORD_PAYMENT", tripId, payment);
+    const res = await fetch(
+      getApiUrl(`/api/trips/${encodeURIComponent(tripId)}/payments/${encodeURIComponent(payment.id)}`),
+      {
+        method: "PUT",
+        headers: getAuthHeaders(true),
+        body: JSON.stringify(payment),
+      }
+    );
+
+    if (handleApiUnauthorized(res)) {
+      return;
     }
+
+    if (!res.ok) {
+      if (res.status >= 500) {
+        enqueueMutation("RECORD_PAYMENT", tripId, payment);
+      }
+      return;
+    }
+
+    notifyTripMutated(tripId);
   } catch (err) {
-    await syncOrEnqueueMutation("RECORD_PAYMENT", tripId, payment);
+    console.warn("Network error updating payment, queueing offline mutation:", err);
+    enqueueMutation("RECORD_PAYMENT", tripId, payment);
   }
 }
 
 export async function deletePaymentFromDatabase(tripId: string, paymentId: string): Promise<void> {
-  if (isClientOffline()) {
-    enqueueOfflineMutation("DELETE_PAYMENT", tripId, { paymentId });
-    return;
-  }
+  if (!tripId || !paymentId) return;
+
   try {
-    const { error } = await supabase.from("payments").delete().eq("id", paymentId);
-    if (error) {
-      await syncOrEnqueueMutation("DELETE_PAYMENT", tripId, { paymentId });
+    const res = await fetch(
+      getApiUrl(`/api/trips/${encodeURIComponent(tripId)}/payments/${encodeURIComponent(paymentId)}`),
+      {
+        method: "DELETE",
+        headers: getAuthHeaders(true),
+        body: JSON.stringify({ paymentId }),
+      }
+    );
+
+    if (handleApiUnauthorized(res)) {
+      return;
     }
+
+    if (!res.ok) {
+      if (res.status >= 500) {
+        enqueueMutation("DELETE_PAYMENT", tripId, { paymentId });
+      }
+      return;
+    }
+
+    notifyTripMutated(tripId);
   } catch (err) {
-    await syncOrEnqueueMutation("DELETE_PAYMENT", tripId, { paymentId });
+    console.warn("Network error deleting payment, queueing offline mutation:", err);
+    enqueueMutation("DELETE_PAYMENT", tripId, { paymentId });
   }
 }
 
 export async function addMemberToDatabase(tripId: string, member: Member): Promise<Member> {
-  if (isClientOffline()) {
-    enqueueOfflineMutation("SAVE_MEMBER", tripId, member);
-    return member;
-  }
+  if (!tripId || !member) return member;
+
+  const fallbackMember: Member = {
+    ...member,
+    userId: member.userId || member.id,
+  };
+
   try {
-    let resolvedUserId = member.userId;
-    // If member has phone or email, check if user is already registered
-    const cleanPhone = (member.phone || "").replace(/\D/g, "");
-    const cleanEmail = (member.email || "").trim().toLowerCase();
+    const res = await fetch(getApiUrl(`/api/trips/${encodeURIComponent(tripId)}/trip_members`), {
+      method: "POST",
+      headers: getAuthHeaders(true),
+      body: JSON.stringify(fallbackMember),
+    });
 
-    if (!resolvedUserId || resolvedUserId.startsWith("m_") || resolvedUserId.startsWith("guest_") || resolvedUserId === member.id) {
-      if (cleanPhone.length >= 7 || cleanEmail) {
-        try {
-          let matchedUser: any = null;
-          if (cleanEmail) {
-            const selQuery: any = supabase.from("users").select("id, email, phone, name");
-            const { data: emailMatchUsers } =
-              typeof selQuery?.ilike === "function"
-                ? await selQuery.ilike("email", cleanEmail).limit(1)
-                : await selQuery;
-            if (Array.isArray(emailMatchUsers) && emailMatchUsers.length > 0) {
-              matchedUser = emailMatchUsers.find((u: any) => isEmailMatch(u?.email, member.email));
-            }
-          }
-          if (!matchedUser && cleanPhone.length >= 7) {
-            const phoneTail = cleanPhone.length >= 10 ? cleanPhone.slice(-10) : cleanPhone.slice(-7);
-            const selQuery: any = supabase.from("users").select("id, email, phone, name");
-            const { data: phoneMatchUsers } =
-              typeof selQuery?.ilike === "function"
-                ? await selQuery.ilike("phone", `%${phoneTail}%`).limit(5)
-                : await selQuery;
-            if (Array.isArray(phoneMatchUsers)) {
-              matchedUser = phoneMatchUsers.find((u: any) => isPhoneMatch(u?.phone, member.phone));
-            }
-          }
-          if (matchedUser) {
-            resolvedUserId = matchedUser.id;
-            if ((!member.name || member.name === "Member" || member.name === "Guest" || member.name === "Traveler") && matchedUser.name) {
-              member.name = matchedUser.name;
-            }
-          }
-        } catch (e) {}
+    if (handleApiUnauthorized(res)) {
+      return fallbackMember;
+    }
+
+    if (res.ok) {
+      const data = await res.json();
+      notifyTripMutated(tripId);
+      if (data?.member) {
+        return {
+          ...fallbackMember,
+          ...data.member,
+          userId: data.member.userId || data.member.user_id || fallbackMember.userId,
+        };
       }
+      return fallbackMember;
     }
 
-    const enhancedMember: Member = {
-      ...member,
-      userId: resolvedUserId || member.userId || member.id,
-    };
-
-    const row = mapMemberToRow(tripId, enhancedMember);
-    const { error } = await supabase.from("trip_members").upsert(row);
-    if (error) {
-      await syncOrEnqueueMutation("SAVE_MEMBER", tripId, enhancedMember);
+    if (res.status >= 500) {
+      enqueueMutation("SAVE_MEMBER", tripId, fallbackMember);
     }
-
-    // Update trip member_user_ids array
-    if (enhancedMember.userId) {
-      try {
-        const { data: tripRow } = await supabase.from("trips").select("member_user_ids").eq("id", tripId).maybeSingle();
-        if (tripRow) {
-          const currentIds = Array.isArray(tripRow.member_user_ids) ? tripRow.member_user_ids : [];
-          if (!currentIds.includes(enhancedMember.userId)) {
-            await supabase.from("trips").update({
-              member_user_ids: Array.from(new Set([...currentIds, enhancedMember.userId])),
-              updated_at: new Date().toISOString(),
-            }).eq("id", tripId);
-          }
-        }
-      } catch (e) {}
-    }
-    return enhancedMember;
   } catch (err) {
-    await syncOrEnqueueMutation("SAVE_MEMBER", tripId, member);
-    return member;
+    console.warn("Network error adding member, queueing offline mutation:", err);
+    enqueueMutation("SAVE_MEMBER", tripId, fallbackMember);
   }
+
+  return fallbackMember;
 }
 
 export async function updateMemberInDatabase(tripId: string, member: Member): Promise<void> {
-  if (isClientOffline()) {
-    enqueueOfflineMutation("SAVE_MEMBER", tripId, member);
-    return;
-  }
+  if (!tripId || !member) return;
+
   try {
-    const row = mapMemberToRow(tripId, member);
-    const { error } = await supabase.from("trip_members").upsert(row);
-    if (error) {
-      await syncOrEnqueueMutation("SAVE_MEMBER", tripId, member);
+    const res = await fetch(
+      getApiUrl(`/api/trips/${encodeURIComponent(tripId)}/trip_members/${encodeURIComponent(member.id)}`),
+      {
+        method: "PUT",
+        headers: getAuthHeaders(true),
+        body: JSON.stringify(member),
+      }
+    );
+
+    if (handleApiUnauthorized(res)) {
+      return;
     }
+
+    if (!res.ok) {
+      if (res.status >= 500) {
+        enqueueMutation("SAVE_MEMBER", tripId, member);
+      }
+      return;
+    }
+
+    notifyTripMutated(tripId);
   } catch (err) {
-    await syncOrEnqueueMutation("SAVE_MEMBER", tripId, member);
+    console.warn("Network error updating member, queueing offline mutation:", err);
+    enqueueMutation("SAVE_MEMBER", tripId, member);
   }
 }
 
 export async function deleteMemberFromDatabase(tripId: string, memberId: string): Promise<void> {
-  if (isClientOffline()) {
-    enqueueOfflineMutation("DELETE_MEMBER", tripId, { memberId });
-    return;
-  }
+  if (!tripId || !memberId) return;
+
   try {
-    const { error } = await supabase.from("trip_members").delete().eq("id", memberId);
-    if (error) {
-      await syncOrEnqueueMutation("DELETE_MEMBER", tripId, { memberId });
+    const res = await fetch(
+      getApiUrl(`/api/trips/${encodeURIComponent(tripId)}/trip_members/${encodeURIComponent(memberId)}`),
+      {
+        method: "DELETE",
+        headers: getAuthHeaders(true),
+        body: JSON.stringify({ memberId }),
+      }
+    );
+
+    if (handleApiUnauthorized(res)) {
+      return;
     }
+
+    if (!res.ok) {
+      if (res.status >= 500) {
+        enqueueMutation("DELETE_MEMBER", tripId, { memberId });
+      }
+      return;
+    }
+
+    notifyTripMutated(tripId);
   } catch (err) {
-    await syncOrEnqueueMutation("DELETE_MEMBER", tripId, { memberId });
+    console.warn("Network error deleting member, queueing offline mutation:", err);
+    enqueueMutation("DELETE_MEMBER", tripId, { memberId });
   }
 }
 
 export async function addActivityToDatabase(tripId: string, activity: Activity): Promise<void> {
+  if (!tripId || !activity) return;
+
   try {
-    const row = mapActivityToRow(tripId, activity);
-    await supabase.from("activities").upsert(row);
+    const res = await fetch(getApiUrl(`/api/trips/${encodeURIComponent(tripId)}/activities`), {
+      method: "POST",
+      headers: getAuthHeaders(true),
+      body: JSON.stringify(activity),
+    });
+
+    if (handleApiUnauthorized(res)) {
+      return;
+    }
+
+    if (!res.ok) {
+      if (res.status >= 500) {
+        enqueueMutation("SAVE_ACTIVITY", tripId, activity);
+      }
+      return;
+    }
+
+    notifyTripMutated(tripId);
   } catch (err) {
-    console.warn("Network error adding activity:", err);
+    console.warn("Network error adding activity, queueing offline mutation:", err);
+    enqueueMutation("SAVE_ACTIVITY", tripId, activity);
   }
 }
 
 export async function deleteTripFromDatabase(tripId: string): Promise<void> {
-  if (isClientOffline()) {
-    enqueueOfflineMutation("DELETE_TRIP", tripId, {});
-    return;
-  }
+  if (!tripId) return;
+
   try {
-    const { error } = await supabase.from("trips").delete().eq("id", tripId);
-    if (error) {
-      await syncOrEnqueueMutation("DELETE_TRIP", tripId, {});
+    const res = await fetch(getApiUrl(`/api/trips/${encodeURIComponent(tripId)}`), {
+      method: "DELETE",
+      headers: getAuthHeaders(false),
+    });
+
+    if (handleApiUnauthorized(res)) {
+      return;
     }
+
+    if (!res.ok) {
+      if (res.status >= 500) {
+        enqueueMutation("DELETE_TRIP", tripId, { tripId });
+      }
+      return;
+    }
+
+    notifyTripMutated(tripId);
   } catch (err) {
-    await syncOrEnqueueMutation("DELETE_TRIP", tripId, {});
+    console.warn("Network error deleting trip, queueing offline mutation:", err);
+    enqueueMutation("DELETE_TRIP", tripId, { tripId });
   }
 }
 
-/**
- * Synchronously loads user-specific cached state with strict data isolation.
- */
-export function loadUserLocalState(userId?: string): { trips: Trip[]; activeTripId: string } {
-  if (!userId) {
+// Legacy alias exports for compatibility
+export const saveTripToFirestore = saveTripToDatabase;
+export const addExpenseToFirestore = addExpenseToDatabase;
+export const updateExpenseInFirestore = updateExpenseInDatabase;
+export const deleteExpenseFromFirestore = deleteExpenseFromDatabase;
+export const addPaymentToFirestore = addPaymentToDatabase;
+export const updatePaymentInFirestore = updatePaymentInDatabase;
+export const deletePaymentFromFirestore = deletePaymentFromDatabase;
+export const addMemberToFirestore = addMemberToDatabase;
+export const updateMemberInFirestore = updateMemberInDatabase;
+export const deleteMemberFromFirestore = deleteMemberFromDatabase;
+export const addActivityToFirestore = addActivityToDatabase;
+export const deleteTripFromFirestore = deleteTripFromDatabase;
+
+// Keep row mapper references used by any diagnostic helpers
+export {
+  mapTripToRow,
+  mapMemberToRow,
+  mapExpenseToRow,
+  mapPaymentToRow,
+  mapActivityToRow,
+};
+
+// ============================================================================
+// LocalStorage Read-Only Offline Cache (Namespaced per User ID)
+// ============================================================================
+
+export function loadUserLocalState(userId: string): { trips: Trip[]; activeTripId: string } {
+  if (!userId || typeof window === "undefined") {
     return { trips: [], activeTripId: "" };
   }
 
-  const userKey = getUserTripsStorageKey(userId);
-  const activeKey = getUserActiveTripStorageKey(userId);
-
   try {
-    const raw = localStorage.getItem(userKey);
+    const userStorageKey = `${STORAGE_KEY_PREFIX}${userId}`;
+    const raw = localStorage.getItem(userStorageKey);
+
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        const authorizedTrips = parsed.filter((t) => isUserAuthorizedForTrip(t, userId));
-        const savedActiveId = localStorage.getItem(activeKey) || "";
-        const activeTripId = authorizedTrips.some((t) => t.id === savedActiveId)
-          ? savedActiveId
-          : authorizedTrips[0]?.id || "";
-        return { trips: authorizedTrips, activeTripId };
+      if (parsed && Array.isArray(parsed.trips)) {
+        const authorizedTrips = parsed.trips.filter((t: Trip) => isUserAuthorizedForTrip(t, userId));
+        return {
+          trips: authorizedTrips,
+          activeTripId: parsed.activeTripId || (authorizedTrips[0]?.id ?? ""),
+        };
       }
     }
-  } catch (err) {
-    console.warn("Could not parse user-namespaced cached state:", err);
+
+    const legacyRaw = localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (legacyRaw) {
+      const parsed = JSON.parse(legacyRaw);
+      if (parsed && Array.isArray(parsed.trips)) {
+        const authorizedTrips = parsed.trips.filter((t: Trip) => isUserAuthorizedForTrip(t, userId));
+        if (authorizedTrips.length > 0) {
+          saveUserLocalState(userId, {
+            trips: authorizedTrips,
+            activeTripId: authorizedTrips[0].id,
+          });
+        }
+        return {
+          trips: authorizedTrips,
+          activeTripId: authorizedTrips[0]?.id ?? "",
+        };
+      }
+    }
+  } catch (e) {
+    console.warn("Could not read user local cache:", e);
   }
 
   return { trips: [], activeTripId: "" };
 }
 
-/**
- * Saves user-specific cached state with strict data isolation.
- */
 export function saveUserLocalState(
   userId: string,
-  state: { trips: Trip[]; activeTripId?: string }
-): boolean {
-  if (!userId) return false;
+  state: { trips: Trip[]; activeTripId: string }
+): void {
+  if (!userId || typeof window === "undefined") return;
+
   try {
-    const authorizedTrips = (state.trips || []).filter((t) => isUserAuthorizedForTrip(t, userId));
-    localStorage.setItem(getUserTripsStorageKey(userId), JSON.stringify(authorizedTrips));
-    if (state.activeTripId && authorizedTrips.some((t) => t.id === state.activeTripId)) {
-      localStorage.setItem(getUserActiveTripStorageKey(userId), state.activeTripId);
-    } else if (authorizedTrips.length > 0) {
-      localStorage.setItem(getUserActiveTripStorageKey(userId), authorizedTrips[0].id);
-    } else {
-      localStorage.removeItem(getUserActiveTripStorageKey(userId));
-    }
-    return true;
-  } catch (err) {
-    console.warn("Error saving user local state:", err);
-    return false;
+    const userStorageKey = `${STORAGE_KEY_PREFIX}${userId}`;
+    const authorizedTrips = state.trips.filter((t) => isUserAuthorizedForTrip(t, userId));
+    localStorage.setItem(
+      userStorageKey,
+      JSON.stringify({
+        trips: authorizedTrips,
+        activeTripId: state.activeTripId,
+      })
+    );
+  } catch (e) {
+    console.warn("Could not save user local cache:", e);
   }
 }
 
-/**
- * Synchronously loads cached state from localStorage.
- */
-export function loadStateFromStorage(): StorageSchema {
+export function clearUserLocalState(userId?: string): void {
+  if (typeof window === "undefined") return;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    if (userId) {
+      localStorage.removeItem(`${STORAGE_KEY_PREFIX}${userId}`);
+    }
+    localStorage.removeItem(LEGACY_STORAGE_KEY);
+  } catch (e) {}
+}
+
+export function loadState(): AppState {
+  if (typeof window === "undefined") {
+    return { trips: [], activeTripId: "", currentUserId: "" };
+  }
+  try {
+    const raw = localStorage.getItem(LEGACY_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
       if (parsed && Array.isArray(parsed.trips)) {
-        return parsed;
+        return {
+          trips: parsed.trips,
+          activeTripId: parsed.activeTripId || "",
+          currentUserId: parsed.currentUserId || "",
+        };
       }
     }
-  } catch (err) {
-    console.warn("Could not parse cached state from localStorage:", err);
-  }
+  } catch (e) {}
 
   return {
-    version: SCHEMA_VERSION,
-    lastUpdated: new Date().toISOString(),
     trips: [],
     activeTripId: "",
-    authUser: DEFAULT_AUTH_USER,
-    currentUserId: DEFAULT_AUTH_USER.id,
+    currentUserId: "",
   };
 }
 
-/**
- * Asynchronous loader.
- */
-export async function loadStateFromDatabase(): Promise<StorageSchema> {
-  try {
+export function saveState(state: AppState): void {
+  if (state.currentUserId) {
+    saveUserLocalState(state.currentUserId, {
+      trips: state.trips,
+      activeTripId: state.activeTripId,
+    });
+  }
+}
+
+export async function exportBackupJSON(trip?: Trip): Promise<void> {
+  let dataToExport: any = trip;
+  if (!dataToExport) {
     const trips = await getAllTripsFromDatabase();
-    if (trips.length > 0) {
-      return {
-        version: SCHEMA_VERSION,
-        lastUpdated: new Date().toISOString(),
-        trips,
-        activeTripId: trips[0].id,
-        authUser: DEFAULT_AUTH_USER,
-        currentUserId: DEFAULT_AUTH_USER.id,
-      };
-    }
-  } catch (err) {
-    console.warn("Could not load state from Supabase:", err);
+    dataToExport = { trips };
   }
-  return loadStateFromStorage();
+  const blob = new Blob([JSON.stringify(dataToExport, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `splittrip-backup-${new Date().toISOString().split("T")[0]}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+export function exportExpensesCSV(trip: Trip): void {
+  const activeExpenses = trip.expenses.filter((e) => !e.deleted);
+  const memberMap = Object.fromEntries(trip.members.map((m) => [m.id, m.name]));
+
+  const headers = ["Title", "Category", "Date", "Amount", "Currency", "Paid By", "Split Method", "Participants", "Notes"];
+  const rows = activeExpenses.map((e) => [
+    `"${(e.title || "").replace(/"/g, '""')}"`,
+    e.category,
+    e.date,
+    e.amount.toFixed(2),
+    trip.currency,
+    `"${(memberMap[e.paidBy] || e.paidBy).replace(/"/g, '""')}"`,
+    e.method,
+    `"${e.participants.map((id) => memberMap[id] || id).join(", ")}"`,
+    `"${(e.notes || "").replace(/"/g, '""')}"`,
+  ]);
+
+  const csvContent = [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
+  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${trip.title.toLowerCase().replace(/\s+/g, "-")}-expenses-${new Date().toISOString().split("T")[0]}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+export function generateInviteLink(trip: Trip): string {
+  const baseUrl = window.location.origin + window.location.pathname;
+  const code = trip.inviteCode || trip.id;
+  return `${baseUrl}#join?code=${encodeURIComponent(code)}`;
+}
+
+export function generateTripDeepLink(tripId: string): string {
+  const baseUrl = window.location.origin + window.location.pathname;
+  return `${baseUrl}#/trip/${encodeURIComponent(tripId)}`;
 }
 
 /**
- * Synchronous localStorage cache saver.
+ * Create a clean, empty trip for a newly authenticated user with zero dummy data
  */
-export function saveStateToStorage(state: StorageSchema): boolean {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    return true;
-  } catch (err) {
-    console.warn("Error saving to localStorage:", err);
-    return false;
-  }
-}
+export function createCleanInitialTrip(user: {
+  id: string;
+  name: string;
+  email?: string;
+  avatarColor?: string;
+  phone?: string;
+}): Trip {
+  const today = new Date().toISOString().split("T")[0];
+  const tripId = `trip_${Date.now()}`;
+  const inviteCode = `TRIP-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
 
-/**
- * Wipes/resets state in Supabase and localStorage.
- */
-function generateClientInviteCode(): string {
-  const bytes = new Uint8Array(6);
-  if (typeof globalThis !== "undefined" && globalThis.crypto && typeof globalThis.crypto.getRandomValues === "function") {
-    globalThis.crypto.getRandomValues(bytes);
-  } else {
-    for (let i = 0; i < bytes.length; i++) {
-      bytes[i] = Math.floor(Math.random() * 256);
-    }
-  }
-  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("").toUpperCase();
-  return `TRIP-${hex}`;
-}
-
-function getDefaultClientInviteExpiry(): string {
-  return new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-}
-
-export function resetStorageState(
-  _mode: "clean_scratch" = "clean_scratch",
-  customUser?: UserAccount
-): StorageSchema {
-  const user = customUser || DEFAULT_AUTH_USER;
-
-  const freshTripId = uid("trip");
   const ownerMember: Member = {
     id: user.id,
+    tripId,
     userId: user.id,
-    name: user.name,
+    name: user.name || "Traveler",
     role: "admin",
-    avatarColor: user.avatarColor,
+    avatarColor: user.avatarColor || "#0F6B65",
     phone: user.phone,
+    email: user.email,
     joinedAt: new Date().toISOString(),
     status: "active",
   };
 
   const emptyTrip: Trip = {
-    id: freshTripId,
+    id: tripId,
     title: "My New Trip",
     location: "Destination",
     destination: "Destination",
-    startDate: new Date().toISOString().split("T")[0],
-    endDate: new Date(Date.now() + 86400000 * 3).toISOString().split("T")[0],
+    startDate: today,
+    endDate: today,
     currency: "INR",
     status: "ACTIVE",
     ownerId: user.id,
-    ownerName: user.name,
-    inviteCode: generateClientInviteCode(),
-    inviteExpiresAt: getDefaultClientInviteExpiry(),
+    ownerName: user.name || "Traveler",
+    memberUserIds: [user.id],
+    inviteCode,
+    createdAt: new Date().toISOString(),
     members: [ownerMember],
     expenses: [],
     payments: [],
     activities: [
       {
-        id: uid("act"),
+        id: `act_${Date.now()}`,
         ts: "Just now",
-        user: user.name,
+        user: user.name || "Traveler",
         action: "created the trip",
         detail: "My New Trip",
-        actorId: user.id,
       },
     ],
-    createdAt: new Date().toISOString(),
   };
 
   saveTripToDatabase(emptyTrip).catch(() => {});
+  return emptyTrip;
+}
 
-  const cleanState: StorageSchema = {
-    version: SCHEMA_VERSION,
-    lastUpdated: new Date().toISOString(),
-    trips: [emptyTrip],
-    activeTripId: emptyTrip.id,
-    authUser: user,
-    currentUserId: user.id,
+export const DEFAULT_AUTH_USER: UserAccount = {
+  id: "user_default",
+  name: "Traveler",
+  email: "traveler@splittrip.local",
+  avatarColor: "#0F6B65",
+  createdAt: new Date().toISOString(),
+};
+
+export function resetStorageState(
+  _mode: "clean_scratch",
+  user: UserAccount = DEFAULT_AUTH_USER
+): { trips: Trip[]; activeTripId: string } {
+  clearUserLocalState(user.id);
+  const initialTrip = createCleanInitialTrip(user);
+  const freshState = {
+    trips: [initialTrip],
+    activeTripId: initialTrip.id,
   };
-  saveStateToStorage(cleanState);
-  return cleanState;
+  saveUserLocalState(user.id, freshState);
+  return freshState;
 }
 
 /**
- * Creates a new trip with standard owner configuration.
+ * Helper to normalize any invite code or full invite URL into an uppercase code
  */
-export function createNewTripObject(
-  title: string,
-  location: string,
-  currency = "INR",
-  startDate?: string,
-  endDate?: string,
-  owner?: UserAccount,
-  additionalMemberNames: string[] = []
-): Trip {
-  const tripId = uid("trip");
-  const user = owner || DEFAULT_AUTH_USER;
+function normalizeInviteInput(rawInput: string): string {
+  let clean = (rawInput || "").trim();
+  if (!clean) return "";
 
-  const ownerMember: Member = {
-    id: user.id,
-    userId: user.id,
-    name: user.name,
-    role: "admin",
-    avatarColor: user.avatarColor,
-    phone: user.phone,
-    joinedAt: new Date().toISOString(),
-    status: "active",
-  };
+  if (clean.includes("code=")) {
+    const match = clean.match(/code=([^&?#]+)/i);
+    if (match && match[1]) {
+      clean = decodeURIComponent(match[1]);
+    }
+  } else if (clean.includes("join=")) {
+    const match = clean.match(/join=([^&?#]+)/i);
+    if (match && match[1]) {
+      clean = decodeURIComponent(match[1]);
+    }
+  } else if (clean.startsWith("#join?")) {
+    clean = clean.replace("#join?", "");
+  }
 
-  const AVATAR_PALETTE = [
-    "#0F6B65",
-    "#E39A2D",
-    "#8B5CF6",
-    "#0284C7",
-    "#D97706",
-    "#EC4899",
-    "#10B981",
-    "#6366F1",
-  ];
+  return clean.trim().toUpperCase();
+}
 
-  const extraMembers: Member[] = additionalMemberNames
-    .filter((n) => n.trim().length > 0)
-    .map((name, idx) => ({
-      id: uid("usr"),
-      userId: uid("usr"),
-      name: name.trim(),
-      role: "participant",
-      avatarColor: AVATAR_PALETTE[(idx + 1) % AVATAR_PALETTE.length],
-      joinedAt: new Date().toISOString(),
-      status: "active",
-    }));
+/**
+ * Helper to map a server API trip response into a clean client Trip object
+ */
+function mapServerTripToClientTrip(rawTrip: any): Trip {
+  const tripId = rawTrip.id;
+  const members: Member[] = Array.isArray(rawTrip.members)
+    ? rawTrip.members.map((m: any) =>
+        m.trip_id || m.user_id || m.avatar_color ? mapRowToMember(m) : m
+      )
+    : [];
+  const expenses: Expense[] = Array.isArray(rawTrip.expenses)
+    ? rawTrip.expenses.map((e: any) =>
+        e.trip_id || e.paid_by || e.split_type ? mapRowToExpense(e) : e
+      )
+    : [];
+  const payments: Payment[] = Array.isArray(rawTrip.payments)
+    ? rawTrip.payments.map((p: any) =>
+        p.trip_id || p.from_member_id || p.to_member_id ? mapRowToPayment(p) : p
+      )
+    : [];
+  const activities: Activity[] = Array.isArray(rawTrip.activities)
+    ? rawTrip.activities.map((a: any) =>
+        a.trip_id || a.user_name ? mapRowToActivity(a) : a
+      )
+    : [];
 
-  const allMembers = [ownerMember, ...extraMembers];
+  const memberUserIds = Array.from(
+    new Set(
+      [
+        rawTrip.ownerId || rawTrip.owner_id,
+        ...(Array.isArray(rawTrip.memberUserIds)
+          ? rawTrip.memberUserIds
+          : Array.isArray(rawTrip.member_user_ids)
+          ? rawTrip.member_user_ids
+          : []),
+        ...members.map((m) => m.userId || m.id),
+      ].filter(Boolean)
+    )
+  );
 
   return {
     id: tripId,
-    title: title.trim() || "Untitled Trip",
-    location: location.trim() || "Destination",
-    destination: location.trim() || "Destination",
-    startDate: startDate || new Date().toISOString().split("T")[0],
-    endDate: endDate || new Date(Date.now() + 86400000 * 3).toISOString().split("T")[0],
-    currency,
-    status: "ACTIVE",
-    ownerId: user.id,
-    ownerName: user.name,
-    inviteCode: generateClientInviteCode(),
-    inviteExpiresAt: getDefaultClientInviteExpiry(),
-    members: allMembers,
-    expenses: [],
-    payments: [],
-    activities: [
-      {
-        id: uid("act"),
-        ts: "Just now",
-        user: user.name,
-        action: "created the trip",
-        detail: title.trim() || "New Trip",
-        actorId: user.id,
-      },
-    ],
-    createdAt: new Date().toISOString(),
+    title: rawTrip.title || "Untitled Trip",
+    location: rawTrip.location || rawTrip.destination || "Destination",
+    destination: rawTrip.destination || rawTrip.location || "Destination",
+    startDate: rawTrip.startDate || rawTrip.start_date || new Date().toISOString().split("T")[0],
+    endDate: rawTrip.endDate || rawTrip.end_date || new Date().toISOString().split("T")[0],
+    currency: rawTrip.currency || "INR",
+    status: rawTrip.status || "ACTIVE",
+    ownerId: rawTrip.ownerId || rawTrip.owner_id || "",
+    ownerName: rawTrip.ownerName || rawTrip.owner_name || "Traveler",
+    inviteCode: rawTrip.inviteCode || rawTrip.invite_code || "",
+    memberUserIds,
+    createdAt: rawTrip.createdAt || rawTrip.created_at || new Date().toISOString(),
+    members,
+    expenses,
+    payments,
+    activities,
   };
 }
 
+export interface InviteTripPreview {
+  title: string;
+  name: string;
+  memberCount: number;
+  ownerId?: undefined;
+  memberUserIds?: undefined;
+  members?: undefined;
+}
+
 /**
- * Validates and retrieves trip preview by its invite code.
- * Returns only the trip name and member count (no owner ID, member user IDs, or member names).
+ * Look up a trip by its invite code via POST /api/trips/invite/lookup.
+ * Returns only the trip name/title and memberCount.
  */
 export async function getTripByInviteCode(
-  inviteCode: string
-): Promise<{ success: boolean; trip?: Trip; error?: string }> {
-  const code = (inviteCode || "").trim().toUpperCase();
-  if (!code) {
-    return { success: false, error: "Please enter an invite code." };
+  rawInput: string
+): Promise<{
+  success: boolean;
+  trip?: InviteTripPreview;
+  error?: string;
+}> {
+  const clean = normalizeInviteInput(rawInput);
+  if (!clean) {
+    return {
+      success: false,
+      error: "Please enter an invite code.",
+    };
   }
 
-  // Primary: Same-Origin API lookup (/api/trips/invite/lookup)
   try {
-    const baseUrl = typeof window !== "undefined" ? "" : "http://localhost:3000";
-    const apiRes = await fetch(`${baseUrl}/api/trips/invite/lookup`, {
+    const apiRes = await fetch(getApiUrl("/api/trips/invite/lookup"), {
       method: "POST",
-      headers: getAuthHeaders(),
-      body: JSON.stringify({ inviteCode: code }),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ inviteCode: clean }),
     });
-    const data = await apiRes.json().catch(() => ({}));
-    if (apiRes.ok && data.success && data.trip) {
-      return {
-        success: true,
-        trip: {
-          title: data.trip.title || data.trip.name || "Untitled Trip",
-          name: data.trip.name || data.trip.title || "Untitled Trip",
-          memberCount: Number(data.trip.memberCount ?? 0),
-        } as any,
-      };
-    }
-    if (data.error) {
-      return { success: false, error: data.error };
-    }
-  } catch (apiErr) {
-    console.warn("API invite lookup notice:", apiErr);
-  }
-
-  return {
-    success: false,
-    error: `Invite code '${code}' is invalid or expired. Please check with your trip organizer.`,
-  };
-}
-
-/**
- * Atomically joins a trip using an invite code and the user's account.
- * Updates trip_members, trips.member_user_ids, and activities in a single atomic transaction.
- */
-export async function joinTripByInviteCode(
-  inviteCode: string,
-  user: UserAccount
-): Promise<{ success: boolean; trip?: Trip; alreadyMember?: boolean; error?: string }> {
-  const code = (inviteCode || "").trim().toUpperCase();
-  if (!code) {
-    return { success: false, error: "Please enter an invite code." };
-  }
-  if (!user || !user.id) {
-    return { success: false, error: "Please log in before joining a trip." };
-  }
-
-  // 1. Primary: Same-Origin API join (reliable in all network and iframe environments)
-  try {
-    const baseUrl = typeof window !== "undefined" ? "" : "http://localhost:3000";
-    const apiRes = await fetch(`${baseUrl}/api/trips/invite/join`, {
-      method: "POST",
-      headers: getAuthHeaders(),
-      body: JSON.stringify({
-        inviteCode: code,
-        user: {
-          id: user.id,
-          userId: user.id,
-          name: user.name || "Traveler",
-          email: user.email || "",
-          phone: user.phone || "",
-          avatarColor: user.avatarColor || "#0F6B65",
-        },
-      }),
-    });
-    if (apiRes.ok) {
-      const data = await apiRes.json();
-      if (data.success && data.trip) {
+    const ct = apiRes.headers.get("content-type") || "";
+    if (ct.includes("application/json")) {
+      const json = await apiRes.json();
+      if (apiRes.ok && json.success && json.trip) {
         return {
           success: true,
-          trip: data.trip,
-          alreadyMember: Boolean(data.alreadyMember),
+          trip: {
+            title: json.trip.title || json.trip.name || "Untitled Trip",
+            name: json.trip.name || json.trip.title || "Untitled Trip",
+            memberCount: Number(json.trip.memberCount ?? 0),
+          },
         };
       }
-      if (data.error) {
-        return { success: false, error: data.error };
-      }
-    }
-  } catch (apiErr) {
-    console.warn("API invite join notice, falling back to Supabase RPC:", apiErr);
-  }
-
-  // 2. Secondary: Direct Supabase RPC stored procedure fallback
-  try {
-    const { data, error } = await supabase.rpc("join_trip_by_invite_code", {
-      p_invite_code: code,
-      p_user: {
-        id: user.id,
-        userId: user.id,
-        name: user.name || "Traveler",
-        email: user.email || "",
-        phone: user.phone || "",
-        avatarColor: user.avatarColor || "#0F6B65",
-      },
-    });
-
-    if (error) {
-      console.warn("Notice calling join_trip_by_invite_code RPC:", error.message);
-    } else if (data) {
-      if (data.success && data.trip_id) {
-        const tripId = data.trip_id;
-        const fullTrip = await getTripFromDatabase(tripId);
-        if (fullTrip) {
-          return {
-            success: true,
-            trip: fullTrip,
-            alreadyMember: Boolean(data.already_member),
-          };
-        }
-        if (data.trip) {
-          return {
-            success: true,
-            trip: {
-              ...data.trip,
-              expenses: [],
-              payments: [],
-              activities: [],
-            },
-            alreadyMember: Boolean(data.already_member),
-          };
-        }
-      }
-
-      if (data.success === false) {
+      if (apiRes.status === 404 || apiRes.status === 410 || apiRes.status === 429) {
         return {
           success: false,
           error:
-            data.message ||
-            `Invite code '${code}' is invalid or expired. Please check with your trip organizer.`,
+            json.error ||
+            `Invite code '${clean}' is invalid or expired. Please check with your trip organizer.`,
         };
       }
     }
-  } catch (err: any) {
-    console.warn("Exception in joinTripByInviteCode:", err);
-  }
-
-  // Fallback: If RPC encountered a transient issue, try loading preview and member upsert
-  try {
-    const preview = await getTripByInviteCode(code);
-    if (preview.success && preview.trip) {
-      const tripId = preview.trip.id;
-      const isAlready = (preview.trip.members || []).some(
-        (m) => m.id === user.id || m.userId === user.id
-      );
-
-      if (isAlready) {
-        const full = await getTripFromDatabase(tripId);
-        return { success: true, trip: full || preview.trip, alreadyMember: true };
-      }
-
-      const newMember: Member = {
-        id: user.id,
-        userId: user.id,
-        name: user.name || "Traveler",
-        role: "participant",
-        avatarColor: user.avatarColor || "#0F6B65",
-        phone: user.phone || "",
-        email: user.email || "",
-        joinedAt: new Date().toISOString(),
-        status: "active",
-      };
-
-      await addMemberToDatabase(tripId, newMember);
-      const full = await getTripFromDatabase(tripId);
-      return { success: true, trip: full || preview.trip, alreadyMember: false };
-    }
-  } catch (fallbackErr) {
-    console.warn("Fallback join error:", fallbackErr);
+  } catch (apiErr) {
+    console.warn("Server invite lookup failed:", apiErr);
   }
 
   return {
     success: false,
-    error: `Invite code '${code}' is invalid or expired. Please check with your trip organizer.`,
+    error: `Invite code '${clean}' is invalid or expired. Please check with your trip organizer.`,
   };
 }
 
+/**
+ * Atomically join a trip using an invite code via POST /api/trips/invite/join.
+ */
+export async function joinTripByInviteCode(
+  rawInput: string,
+  currentUser: UserAccount
+): Promise<{
+  success: boolean;
+  trip?: Trip;
+  alreadyMember?: boolean;
+  error?: string;
+}> {
+  const clean = normalizeInviteInput(rawInput);
+  if (!clean) {
+    return { success: false, error: "Please enter a valid invite code." };
+  }
+  if (!currentUser || !currentUser.id) {
+    return { success: false, error: "Please log in before joining a trip." };
+  }
+
+  try {
+    const apiRes = await fetch(getApiUrl("/api/trips/invite/join"), {
+      method: "POST",
+      headers: getAuthHeaders(true),
+      body: JSON.stringify({
+        inviteCode: clean,
+        user: {
+          id: currentUser.id,
+          name: currentUser.name || "Traveler",
+          email: currentUser.email || "",
+          phone: currentUser.phone || "",
+          avatarColor: currentUser.avatarColor || "#0F6B65",
+        },
+      }),
+    });
+
+    if (handleApiUnauthorized(apiRes)) {
+      return {
+        success: false,
+        error: "Your session has expired. Please log in again.",
+      };
+    }
+
+    const ct = apiRes.headers.get("content-type") || "";
+    if (ct.includes("application/json")) {
+      const json = await apiRes.json();
+      if (apiRes.ok && json.success && json.trip) {
+        const joinedTrip = mapServerTripToClientTrip(json.trip);
+        notifyTripMutated(joinedTrip.id);
+        return {
+          success: true,
+          alreadyMember: Boolean(json.alreadyMember),
+          trip: joinedTrip,
+        };
+      }
+      if (!apiRes.ok && json.error) {
+        return {
+          success: false,
+          error: json.error,
+        };
+      }
+    }
+  } catch (apiErr) {
+    console.warn("Server invite join error:", apiErr);
+  }
+
+  return {
+    success: false,
+    error: `Invite code '${clean}' is invalid or expired. Please check with your trip organizer.`,
+  };
+}

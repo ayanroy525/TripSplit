@@ -1,6 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { getTripByInviteCode, joinTripByInviteCode } from "./storage";
-import { supabase } from "./supabaseClient";
+import { generateSessionToken, pool } from "../../api/_shared";
 import { UserAccount } from "../types";
 
 describe("Invite Code Lookup & Atomic Join System", () => {
@@ -11,6 +11,23 @@ describe("Invite Code Lookup & Atomic Join System", () => {
     avatarColor: "#0F6B65",
     createdAt: new Date().toISOString(),
   };
+
+  beforeAll(() => {
+    const token = generateSessionToken(mockUser.id, mockUser.email, mockUser.name);
+    (globalThis as any).__TRIPSPLIT_TEST_AUTH_TOKEN__ = token;
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.setItem("trip_expense_splitter_auth_token_v1", token);
+      } catch {}
+    }
+  });
+
+  afterAll(async () => {
+    delete (globalThis as any).__TRIPSPLIT_TEST_AUTH_TOKEN__;
+    if (pool) {
+      await pool.query("DELETE FROM public.trip_members WHERE user_id = $1;", [mockUser.id]).catch(() => {});
+    }
+  });
 
   it("handles empty or whitespace invite codes gracefully", async () => {
     const resEmpty = await getTripByInviteCode("");
@@ -52,6 +69,9 @@ describe("Invite Code Lookup & Atomic Join System", () => {
   });
 
   it("atomically joins the trip and prevents duplicate membership (idempotency)", async () => {
+    if (pool) {
+      await pool.query("DELETE FROM public.trip_members WHERE user_id = $1;", [mockUser.id]).catch(() => {});
+    }
     const joinRes1 = await joinTripByInviteCode("TRIP-F25K4S", mockUser);
     expect(joinRes1.success).toBe(true);
     expect(joinRes1.trip?.id).toBe("trip_goa_mucteofh");
@@ -61,7 +81,9 @@ describe("Invite Code Lookup & Atomic Join System", () => {
     expect(joinRes2.success).toBe(true);
     expect(joinRes2.alreadyMember).toBe(true);
 
-    // Clean up test membership from DB after test
-    await supabase.from("trip_members").delete().eq("user_id", mockUser.id);
+    // Clean up test membership via server pg pool
+    if (pool) {
+      await pool.query("DELETE FROM public.trip_members WHERE user_id = $1;", [mockUser.id]).catch(() => {});
+    }
   });
 });

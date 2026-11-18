@@ -26,6 +26,22 @@
       "destination": "/api/trips/[tripId]?tripId=invite-lookup&action=invite-lookup&code=:code"
     },
     {
+      "source": "/api/trips/link-members",
+      "destination": "/api/trips/[tripId]?tripId=link-members&action=link-members"
+    },
+    {
+      "source": "/api/trips/:tripId/:resource/:itemId",
+      "destination": "/api/trips/[tripId]?tripId=:tripId&resource=:resource&itemId=:itemId"
+    },
+    {
+      "source": "/api/trips/:tripId/:resource",
+      "destination": "/api/trips/[tripId]?tripId=:tripId&resource=:resource"
+    },
+    {
+      "source": "/api/trips",
+      "destination": "/api/trips/[tripId]?tripId=trips-root&action=trips-root"
+    },
+    {
       "source": "/api/telegram/settings",
       "destination": "/api/telegram/admin?action=settings"
     },

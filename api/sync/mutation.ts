@@ -194,6 +194,24 @@ export default async function handler(req: any, res: any) {
                 ]
               );
             }
+            if (payment.activity && payment.activity.id) {
+              const act = payment.activity;
+              await pool.query(
+                `INSERT INTO public.activities (
+                  id, trip_id, ts, user_name, action, detail, actor_id, created_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+                ON CONFLICT (id) DO NOTHING;`,
+                [
+                  act.id,
+                  tripId,
+                  act.ts || "Just now",
+                  act.user || act.user_name || "Traveler",
+                  act.action || "recorded payment",
+                  act.detail || "",
+                  act.actorId || act.actor_id || userId,
+                ]
+              );
+            }
           }
           break;
         }
@@ -258,7 +276,7 @@ export default async function handler(req: any, res: any) {
                 expense.date || new Date().toISOString().split("T")[0],
                 expense.paidBy || "",
                 JSON.stringify(expense.payers || null),
-                expense.createdBy || userId || "",
+                userId,
                 expense.method || "equal",
                 expense.splitType || expense.method || "equal",
                 JSON.stringify(participantsList),
@@ -275,6 +293,24 @@ export default async function handler(req: any, res: any) {
                 Boolean(expense.deleted),
               ]
             );
+            if (expense.activity && expense.activity.id) {
+              const act = expense.activity;
+              await pool.query(
+                `INSERT INTO public.activities (
+                  id, trip_id, ts, user_name, action, detail, actor_id, created_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+                ON CONFLICT (id) DO NOTHING;`,
+                [
+                  act.id,
+                  tripId,
+                  act.ts || "Just now",
+                  act.user || act.user_name || "Traveler",
+                  act.action || "added expense",
+                  act.detail || "",
+                  act.actorId || act.actor_id || userId,
+                ]
+              );
+            }
           }
           break;
         }
@@ -334,13 +370,43 @@ export default async function handler(req: any, res: any) {
           break;
         }
 
+        case "SAVE_ACTIVITY": {
+          const act = payload;
+          if (act && act.id) {
+            await pool.query(
+              `INSERT INTO public.activities (
+                id, trip_id, ts, user_name, action, detail, actor_id, created_at
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+              ON CONFLICT (id) DO UPDATE SET
+                ts = EXCLUDED.ts,
+                user_name = EXCLUDED.user_name,
+                action = EXCLUDED.action,
+                detail = EXCLUDED.detail,
+                actor_id = EXCLUDED.actor_id
+              WHERE public.activities.trip_id = EXCLUDED.trip_id;`,
+              [
+                act.id,
+                tripId,
+                act.ts || "Just now",
+                act.user || act.user_name || "Traveler",
+                act.action || "updated trip",
+                act.detail || "",
+                act.actorId || act.actor_id || userId || null,
+              ]
+            );
+          }
+          break;
+        }
+
         case "SAVE_TRIP_SNAPSHOT": {
           const trip = payload;
           if (trip && (trip.id || tripId)) {
             const targetTripId = tripId;
+            const effectiveOwnerId = !tripExists ? userId : (trip.ownerId || userId);
             const memberUserIds = Array.from(
               new Set([
-                trip.ownerId || userId,
+                effectiveOwnerId,
+                userId,
                 ...(trip.memberUserIds || []),
                 ...(trip.members || []).map((m: any) => m.userId || m.id),
               ].filter(Boolean))
@@ -372,7 +438,7 @@ export default async function handler(req: any, res: any) {
                 trip.endDate || new Date().toISOString().split("T")[0],
                 trip.currency || "INR",
                 trip.status || "ACTIVE",
-                trip.ownerId || userId || "",
+                effectiveOwnerId,
                 trip.ownerName || "Traveler",
                 JSON.stringify(memberUserIds),
                 trip.inviteCode || generateSecureInviteCode(),
@@ -412,6 +478,118 @@ export default async function handler(req: any, res: any) {
               }
             }
 
+            // Persist nested expenses
+            if (Array.isArray(trip.expenses)) {
+              for (const expense of trip.expenses) {
+                if (!expense || !expense.id) continue;
+                const participantsList =
+                  Array.isArray(expense.participants) && expense.participants.length > 0
+                    ? expense.participants
+                    : [expense.paidBy || userId || "traveler"];
+                await pool.query(
+                  `INSERT INTO public.expenses (
+                    id, trip_id, title, amount, category, date, paid_by, payers, created_by,
+                    method, split_type, participants, splits, split_percentages, split_shares,
+                    items, audit_logs, notes, receipt_url, original_amount, original_currency, exchange_rate,
+                    created_at, updated_at, deleted
+                  ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9,
+                    $10, $11, $12::jsonb, $13::jsonb, $14::jsonb, $15::jsonb,
+                    $16::jsonb, $17::jsonb, $18, $19, $20, $21, $22,
+                    NOW(), NOW(), $23
+                  )
+                  ON CONFLICT (id) DO UPDATE SET
+                    title = EXCLUDED.title,
+                    amount = EXCLUDED.amount,
+                    category = EXCLUDED.category,
+                    date = EXCLUDED.date,
+                    paid_by = EXCLUDED.paid_by,
+                    payers = EXCLUDED.payers,
+                    method = EXCLUDED.method,
+                    split_type = EXCLUDED.split_type,
+                    participants = EXCLUDED.participants,
+                    splits = EXCLUDED.splits,
+                    split_percentages = EXCLUDED.split_percentages,
+                    split_shares = EXCLUDED.split_shares,
+                    items = EXCLUDED.items,
+                    audit_logs = EXCLUDED.audit_logs,
+                    notes = EXCLUDED.notes,
+                    receipt_url = EXCLUDED.receipt_url,
+                    original_amount = EXCLUDED.original_amount,
+                    original_currency = EXCLUDED.original_currency,
+                    exchange_rate = EXCLUDED.exchange_rate,
+                    deleted = EXCLUDED.deleted,
+                    updated_at = NOW()
+                  WHERE public.expenses.trip_id = EXCLUDED.trip_id;`,
+                  [
+                    expense.id,
+                    targetTripId,
+                    expense.title || "Expense",
+                    Number(expense.amount) || 0,
+                    expense.category || "General",
+                    expense.date || new Date().toISOString().split("T")[0],
+                    expense.paidBy || "",
+                    JSON.stringify(expense.payers || null),
+                    userId,
+                    expense.method || "equal",
+                    expense.splitType || expense.method || "equal",
+                    JSON.stringify(participantsList),
+                    JSON.stringify(expense.splits || {}),
+                    JSON.stringify(expense.splitPercentages || null),
+                    JSON.stringify(expense.splitShares || null),
+                    JSON.stringify(Array.isArray(expense.items) ? expense.items : null),
+                    JSON.stringify(Array.isArray(expense.auditLogs) ? expense.auditLogs : []),
+                    expense.notes || "",
+                    sanitizeReceiptUrl(expense.receiptUrl),
+                    expense.originalAmount != null ? Number(expense.originalAmount) : null,
+                    expense.currency || null,
+                    expense.exchangeRate != null ? Number(expense.exchangeRate) : null,
+                    Boolean(expense.deleted),
+                  ]
+                );
+              }
+            }
+
+            // Persist nested payments
+            if (Array.isArray(trip.payments)) {
+              for (const payment of trip.payments) {
+                if (!payment || !payment.id) continue;
+                await pool.query(
+                  `INSERT INTO public.payments (
+                    id, trip_id, from_member_id, to_member_id, from_user_id, to_user_id,
+                    amount, status, method, note, original_amount, original_currency, exchange_rate,
+                    audit_logs, created_at, updated_at
+                  ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, NOW(), NOW())
+                  ON CONFLICT (id) DO UPDATE SET
+                    from_member_id = EXCLUDED.from_member_id,
+                    to_member_id = EXCLUDED.to_member_id,
+                    amount = EXCLUDED.amount,
+                    status = EXCLUDED.status,
+                    method = EXCLUDED.method,
+                    note = EXCLUDED.note,
+                    audit_logs = EXCLUDED.audit_logs,
+                    updated_at = NOW()
+                  WHERE public.payments.trip_id = EXCLUDED.trip_id;`,
+                  [
+                    payment.id,
+                    targetTripId,
+                    payment.from || payment.fromUserId || "",
+                    payment.to || payment.toUserId || "",
+                    payment.fromUserId || payment.from || "",
+                    payment.toUserId || payment.to || "",
+                    Number(payment.amount) || 0,
+                    payment.status || "confirmed",
+                    payment.method || "Cash",
+                    payment.note || "",
+                    payment.originalAmount != null ? Number(payment.originalAmount) : null,
+                    payment.currency || null,
+                    payment.exchangeRate != null ? Number(payment.exchangeRate) : null,
+                    JSON.stringify(Array.isArray(payment.auditLogs) ? payment.auditLogs : []),
+                  ]
+                );
+              }
+            }
+
             // Persist nested activities
             if (Array.isArray(trip.activities)) {
               for (const act of trip.activities) {
@@ -438,6 +616,7 @@ export default async function handler(req: any, res: any) {
         }
 
         case "DELETE_TRIP": {
+          await pool.query("DELETE FROM public.activities WHERE trip_id = $1;", [tripId]);
           await pool.query("DELETE FROM public.expenses WHERE trip_id = $1;", [tripId]);
           await pool.query("DELETE FROM public.payments WHERE trip_id = $1;", [tripId]);
           await pool.query("DELETE FROM public.trip_members WHERE trip_id = $1;", [tripId]);
@@ -494,6 +673,8 @@ export default async function handler(req: any, res: any) {
     if (memberId) {
       store.trip_members = store.trip_members.filter((m: any) => !(m.id === memberId && m.trip_id === tripId));
     }
+  } else if (type === "SAVE_ACTIVITY" && payload?.id) {
+    store.activities.push({ ...payload, trip_id: tripId });
   } else if (type === "SAVE_TRIP_SNAPSHOT" && payload) {
     const idx = store.trips.findIndex((t: any) => t.id === tripId);
     if (idx >= 0) store.trips[idx] = { ...store.trips[idx], ...payload, id: tripId };
@@ -503,6 +684,7 @@ export default async function handler(req: any, res: any) {
     store.trip_members = store.trip_members.filter((m: any) => m.trip_id !== tripId);
     store.expenses = store.expenses.filter((e: any) => e.trip_id !== tripId);
     store.payments = store.payments.filter((p: any) => p.trip_id !== tripId);
+    store.activities = store.activities.filter((a: any) => a.trip_id !== tripId);
   }
   saveLocalStore(store);
 

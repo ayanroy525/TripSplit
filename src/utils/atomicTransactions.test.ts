@@ -6,19 +6,25 @@ import {
   recordPaymentAtomic,
   confirmPaymentAtomic,
 } from "./storage";
+import { generateSessionToken, pool as sharedPool } from "../../api/_shared";
 import { Expense, Payment, Activity } from "../types";
 
-dotenv.config();
-
-const rawConn = (process.env.POSTGRES_URL_NON_POOLING || process.env.POSTGRES_URL || "").replace(/\?.*$/, "");
+dotenv.config({ path: [".env.local", ".env"] });
 
 describe("Transaction Safety & Atomic Postgres RPC Stored Procedures", () => {
   const testTripId = `test_trip_atomic_${Date.now()}`;
-  let pool: Pool;
+  const pool = sharedPool;
 
   beforeAll(async () => {
-    if (!rawConn) return;
-    pool = new Pool({ connectionString: rawConn, ssl: { rejectUnauthorized: false } });
+    const token = generateSessionToken("u_owner_test", "alice@example.com", "Alice");
+    (globalThis as any).__TRIPSPLIT_TEST_AUTH_TOKEN__ = token;
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.setItem("trip_expense_splitter_auth_token_v1", token);
+      } catch {}
+    }
+
+    if (!pool) return;
     const client = await pool.connect();
     try {
       // Seed test trip
@@ -43,13 +49,13 @@ describe("Transaction Safety & Atomic Postgres RPC Stored Procedures", () => {
   }, 20000);
 
   afterAll(async () => {
+    delete (globalThis as any).__TRIPSPLIT_TEST_AUTH_TOKEN__;
     if (!pool) return;
     const client = await pool.connect();
     try {
       await client.query(`DELETE FROM public.trips WHERE id = '${testTripId}';`);
     } finally {
       client.release();
-      await pool.end();
     }
   }, 20000);
 

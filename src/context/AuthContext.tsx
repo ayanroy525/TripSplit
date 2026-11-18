@@ -226,7 +226,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // Login supporting Email and Phone with server backend, Supabase Auth, database records, and legacy local accounts
+  // Listen for 401 Unauthorized API responses: show a clear error toast and log the user out cleanly
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onUnauthorized = (event: Event) => {
+      const customEvent = event as CustomEvent<{ message?: string }>;
+      const msg =
+        customEvent.detail?.message || "Your session has expired (401). Please log in again.";
+      setProfileToast(msg);
+      setTimeout(() => setProfileToast(null), 5000);
+      logout();
+    };
+    window.addEventListener("tripsplit:unauthorized", onUnauthorized);
+    return () => {
+      window.removeEventListener("tripsplit:unauthorized", onUnauthorized);
+    };
+  }, []);
+
+  // Login supporting Email and Phone via server-mediated /api/auth/login
   const login = async (
     emailOrPhone: string,
     password?: string
@@ -239,10 +256,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return { success: false, error: "Please enter your password." };
     }
 
-    const trimmedInput = rawInput.toLowerCase();
-    const cleanDigits = rawInput.replace(/\D/g, "");
-
-    // 1. Primary Auth: Secure Server-side PostgreSQL login endpoint
     let serverErrorMsg = "";
     try {
       const response = await fetch("/api/auth/login", {
@@ -267,63 +280,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           persistUser(userAccount);
           setAccounts((prev) => [userAccount, ...prev.filter((a) => a.id !== userAccount.id)]);
 
-          if (trimmedInput.includes("@")) {
-            supabase.auth.signInWithPassword({ email: trimmedInput, password }).catch(() => {});
-          }
-
           return { success: true, user: userAccount };
         }
         serverErrorMsg = resData.error || "Invalid credentials. Please verify your email/phone and password.";
-        if (response.status === 429 || response.status === 400 || !trimmedInput.includes("@")) {
-          // Phone and name logins are resolved only by /api/auth/login
-          return {
-            success: false,
-            error: serverErrorMsg,
-          };
-        }
+        return {
+          success: false,
+          error: serverErrorMsg,
+        };
       }
     } catch (apiErr) {
       console.warn("Backend auth endpoint unreachable:", apiErr);
-      if (!trimmedInput.includes("@")) {
-        return {
-          success: false,
-          error: "Unable to sign in. Please verify your credentials or try again.",
-        };
-      }
-    }
-
-    // 2. Secondary Auth: Attempt standard Supabase Auth signInWithPassword for email login if server endpoint was unreachable
-    if (trimmedInput.includes("@")) {
-      try {
-        const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-          email: trimmedInput,
-          password,
-        });
-
-        if (!authError && authData.session && authData.user) {
-          setTokenState(authData.session.access_token);
-
-          const userAccount = buildUserFromSupabase(authData.user);
-          persistUser(userAccount);
-          setAccounts((prev) => [userAccount, ...prev.filter((a) => a.id !== userAccount.id)]);
-          return { success: true, user: userAccount };
-        } else if (authError) {
-          const msg = authError.message?.toLowerCase() || "";
-          if (msg.includes("email not confirmed") || msg.includes("confirm your email")) {
-            return {
-              success: false,
-              isEmailNotConfirmed: true,
-              error: "Please check your email and click the confirmation link before logging in.",
-            };
-          }
-          return {
-            success: false,
-            error: serverErrorMsg || authError.message || "Invalid email/phone or password.",
-          };
-        }
-      } catch (err) {
-        console.warn("Supabase auth login notice:", err);
-      }
+      return {
+        success: false,
+        error: "Unable to sign in. Please verify your credentials or try again.",
+      };
     }
 
     return {
