@@ -1,0 +1,7 @@
+agent/
+.agents/
+skills-lock.json
+scripts/
+src/**/*.test.ts
+src/**/*.test.tsx
+.env*

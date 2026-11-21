@@ -22,11 +22,10 @@ export default async function handler(req: any, res: any) {
       success: true,
       diagnostic: result,
     });
-  } catch (err: any) {
-    console.error("Error executing manual health check:", err);
+  } catch {
     return sendJson(res, 500, {
       success: false,
-      error: err?.message || "Internal server error during diagnostic check",
+      error: "Internal server error during diagnostic check",
     });
   }
 }

@@ -244,11 +244,12 @@ export function getTelegramWebhookSecret(): string {
       return sanitized;
     }
   }
+  const sessionSecret = cleanEnvValue(process.env.SESSION_SECRET || process.env.AUTH_SECRET);
+  if (process.env.NODE_ENV === "production" && !sessionSecret) {
+    return "";
+  }
   return crypto
-    .createHmac(
-      "sha256",
-      process.env.SESSION_SECRET || process.env.AUTH_SECRET || "tripsplit_auth_token_secret_seed"
-    )
+    .createHmac("sha256", sessionSecret || "tripsplit_auth_token_secret_seed")
     .update("telegram_webhook_secret_token")
     .digest("hex")
     .slice(0, 32);

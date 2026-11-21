@@ -91,14 +91,7 @@ export function saveLocalRegisteredUser(user: LocalStoredUserRecord) {
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
 
-  const [token, setTokenState] = useState<string | null>(() => {
-    if (typeof window !== "undefined") {
-      try {
-        return localStorage.getItem("trip_expense_splitter_auth_token_v1");
-      } catch {}
-    }
-    return null;
-  });
+  const [token, setTokenState] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(() => {
     if (typeof window !== "undefined") {
       try {
@@ -129,7 +122,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           linkUserToExistingTripMembers(user).catch(() => {});
         } else {
           localStorage.removeItem(ACTIVE_USER_KEY);
-          localStorage.removeItem("trip_expense_splitter_auth_token_v1");
         }
       } catch (e) {}
     }
@@ -142,14 +134,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setIsPasswordRecovery(true);
     }
 
-    // 2. Initial session check
+    // 2. Initial session check (for Supabase password recovery flows only)
     supabase.auth.getSession().then(async ({ data: { session } }) => {
       if (session?.user) {
-        const existingServerToken =
-          typeof window !== "undefined" ? localStorage.getItem("trip_expense_splitter_auth_token_v1") : null;
-        if (!existingServerToken) {
-          setTokenState(session.access_token);
-        }
+        setTokenState(session.access_token);
 
         let extraProfile: Partial<UserAccount> | undefined;
         try {
@@ -185,11 +173,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       if (session?.user) {
-        const existingServerToken =
-          typeof window !== "undefined" ? localStorage.getItem("trip_expense_splitter_auth_token_v1") : null;
-        if (!existingServerToken) {
-          setTokenState(session.access_token);
-        }
+        setTokenState(session.access_token);
 
         let extraProfile: Partial<UserAccount> | undefined;
         try {
@@ -260,7 +244,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const response = await fetch("/api/auth/login", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Requested-With": "XMLHttpRequest",
+        },
         body: JSON.stringify({ emailOrPhone: rawInput, password }),
       });
 
@@ -269,14 +257,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const resData = await response.json();
         if (response.ok && resData.success && resData.user) {
           const userAccount: UserAccount = resData.user;
-          if (resData.token) {
-            setTokenState(resData.token);
-            if (typeof window !== "undefined") {
-              try {
-                localStorage.setItem("trip_expense_splitter_auth_token_v1", resData.token);
-              } catch {}
-            }
-          }
+          setTokenState(null);
           persistUser(userAccount);
           setAccounts((prev) => [userAccount, ...prev.filter((a) => a.id !== userAccount.id)]);
 
@@ -317,8 +298,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!trimmedEmail || !trimmedEmail.includes("@")) {
       return { success: false, error: "Please enter a valid email address." };
     }
-    if (!accountData.password || accountData.password.length < 6) {
-      return { success: false, error: "Password must be at least 6 characters long." };
+    if (!accountData.password || accountData.password.length < 8) {
+      return { success: false, error: "Password must be at least 8 characters long." };
     }
 
     // 1. Primary Signup via secure server backend (/api/auth/signup)
@@ -327,7 +308,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const serverRes = await fetch("/api/auth/signup", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Requested-With": "XMLHttpRequest",
+        },
         body: JSON.stringify({
           name: trimmedName,
           email: trimmedEmail,
@@ -420,14 +405,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       createdAt: serverResData?.user?.createdAt || new Date().toISOString(),
     };
 
-    if (serverResData?.token) {
-      setTokenState(serverResData.token);
-      if (typeof window !== "undefined") {
-        try {
-          localStorage.setItem("trip_expense_splitter_auth_token_v1", serverResData.token);
-        } catch {}
-      }
-    } else if (supabaseSessionToken) {
+    if (supabaseSessionToken) {
       setTokenState(supabaseSessionToken);
     }
 
@@ -521,12 +499,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const updatePassword = async (
     newPassword: string
   ): Promise<{ success: boolean; error?: string }> => {
-    if (!newPassword || newPassword.length < 6) {
-      return { success: false, error: "Password must be at least 6 characters long." };
+    if (!newPassword || newPassword.length < 8) {
+      return { success: false, error: "Password must be at least 8 characters long." };
     }
 
     let supabaseAccessToken = "";
-    let supabaseEmail = currentUser?.email || "";
     let supabaseUpdated = false;
 
     try {
@@ -534,39 +511,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (sessionData?.session?.access_token) {
         supabaseAccessToken = sessionData.session.access_token;
       }
-      if (sessionData?.session?.user?.email) {
-        supabaseEmail = sessionData.session.user.email;
-      }
 
-      const { data: updateData, error } = await supabase.auth.updateUser({
+      const { error } = await supabase.auth.updateUser({
         password: newPassword,
       });
 
       if (!error) {
         supabaseUpdated = true;
-        if (updateData?.user?.email) {
-          supabaseEmail = updateData.user.email;
-        }
-      } else if (!token && !supabaseAccessToken) {
-        return { success: false, error: error.message };
       }
-    } catch (err: any) {
-      if (!token && !supabaseAccessToken) {
-        return { success: false, error: err?.message || "Failed to update password." };
-      }
-    }
+    } catch {}
 
-    // Also synchronize the bcrypt password_hash and token_version in PostgreSQL public.users
+    // Synchronize the bcrypt password_hash and token_version in PostgreSQL public.users
     try {
-      const activeBearer =
-        token ||
-        supabaseAccessToken ||
-        (typeof window !== "undefined" ? localStorage.getItem("trip_expense_splitter_auth_token_v1") || "" : "");
+      const activeBearer = token || supabaseAccessToken || "";
 
       const resp = await fetch("/api/auth/update-password", {
         method: "POST",
+        credentials: "include",
         headers: {
           "Content-Type": "application/json",
+          "X-Requested-With": "XMLHttpRequest",
           ...(activeBearer ? { Authorization: `Bearer ${activeBearer}` } : {}),
         },
         body: JSON.stringify({
@@ -575,17 +539,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }),
       });
 
-      if (resp.ok) {
-        const data = await resp.json();
-        if (data?.token) {
-          setTokenState(data.token);
-          if (typeof window !== "undefined") {
-            try {
-              localStorage.setItem("trip_expense_splitter_auth_token_v1", data.token);
-            } catch {}
-          }
-        }
-      } else if (!supabaseUpdated) {
+      if (!resp.ok && !supabaseUpdated) {
         const errData = await resp.json().catch(() => ({}));
         return {
           success: false,
@@ -610,17 +564,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return { success: true };
   };
 
-  // Logout handler - thoroughly purge all session tokens and caches
+  // Logout handler - clears HttpOnly session cookie via server endpoint and local user state
   const logout = () => {
+    fetch("/api/auth/logout", {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "X-Requested-With": "XMLHttpRequest",
+      },
+    }).catch(() => {});
     supabase.auth.signOut().catch(() => {});
     persistUser(null);
     setTokenState(null);
     if (typeof window !== "undefined") {
       try {
         localStorage.removeItem(ACTIVE_USER_KEY);
-        localStorage.removeItem("trip_expense_splitter_auth_token_v1");
-        localStorage.removeItem("tripsplit_auth_token");
-        localStorage.removeItem("token");
         sessionStorage.clear();
       } catch {}
     }

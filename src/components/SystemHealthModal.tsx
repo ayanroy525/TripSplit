@@ -66,17 +66,11 @@ export const SystemHealthModal: React.FC<SystemHealthModalProps> = ({ isOpen, on
   const { token, currentUser } = useAuth();
 
   const getAuthHeaders = useCallback((): Record<string, string> => {
-    const storedServerToken =
-      typeof window !== "undefined"
-        ? localStorage.getItem("trip_expense_splitter_auth_token_v1") ||
-          localStorage.getItem("tripsplit_auth_token") ||
-          localStorage.getItem("token") ||
-          ""
-        : "";
-    const activeToken = storedServerToken || token || "";
-    const headers: Record<string, string> = {};
-    if (activeToken) {
-      headers.Authorization = `Bearer ${activeToken}`;
+    const headers: Record<string, string> = {
+      "X-Requested-With": "XMLHttpRequest",
+    };
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
     }
     if (currentUser?.email) {
       headers["X-Admin-Email"] = currentUser.email;
@@ -88,6 +82,7 @@ export const SystemHealthModal: React.FC<SystemHealthModalProps> = ({ isOpen, on
     try {
       setIsLoading(true);
       const res = await fetch("/api/health/history", {
+        credentials: "include",
         headers: getAuthHeaders(),
       });
       if (res.ok) {
@@ -109,6 +104,7 @@ export const SystemHealthModal: React.FC<SystemHealthModalProps> = ({ isOpen, on
   const fetchTelegramSettings = useCallback(async () => {
     try {
       const res = await fetch("/api/telegram/settings", {
+        credentials: "include",
         headers: getAuthHeaders(),
       });
       if (res.ok) {
@@ -140,6 +136,7 @@ export const SystemHealthModal: React.FC<SystemHealthModalProps> = ({ isOpen, on
     try {
       const res = await fetch("/api/health/run-check", {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json", ...getAuthHeaders() },
       });
       if (res.ok) {
@@ -173,6 +170,7 @@ export const SystemHealthModal: React.FC<SystemHealthModalProps> = ({ isOpen, on
     try {
       const res = await fetch("/api/telegram/settings", {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json", ...getAuthHeaders() },
         body: JSON.stringify({
           dailyEnabled: dailyTelegramEnabled,
@@ -199,6 +197,7 @@ export const SystemHealthModal: React.FC<SystemHealthModalProps> = ({ isOpen, on
     try {
       const res = await fetch("/api/telegram/test", {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json", ...getAuthHeaders() },
         body: JSON.stringify({
           chatId: chatId || undefined,
@@ -229,6 +228,7 @@ export const SystemHealthModal: React.FC<SystemHealthModalProps> = ({ isOpen, on
     setTelegramFeedback(null);
     try {
       const res = await fetch(`/api/telegram/webhook?url=${encodeURIComponent(webhookUrl)}`, {
+        credentials: "include",
         headers: getAuthHeaders(),
       });
       const data = await res.json();
@@ -255,6 +255,7 @@ export const SystemHealthModal: React.FC<SystemHealthModalProps> = ({ isOpen, on
     setTelegramFeedback(null);
     try {
       const res = await fetch("/api/telegram/detect-chat", {
+        credentials: "include",
         headers: getAuthHeaders(),
       });
       const data = await res.json();

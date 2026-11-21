@@ -1,5 +1,12 @@
 import { setCorsHeaders, sendJson, verifyAdminRequest } from "../_shared.js";
 import { getTelegramConfig, saveTelegramConfig, registerTelegramWebhook } from "./_client.js";
+import { z } from "zod";
+
+const settingsPostSchema = z.object({
+  dailyEnabled: z.boolean().optional(),
+  dailyReportEnabled: z.boolean().optional(),
+  webhookUrl: z.string().trim().url("Invalid webhook URL").max(512).optional().or(z.literal("")),
+});
 
 export default async function handler(req: any, res: any) {
   setCorsHeaders(res, req);
@@ -21,7 +28,6 @@ export default async function handler(req: any, res: any) {
       const config = await getTelegramConfig();
       const configured = Boolean(config.botToken && config.chatId);
 
-      // On Vercel, await webhook registration so serverless execution does not freeze before setWebhook completes
       if (configured && process.env.VERCEL) {
         const host = req.headers?.["x-forwarded-host"] || req.headers?.host;
         const proto = req.headers?.["x-forwarded-proto"] || "https";
@@ -34,8 +40,8 @@ export default async function handler(req: any, res: any) {
       return sendJson(res, 200, {
         configured,
       });
-    } catch (err: any) {
-      return sendJson(res, 500, { configured: false, error: err?.message });
+    } catch {
+      return sendJson(res, 500, { configured: false, error: "Failed to read Telegram settings" });
     }
   }
 
@@ -45,12 +51,22 @@ export default async function handler(req: any, res: any) {
       if (typeof body === "string") {
         try {
           body = JSON.parse(body);
-        } catch {}
+        } catch {
+          return sendJson(res, 400, { configured: false, error: "Invalid JSON body" });
+        }
       }
 
-      const { dailyEnabled, webhookUrl } = body || {};
+      const parsed = settingsPostSchema.safeParse(body || {});
+      if (!parsed.success) {
+        return sendJson(res, 400, {
+          configured: false,
+          error: parsed.error.issues?.[0]?.message || "Invalid Telegram settings payload",
+        });
+      }
+
+      const { dailyEnabled, dailyReportEnabled, webhookUrl } = parsed.data;
       const updated = await saveTelegramConfig({
-        dailyEnabled,
+        dailyEnabled: dailyEnabled ?? dailyReportEnabled,
         webhookUrl,
       });
 
@@ -61,8 +77,8 @@ export default async function handler(req: any, res: any) {
       return sendJson(res, 200, {
         configured: Boolean(updated.botToken && updated.chatId),
       });
-    } catch (err: any) {
-      return sendJson(res, 500, { configured: false, error: err?.message });
+    } catch {
+      return sendJson(res, 500, { configured: false, error: "Failed to update Telegram settings" });
     }
   }
 

@@ -10,6 +10,133 @@ function pdfMoney(n: number | undefined | null, prefix = "Rs. "): string {
   })}`;
 }
 
+function escapeXml(val: unknown): string {
+  return String(val ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function colIndexToLetter(colIdx: number): string {
+  let letter = "";
+  let n = colIdx + 1;
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    letter = String.fromCharCode(65 + rem) + letter;
+    n = Math.floor((n - 1) / 26);
+  }
+  return letter;
+}
+
+function buildWorksheetXml(rows: (string | number | undefined | null)[][], colWidths: number[]): string {
+  const colsXml =
+    colWidths.length > 0
+      ? `<cols>${colWidths
+          .map((w, idx) => `<col min="${idx + 1}" max="${idx + 1}" width="${w}" customWidth="1"/>`)
+          .join("")}</cols>`
+      : "";
+  const sheetDataXml = rows
+    .map((row, rIdx) => {
+      const cells = row
+        .map((cell, cIdx) => {
+          if (cell === undefined || cell === null || cell === "") return "";
+          const ref = `${colIndexToLetter(cIdx)}${rIdx + 1}`;
+          if (typeof cell === "number" && Number.isFinite(cell)) {
+            return `<c r="${ref}"><v>${cell}</v></c>`;
+          }
+          return `<c r="${ref}" t="inlineStr"><is><t>${escapeXml(cell)}</t></is></c>`;
+        })
+        .join("");
+      return `<row r="${rIdx + 1}">${cells}</row>`;
+    })
+    .join("");
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">${colsXml}<sheetData>${sheetDataXml}</sheetData></worksheet>`;
+}
+
+function crc32(bytes: Uint8Array): number {
+  let c = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) {
+    c ^= bytes[i];
+    for (let k = 0; k < 8; k++) {
+      c = (c >>> 1) ^ (0xedb88320 & -(c & 1));
+    }
+  }
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+function buildStoredZip(files: { name: string; content: string }[]): Uint8Array {
+  const encoder = new TextEncoder();
+  const entries = files.map((f) => {
+    const nameBytes = encoder.encode(f.name);
+    const dataBytes = encoder.encode(f.content);
+    return { nameBytes, dataBytes, crc: crc32(dataBytes) };
+  });
+
+  let localSize = 0;
+  let centralSize = 0;
+  for (const e of entries) {
+    localSize += 30 + e.nameBytes.length + e.dataBytes.length;
+    centralSize += 46 + e.nameBytes.length;
+  }
+
+  const out = new Uint8Array(localSize + centralSize + 22);
+  const view = new DataView(out.buffer);
+  let localOffset = 0;
+  let centralOffset = localSize;
+
+  for (const e of entries) {
+    const entryOffset = localOffset;
+    view.setUint32(localOffset, 0x04034b50, true);
+    view.setUint16(localOffset + 4, 20, true);
+    view.setUint16(localOffset + 6, 0, true);
+    view.setUint16(localOffset + 8, 0, true);
+    view.setUint16(localOffset + 10, 0, true);
+    view.setUint16(localOffset + 12, 0, true);
+    view.setUint32(localOffset + 14, e.crc, true);
+    view.setUint32(localOffset + 18, e.dataBytes.length, true);
+    view.setUint32(localOffset + 22, e.dataBytes.length, true);
+    view.setUint16(localOffset + 26, e.nameBytes.length, true);
+    view.setUint16(localOffset + 28, 0, true);
+    out.set(e.nameBytes, localOffset + 30);
+    out.set(e.dataBytes, localOffset + 30 + e.nameBytes.length);
+    localOffset += 30 + e.nameBytes.length + e.dataBytes.length;
+
+    view.setUint32(centralOffset, 0x02014b50, true);
+    view.setUint16(centralOffset + 4, 20, true);
+    view.setUint16(centralOffset + 6, 20, true);
+    view.setUint16(centralOffset + 8, 0, true);
+    view.setUint16(centralOffset + 10, 0, true);
+    view.setUint16(centralOffset + 12, 0, true);
+    view.setUint16(centralOffset + 14, 0, true);
+    view.setUint32(centralOffset + 16, e.crc, true);
+    view.setUint32(centralOffset + 20, e.dataBytes.length, true);
+    view.setUint32(centralOffset + 24, e.dataBytes.length, true);
+    view.setUint16(centralOffset + 28, e.nameBytes.length, true);
+    view.setUint16(centralOffset + 30, 0, true);
+    view.setUint16(centralOffset + 32, 0, true);
+    view.setUint16(centralOffset + 34, 0, true);
+    view.setUint16(centralOffset + 36, 0, true);
+    view.setUint32(centralOffset + 38, 0, true);
+    view.setUint32(centralOffset + 42, entryOffset, true);
+    out.set(e.nameBytes, centralOffset + 46);
+    centralOffset += 46 + e.nameBytes.length;
+  }
+
+  view.setUint32(centralOffset, 0x06054b50, true);
+  view.setUint16(centralOffset + 4, 0, true);
+  view.setUint16(centralOffset + 6, 0, true);
+  view.setUint16(centralOffset + 8, entries.length, true);
+  view.setUint16(centralOffset + 10, entries.length, true);
+  view.setUint32(centralOffset + 12, centralSize, true);
+  view.setUint32(centralOffset + 16, localSize, true);
+  view.setUint16(centralOffset + 20, 0, true);
+
+  return out;
+}
+
 /**
  * Generates and downloads a rich, multi-sheet Excel (.xlsx) workbook for the trip.
  */
@@ -20,12 +147,9 @@ export async function exportTripToExcel(
   netBalances: Record<string, number>,
   simplifiedDebts: SimplifiedDebt[]
 ) {
-  const XLSX = await import("xlsx");
   const memberMap = new Map(members.map((m) => [m.id, m.name]));
   const activeExpenses = (trip.expenses || []).filter((e) => !e.deleted);
   const totalSpend = activeExpenses.reduce((s, e) => s + e.amount, 0);
-
-  const wb = XLSX.utils.book_new();
 
   // --- SHEET 1: Trip Overview & Balances ---
   const overviewData = [
@@ -54,18 +178,6 @@ export async function exportTripToExcel(
       ];
     }),
   ];
-
-  const wsOverview = XLSX.utils.aoa_to_sheet(overviewData);
-  wsOverview["!cols"] = [
-    { wch: 22 },
-    { wch: 18 },
-    { wch: 18 },
-    { wch: 16 },
-    { wch: 16 },
-    { wch: 16 },
-    { wch: 22 },
-  ];
-  XLSX.utils.book_append_sheet(wb, wsOverview, "Trip Overview & Balances");
 
   // --- SHEET 2: Expenses Ledger ---
   const expensesHeader = [
@@ -99,20 +211,6 @@ export async function exportTripToExcel(
     ];
   });
 
-  const wsExpenses = XLSX.utils.aoa_to_sheet([expensesHeader, ...expensesData]);
-  wsExpenses["!cols"] = [
-    { wch: 14 },
-    { wch: 28 },
-    { wch: 15 },
-    { wch: 14 },
-    { wch: 14 },
-    { wch: 18 },
-    { wch: 14 },
-    { wch: 40 },
-    { wch: 25 },
-  ];
-  XLSX.utils.book_append_sheet(wb, wsExpenses, "Expenses Ledger");
-
   // --- SHEET 3: Simplified Settlements ---
   const settlementsHeader = ["Payer (Owes)", "Receiver (Gets Back)", "Amount (₹)", "Status"];
   const settlementsData =
@@ -129,14 +227,67 @@ export async function exportTripToExcel(
           ];
         });
 
-  const wsSettlements = XLSX.utils.aoa_to_sheet([settlementsHeader, ...settlementsData]);
-  wsSettlements["!cols"] = [{ wch: 20 }, { wch: 22 }, { wch: 14 }, { wch: 20 }];
-  XLSX.utils.book_append_sheet(wb, wsSettlements, "Settlements Matrix");
+  const sheets = [
+    { name: "Trip Overview & Balances", xml: buildWorksheetXml(overviewData, [22, 18, 18, 16, 16, 16, 22]) },
+    { name: "Expenses Ledger", xml: buildWorksheetXml([expensesHeader, ...expensesData], [14, 28, 15, 14, 14, 18, 14, 40, 25]) },
+    { name: "Settlements Matrix", xml: buildWorksheetXml([settlementsHeader, ...settlementsData], [20, 22, 14, 20]) },
+  ];
 
-  // Generate binary and trigger browser download
+  const zipBytes = buildStoredZip([
+    {
+      name: "[Content_Types].xml",
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  ${sheets.map((_, idx) => `<Override PartName="/xl/worksheets/sheet${idx + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join("\n  ")}
+</Types>`,
+    },
+    {
+      name: "_rels/.rels",
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`,
+    },
+    {
+      name: "xl/workbook.xml",
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    ${sheets.map((s, idx) => `<sheet name="${escapeXml(s.name)}" sheetId="${idx + 1}" r:id="rId${idx + 1}"/>`).join("\n    ")}
+  </sheets>
+</workbook>`,
+    },
+    {
+      name: "xl/_rels/workbook.xml.rels",
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  ${sheets.map((_, idx) => `<Relationship Id="rId${idx + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${idx + 1}.xml"/>`).join("\n  ")}
+</Relationships>`,
+    },
+    ...sheets.map((s, idx) => ({
+      name: `xl/worksheets/sheet${idx + 1}.xml`,
+      content: s.xml,
+    })),
+  ]);
+
   const cleanTitle = (trip.title || "trip").replace(/[^a-zA-Z0-9_-]/g, "_");
   const fileName = `${cleanTitle}_Expense_Report_${new Date().toISOString().split("T")[0]}.xlsx`;
-  XLSX.writeFile(wb, fileName);
+  if (typeof document !== "undefined") {
+    const blob = new Blob([zipBytes], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }
 }
 
 /**

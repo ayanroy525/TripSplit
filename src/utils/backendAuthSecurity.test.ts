@@ -141,6 +141,7 @@ describe("Backend Authorization & IDOR Security Guard", () => {
 
   it("rejects unauthenticated requests to all admin, cron, telegram, sync, and unknown API endpoints with 401", async () => {
     const protectedEndpoints = [
+      { method: "GET", path: "/api/health" },
       { method: "GET", path: "/api/db/status" },
       { method: "GET", path: "/api/health/history" },
       { method: "POST", path: "/api/health/run-check" },
@@ -174,6 +175,7 @@ describe("Backend Authorization & IDOR Security Guard", () => {
   it("rejects authenticated non-admin user from accessing admin and diagnostic endpoints with 403", async () => {
     const nonAdminToken = generateTestToken("regular_user_123", "regular.traveler@example.com", "Regular User");
     const adminEndpoints = [
+      { method: "GET", path: "/api/health" },
       { method: "GET", path: "/api/db/status" },
       { method: "GET", path: "/api/health/history" },
       { method: "POST", path: "/api/health/run-check" },
@@ -190,6 +192,7 @@ describe("Backend Authorization & IDOR Security Guard", () => {
         method: ep.method,
         headers: {
           Authorization: `Bearer ${nonAdminToken}`,
+          "X-Requested-With": "XMLHttpRequest",
         },
       });
       expect(res.status, `Expected 403 on ${ep.method} ${ep.path} for non-admin`).toBe(403);
@@ -223,6 +226,7 @@ describe("Backend Authorization & IDOR Security Guard", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        "X-Requested-With": "XMLHttpRequest",
         Authorization: `Bearer ${attackerToken}`,
       },
       body: JSON.stringify({
@@ -250,7 +254,10 @@ describe("Backend Authorization & IDOR Security Guard", () => {
 
     const lookupRes = await fetch(`${baseUrl}/api/trips/invite/lookup`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "X-Requested-With": "XMLHttpRequest",
+      },
       body: JSON.stringify({ inviteCode: tripId }),
     });
     expect(lookupRes.status).toBe(404);
@@ -270,6 +277,7 @@ describe("Backend Authorization & IDOR Security Guard", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "X-Requested-With": "XMLHttpRequest",
           Authorization: `Bearer ${ownerToken}`,
         },
         body: JSON.stringify({
@@ -300,6 +308,7 @@ describe("Backend Authorization & IDOR Security Guard", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "X-Requested-With": "XMLHttpRequest",
           Authorization: `Bearer ${ownerToken}`,
         },
         body: JSON.stringify({
@@ -332,6 +341,7 @@ describe("Backend Authorization & IDOR Security Guard", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "X-Requested-With": "XMLHttpRequest",
           Authorization: `Bearer ${partToken}`,
         },
         body: JSON.stringify({
@@ -347,6 +357,7 @@ describe("Backend Authorization & IDOR Security Guard", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "X-Requested-With": "XMLHttpRequest",
           Authorization: `Bearer ${partToken}`,
         },
         body: JSON.stringify({
@@ -362,6 +373,7 @@ describe("Backend Authorization & IDOR Security Guard", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "X-Requested-With": "XMLHttpRequest",
           Authorization: `Bearer ${partToken}`,
         },
         body: JSON.stringify({
@@ -376,6 +388,7 @@ describe("Backend Authorization & IDOR Security Guard", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "X-Requested-With": "XMLHttpRequest",
           Authorization: `Bearer ${partToken}`,
         },
         body: JSON.stringify({

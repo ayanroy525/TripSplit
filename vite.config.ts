@@ -105,7 +105,6 @@ export default defineConfig(() => {
             'vendor-ui': ['lucide-react', 'motion', 'canvas-confetti'],
             'vendor-charts': ['recharts'],
             'vendor-pdf': ['jspdf', 'jspdf-autotable'],
-            'vendor-xlsx': ['xlsx'],
           },
         },
       },

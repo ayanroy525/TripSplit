@@ -37,25 +37,21 @@ let isSyncingInternal = false;
 let lastErrorInternal: string | null = null;
 
 /**
- * Retrieve authorization headers from stored session token
+ * Retrieve request headers for server API calls.
+ * Authentication uses the HttpOnly session cookie (via credentials: "include")
+ * and includes X-Requested-With for CSRF protection on state-changing requests.
  */
 export function getAuthHeaders(includeContentType = true): Record<string, string> {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = {
+    "X-Requested-With": "XMLHttpRequest",
+  };
   if (includeContentType) {
     headers["Content-Type"] = "application/json";
   }
-  if (typeof window !== "undefined") {
-    try {
-      const token =
-        localStorage.getItem("trip_expense_splitter_auth_token_v1") ||
-        localStorage.getItem("tripsplit_auth_token") ||
-        localStorage.getItem("token");
-      if (token) {
-        headers["Authorization"] = `Bearer ${token}`;
-      }
-    } catch {}
-  } else if (typeof globalThis !== "undefined" && (globalThis as any).__TRIPSPLIT_TEST_AUTH_TOKEN__) {
-    headers["Authorization"] = `Bearer ${(globalThis as any).__TRIPSPLIT_TEST_AUTH_TOKEN__}`;
+  if (typeof globalThis !== "undefined" && (globalThis as any).__TRIPSPLIT_TEST_AUTH_TOKEN__) {
+    const testToken = String((globalThis as any).__TRIPSPLIT_TEST_AUTH_TOKEN__);
+    headers["Cookie"] = `tripsplit_session=${encodeURIComponent(testToken)}`;
+    headers["Authorization"] = `Bearer ${testToken}`;
   }
   return headers;
 }
@@ -228,6 +224,7 @@ async function executeMutation(mutation: QueuedMutation): Promise<boolean> {
 
   const res = await fetch(getApiUrl("/api/sync/mutation"), {
     method: "POST",
+    credentials: "include",
     headers: getAuthHeaders(true),
     body: JSON.stringify({ type, tripId, payload }),
   });

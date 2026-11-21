@@ -1,6 +1,7 @@
 import {
   pool,
   verifyAuthRequest,
+  verifyCsrfRequest,
   checkTripAuthorization,
   sanitizeReceiptUrl,
   setCorsHeaders,
@@ -11,7 +12,109 @@ import {
   generateSecureInviteCode,
   getDefaultInviteExpiryIso,
   linkUserToTripMembersInDb,
+  checkRateLimit,
+  sendRateLimitExceeded,
+  getClientIp,
+  logSecurityEvent,
+  safeIdSchema,
+  inviteCodeSchema,
+  amountSchema,
+  splitMethodSchema,
+  currencySchema,
 } from "../_shared.js";
+import { z } from "zod";
+
+const tripStatusAllowlist = new Set(["ACTIVE", "SETTLED", "ARCHIVED", "COMPLETED", "PLANNING", "active", "settled", "archived"]);
+const memberRoleAllowlist = new Set(["owner", "admin", "member", "participant", "editor", "viewer"]);
+const memberStatusAllowlist = new Set(["accepted", "pending", "invited", "active", "removed"]);
+const paymentStatusAllowlist = new Set(["pending", "confirmed", "cancelled", "completed", "settled"]);
+
+function validateTripPayload(trip: any): string | null {
+  if (!trip || typeof trip !== "object") return "Invalid trip payload";
+  const title = trip.title ?? trip.name;
+  if (title !== undefined && (typeof title !== "string" || title.trim().length === 0 || title.trim().length > 160)) {
+    return "Trip title must be between 1 and 160 characters";
+  }
+  if (trip.location !== undefined && trip.location !== null && (typeof trip.location !== "string" || trip.location.length > 160)) {
+    return "Trip location cannot exceed 160 characters";
+  }
+  if (trip.currency !== undefined && !currencySchema.safeParse(trip.currency).success) {
+    return "Invalid currency code";
+  }
+  if (trip.status !== undefined && !tripStatusAllowlist.has(String(trip.status))) {
+    return "Invalid trip status";
+  }
+  if (trip.budget !== undefined && trip.budget !== null && !amountSchema.safeParse(Number(trip.budget)).success) {
+    return "Invalid trip budget amount";
+  }
+  return null;
+}
+
+function validateExpensePayload(expense: any): string | null {
+  if (!expense || typeof expense !== "object") return "Invalid expense payload";
+  if (expense.title !== undefined && (typeof expense.title !== "string" || expense.title.trim().length === 0 || expense.title.trim().length > 160)) {
+    return "Expense title must be between 1 and 160 characters";
+  }
+  const numAmount = typeof expense.amount === "number" ? expense.amount : Number(expense.amount);
+  if (expense.amount === undefined || expense.amount === null || typeof expense.amount === "boolean" || !amountSchema.safeParse(numAmount).success) {
+    return "Expense amount must be a valid number between 0 and 100,000,000";
+  }
+  if (expense.method !== undefined && !splitMethodSchema.safeParse(expense.method).success) {
+    return "Invalid expense split method";
+  }
+  if (expense.splitType !== undefined && !splitMethodSchema.safeParse(expense.splitType).success) {
+    return "Invalid expense split type";
+  }
+  if (expense.notes !== undefined && expense.notes !== null && (typeof expense.notes !== "string" || expense.notes.length > 1000)) {
+    return "Expense notes cannot exceed 1000 characters";
+  }
+  if (expense.category !== undefined && (typeof expense.category !== "string" || expense.category.length > 64)) {
+    return "Invalid expense category";
+  }
+  return null;
+}
+
+function validatePaymentPayload(payment: any): string | null {
+  if (!payment || typeof payment !== "object") return "Invalid payment payload";
+  if (payment.amount !== undefined && payment.amount !== null) {
+    const numAmount = typeof payment.amount === "number" ? payment.amount : Number(payment.amount);
+    if (typeof payment.amount === "boolean" || !amountSchema.safeParse(numAmount).success) {
+      return "Payment amount must be a valid number between 0 and 100,000,000";
+    }
+  }
+  if (payment.status !== undefined && !paymentStatusAllowlist.has(String(payment.status).toLowerCase())) {
+    return "Invalid payment status";
+  }
+  if (payment.note !== undefined && payment.note !== null && (typeof payment.note !== "string" || payment.note.length > 500)) {
+    return "Payment note cannot exceed 500 characters";
+  }
+  if (payment.method !== undefined && payment.method !== null && (typeof payment.method !== "string" || payment.method.length > 64)) {
+    return "Invalid payment method";
+  }
+  return null;
+}
+
+function validateMemberPayload(member: any): string | null {
+  if (!member || typeof member !== "object") return "Invalid member payload";
+  if (member.name !== undefined && (typeof member.name !== "string" || member.name.trim().length === 0 || member.name.trim().length > 100)) {
+    return "Member name must be between 1 and 100 characters";
+  }
+  if (member.role !== undefined && !memberRoleAllowlist.has(String(member.role).toLowerCase())) {
+    return "Invalid member role";
+  }
+  if (member.status !== undefined && !memberStatusAllowlist.has(String(member.status).toLowerCase())) {
+    return "Invalid member status";
+  }
+  if (member.email !== undefined && member.email !== null && String(member.email).trim() !== "") {
+    if (!z.string().email().max(160).safeParse(String(member.email).trim()).success) {
+      return "Invalid member email address";
+    }
+  }
+  if (member.phone !== undefined && member.phone !== null && String(member.phone).length > 30) {
+    return "Member phone number is too long";
+  }
+  return null;
+}
 
 function normalizeInviteCodeInput(rawInput: any): string {
   let raw = String(rawInput || "").trim();
@@ -247,6 +350,8 @@ export default async function handler(req: any, res: any) {
     }
   }
 
+  const clientIp = getClientIp(req);
+
   // 1. Handle Invite Lookup (/api/trips/invite/lookup or /api/trips/invite/:code) - Unauthenticated
   if (
     queryAction === "invite-lookup" ||
@@ -254,10 +359,33 @@ export default async function handler(req: any, res: any) {
     pathname.includes("/api/trips/invite/lookup") ||
     (req.method === "GET" && pathname.includes("/api/trips/invite/"))
   ) {
+    if (req.method !== "GET" && req.method !== "POST") {
+      return sendJson(res, 405, { success: false, error: "Method Not Allowed" });
+    }
+    if (req.method === "POST") {
+      const csrf = verifyCsrfRequest(req);
+      if (!csrf.valid) {
+        return sendJson(res, 403, { success: false, error: csrf.error || "CSRF validation failed" });
+      }
+    }
+
+    const lookupRate = await checkRateLimit(`invite_lookup_ip_${clientIp}`, 15, 5 * 60 * 1000);
+    if (!lookupRate.allowed) {
+      logSecurityEvent("RATE_LIMIT_EXCEEDED", { scope: "invite-lookup", ip: clientIp });
+      return sendRateLimitExceeded(
+        res,
+        lookupRate.retryAfterSec,
+        "Too many invite code lookups. Please try again later."
+      );
+    }
+
     const rawCode = body?.inviteCode || req.query?.code || (tripIdParam !== "invite-lookup" ? tripIdParam : "");
     const clean = normalizeInviteCodeInput(rawCode);
     if (!clean) {
       return sendJson(res, 400, { success: false, error: "Please enter an invite code." });
+    }
+    if (!inviteCodeSchema.safeParse(clean).success) {
+      return sendJson(res, 400, { success: false, error: "Invalid invite code format." });
     }
 
     if (pool) {
@@ -298,8 +426,7 @@ export default async function handler(req: any, res: any) {
             error: `Invite code '${clean}' is invalid or expired. Please check with your trip organizer.`,
           });
         }
-      } catch (err: any) {
-        console.warn("PostgreSQL invite lookup notice:", err?.message || err);
+      } catch {
         if (process.env.NODE_ENV === "production") {
           return sendJson(res, 503, { success: false, error: "Database unavailable" });
         }
@@ -351,17 +478,45 @@ export default async function handler(req: any, res: any) {
     pathname.includes("/api/trips/invite/join") ||
     pathname.includes("/api/trips/join")
   ) {
-    const { inviteCode, user } = body || {};
-    const clean = normalizeInviteCodeInput(inviteCode);
+    if (req.method !== "POST") {
+      return sendJson(res, 405, { success: false, error: "Method Not Allowed" });
+    }
+    const csrf = verifyCsrfRequest(req);
+    if (!csrf.valid) {
+      return sendJson(res, 403, { success: false, error: csrf.error || "CSRF validation failed" });
+    }
+
+    const joinRate = await checkRateLimit(`invite_join_ip_${clientIp}`, 10, 5 * 60 * 1000);
+    if (!joinRate.allowed) {
+      logSecurityEvent("RATE_LIMIT_EXCEEDED", { scope: "invite-join", ip: clientIp });
+      return sendRateLimitExceeded(
+        res,
+        joinRate.retryAfterSec,
+        "Too many invite join attempts. Please try again later."
+      );
+    }
+
+    const { inviteCode, code, user } = body || {};
+    const clean = normalizeInviteCodeInput(inviteCode || code);
 
     const authHeader = String(req.headers?.authorization || req.headers?.Authorization || "");
+    const cookieHeader = String(req.headers?.cookie || req.headers?.Cookie || "");
     let userId = "";
-    if (authHeader.startsWith("Bearer ")) {
+    if (cookieHeader || authHeader.startsWith("Bearer ")) {
       const authResult = await verifyAuthRequest(req);
       if (!authResult.authorized || !authResult.userId) {
-        return sendJson(res, 401, { success: false, error: authResult.error || "Invalid or expired token" });
+        return sendJson(res, authResult.statusCode || 401, {
+          success: false,
+          error: authResult.error || "Invalid or expired token",
+        });
       }
       if (user?.id && authResult.userId !== user.id) {
+        logSecurityEvent("PERMISSION_DENIED", {
+          scope: "invite-join-impersonation",
+          userId: authResult.userId,
+          targetUserId: user.id,
+          ip: clientIp,
+        });
         return sendJson(res, 403, { success: false, error: "Cannot join trip as another user" });
       }
       userId = authResult.userId;
@@ -371,15 +526,18 @@ export default async function handler(req: any, res: any) {
       userId = user?.id || user?.userId || "";
     }
 
-    const userName = (user?.name || "Traveler").trim();
-    const userEmail = (user?.email || "").trim().toLowerCase();
-    const userPhone = (user?.phone || "").trim();
-    const userAvatar = user?.avatarColor || "#0F6B65";
+    const userName = String(user?.name || "Traveler").trim().slice(0, 100);
+    const userEmail = String(user?.email || "").trim().toLowerCase().slice(0, 160);
+    const userPhone = String(user?.phone || "").trim().slice(0, 30);
+    const userAvatar = String(user?.avatarColor || "#0F6B65").slice(0, 64);
 
     if (!clean) {
       return sendJson(res, 400, { success: false, error: "Invite code is required." });
     }
-    if (!userId) {
+    if (!inviteCodeSchema.safeParse(clean).success) {
+      return sendJson(res, 400, { success: false, error: "Invalid invite code format." });
+    }
+    if (!userId || !safeIdSchema.safeParse(userId).success) {
       return sendJson(res, 400, { success: false, error: "Please log in before joining a trip." });
     }
 
@@ -693,11 +851,15 @@ export default async function handler(req: any, res: any) {
       (tripIdParam && tripIdParam !== "trips-root" ? tripIdParam : "") || trip.id || body?.tripId || ""
     ).trim();
 
-    if (!targetTripId) {
-      return sendJson(res, 400, { success: false, error: "Trip id is required" });
+    if (!targetTripId || !safeIdSchema.safeParse(targetTripId).success) {
+      return sendJson(res, 400, { success: false, error: "Valid trip id is required" });
     }
     if (trip.id && trip.id !== targetTripId) {
       return sendJson(res, 400, { success: false, error: "Trip ID mismatch in payload" });
+    }
+    const tripValidationErr = validateTripPayload(trip);
+    if (tripValidationErr) {
+      return sendJson(res, 400, { success: false, error: tripValidationErr });
     }
 
     let tripExists = false;
@@ -707,7 +869,7 @@ export default async function handler(req: any, res: any) {
           targetTripId,
         ]);
         tripExists = existsRes.rows.length > 0;
-      } catch (err: any) {
+      } catch {
         if (process.env.NODE_ENV === "production") {
           return sendJson(res, 503, { success: false, error: "Database unavailable" });
         }
@@ -719,6 +881,12 @@ export default async function handler(req: any, res: any) {
 
     if (!tripExists) {
       if (trip.ownerId && trip.ownerId !== userId) {
+        logSecurityEvent("PERMISSION_DENIED", {
+          scope: "create-trip-owner-mismatch",
+          userId,
+          tripId: targetTripId,
+          ip: clientIp,
+        });
         return sendJson(res, 403, {
           success: false,
           error: "Access denied: Cannot create a trip owned by another user.",
@@ -727,12 +895,24 @@ export default async function handler(req: any, res: any) {
     } else {
       const authCheck = await checkTripAuthorization(targetTripId, userId, pool);
       if (!authCheck.canAccess) {
+        logSecurityEvent("PERMISSION_DENIED", {
+          scope: "update-trip",
+          userId,
+          tripId: targetTripId,
+          ip: clientIp,
+        });
         return sendJson(res, 403, {
           success: false,
           error: "Access denied: You are not a member of this trip.",
         });
       }
       if (authCheck.role === "viewer") {
+        logSecurityEvent("PERMISSION_DENIED", {
+          scope: "viewer-write-trip",
+          userId,
+          tripId: targetTripId,
+          ip: clientIp,
+        });
         return sendJson(res, 403, {
           success: false,
           error: "Access denied: Viewers have read-only access to this trip.",
@@ -842,8 +1022,7 @@ export default async function handler(req: any, res: any) {
         }
 
         return sendJson(res, 200, { success: true, tripId: targetTripId });
-      } catch (err: any) {
-        console.error("Error in POST /api/trips:", err?.message || err);
+      } catch {
         if (process.env.NODE_ENV === "production") {
           return sendJson(res, 503, { success: false, error: "Database unavailable" });
         }
@@ -867,13 +1046,21 @@ export default async function handler(req: any, res: any) {
   }
 
   const tripId = tripIdParam;
-  if (!tripId) {
-    return sendJson(res, 400, { success: false, error: "tripId is required" });
+  if (!tripId || !safeIdSchema.safeParse(tripId).success) {
+    return sendJson(res, 400, { success: false, error: "Valid tripId is required" });
   }
 
   // Verify the caller is a member of the trip before any read or write
   const authCheck = await checkTripAuthorization(tripId, userId, pool);
   if (!authCheck.canAccess) {
+    logSecurityEvent("PERMISSION_DENIED", {
+      scope: "trip-access",
+      userId,
+      tripId,
+      method: req.method,
+      resource: resourceParam || "trip",
+      ip: clientIp,
+    });
     return sendJson(res, 403, {
       success: false,
       error: "Access denied. You are not a member of this trip.",
@@ -885,6 +1072,13 @@ export default async function handler(req: any, res: any) {
   // 5. Handle Sub-resource Endpoints: /api/trips/:tripId/(expenses|payments|trip_members|members|activities)
   if (resourceParam) {
     if (authCheck.role === "viewer" && req.method !== "GET") {
+      logSecurityEvent("PERMISSION_DENIED", {
+        scope: "viewer-write-resource",
+        userId,
+        tripId,
+        resource: resourceParam,
+        ip: clientIp,
+      });
       return sendJson(res, 403, {
         success: false,
         error: "Access denied: Viewers have read-only access to this trip.",
@@ -896,10 +1090,14 @@ export default async function handler(req: any, res: any) {
       if (req.method === "POST" || req.method === "PUT") {
         const expense = body?.expense || body || {};
         const expenseId = String(itemIdParam || expense.id || "").trim();
-        if (!expenseId) {
-          return sendJson(res, 400, { success: false, error: "Expense id is required" });
+        if (!expenseId || !safeIdSchema.safeParse(expenseId).success) {
+          return sendJson(res, 400, { success: false, error: "Valid expense id is required" });
         }
         expense.id = expenseId;
+        const expErr = validateExpensePayload(expense);
+        if (expErr) {
+          return sendJson(res, 400, { success: false, error: expErr });
+        }
 
         if (!isTripAdmin && pool) {
           const existingExpRes = await pool.query(
@@ -920,6 +1118,13 @@ export default async function handler(req: any, res: any) {
             const isExpenseOwner =
               row.created_by === userId || row.paid_by === userId || Boolean(row.is_member_owner);
             if (!isExpenseOwner) {
+              logSecurityEvent("PERMISSION_DENIED", {
+                scope: "edit-others-expense",
+                userId,
+                tripId,
+                expenseId,
+                ip: clientIp,
+              });
               return sendJson(res, 403, {
                 success: false,
                 error: "Access denied: Participants can only edit their own expenses.",
@@ -935,8 +1140,7 @@ export default async function handler(req: any, res: any) {
               await insertActivityInDb(tripId, body.activity, userId);
             }
             return sendJson(res, 200, { success: true, expenseId });
-          } catch (err: any) {
-            console.error("Error saving expense:", err?.message || err);
+          } catch {
             if (process.env.NODE_ENV === "production") {
               return sendJson(res, 503, { success: false, error: "Database unavailable" });
             }
@@ -954,8 +1158,8 @@ export default async function handler(req: any, res: any) {
 
       if (req.method === "DELETE") {
         const expenseId = String(itemIdParam || req.query?.expenseId || body?.expenseId || body?.id || "").trim();
-        if (!expenseId) {
-          return sendJson(res, 400, { success: false, error: "expenseId is required" });
+        if (!expenseId || !safeIdSchema.safeParse(expenseId).success) {
+          return sendJson(res, 400, { success: false, error: "Valid expenseId is required" });
         }
 
         if (!isTripAdmin && pool) {
@@ -977,6 +1181,13 @@ export default async function handler(req: any, res: any) {
             const isExpenseOwner =
               row.created_by === userId || row.paid_by === userId || Boolean(row.is_member_owner);
             if (!isExpenseOwner) {
+              logSecurityEvent("PERMISSION_DENIED", {
+                scope: "delete-others-expense",
+                userId,
+                tripId,
+                expenseId,
+                ip: clientIp,
+              });
               return sendJson(res, 403, {
                 success: false,
                 error: "Access denied: Participants can only delete their own expenses.",
@@ -995,8 +1206,7 @@ export default async function handler(req: any, res: any) {
               await insertActivityInDb(tripId, body.activity, userId);
             }
             return sendJson(res, 200, { success: true, expenseId });
-          } catch (err: any) {
-            console.error("Error deleting expense:", err?.message || err);
+          } catch {
             if (process.env.NODE_ENV === "production") {
               return sendJson(res, 503, { success: false, error: "Database unavailable" });
             }
@@ -1017,10 +1227,14 @@ export default async function handler(req: any, res: any) {
       if (req.method === "POST" || req.method === "PUT") {
         const payment = body?.payment || body || {};
         const paymentId = String(itemIdParam || payment.id || "").trim();
-        if (!paymentId) {
-          return sendJson(res, 400, { success: false, error: "Payment id is required" });
+        if (!paymentId || !safeIdSchema.safeParse(paymentId).success) {
+          return sendJson(res, 400, { success: false, error: "Valid payment id is required" });
         }
         payment.id = paymentId;
+        const payErr = validatePaymentPayload(payment);
+        if (payErr) {
+          return sendJson(res, 400, { success: false, error: payErr });
+        }
 
         if (pool) {
           try {
@@ -1029,8 +1243,7 @@ export default async function handler(req: any, res: any) {
               await insertActivityInDb(tripId, body.activity, userId);
             }
             return sendJson(res, 200, { success: true, paymentId });
-          } catch (err: any) {
-            console.error("Error saving payment:", err?.message || err);
+          } catch {
             if (process.env.NODE_ENV === "production") {
               return sendJson(res, 503, { success: false, error: "Database unavailable" });
             }
@@ -1047,16 +1260,15 @@ export default async function handler(req: any, res: any) {
 
       if (req.method === "DELETE") {
         const paymentId = String(itemIdParam || req.query?.paymentId || body?.paymentId || body?.id || "").trim();
-        if (!paymentId) {
-          return sendJson(res, 400, { success: false, error: "paymentId is required" });
+        if (!paymentId || !safeIdSchema.safeParse(paymentId).success) {
+          return sendJson(res, 400, { success: false, error: "Valid paymentId is required" });
         }
 
         if (pool) {
           try {
             await pool.query("DELETE FROM public.payments WHERE id = $1 AND trip_id = $2;", [paymentId, tripId]);
             return sendJson(res, 200, { success: true, paymentId });
-          } catch (err: any) {
-            console.error("Error deleting payment:", err?.message || err);
+          } catch {
             if (process.env.NODE_ENV === "production") {
               return sendJson(res, 503, { success: false, error: "Database unavailable" });
             }
@@ -1075,9 +1287,22 @@ export default async function handler(req: any, res: any) {
       if (req.method === "POST" || req.method === "PUT") {
         const member = body?.member || body || {};
         const memId = String(itemIdParam || member.id || member.userId || `m_${Date.now()}`).trim();
+        if (!safeIdSchema.safeParse(memId).success) {
+          return sendJson(res, 400, { success: false, error: "Valid member id is required" });
+        }
+        const memErr = validateMemberPayload(member);
+        if (memErr) {
+          return sendJson(res, 400, { success: false, error: memErr });
+        }
         const requestedRole = String(member.role || "participant").toLowerCase();
 
         if (!isTripAdmin && (requestedRole === "admin" || requestedRole === "owner")) {
+          logSecurityEvent("PERMISSION_DENIED", {
+            scope: "promote-member-role",
+            userId,
+            tripId,
+            ip: clientIp,
+          });
           return sendJson(res, 403, {
             success: false,
             error: "Access denied: Participants cannot promote members to admin.",
@@ -1091,7 +1316,6 @@ export default async function handler(req: any, res: any) {
 
         if (pool) {
           try {
-            // Smart User-Member Linking: check if phone or email matches an existing registered user
             if ((memberPhone || memberEmail) && (!member.userId || member.userId === member.id)) {
               const usersRes = await pool.query("SELECT id, name, email, phone FROM public.users;");
               const matchedUser = usersRes.rows.find(
@@ -1173,8 +1397,7 @@ export default async function handler(req: any, res: any) {
                 name: resolvedName,
               },
             });
-          } catch (err: any) {
-            console.error("Error saving member:", err?.message || err);
+          } catch {
             if (process.env.NODE_ENV === "production") {
               return sendJson(res, 503, { success: false, error: "Database unavailable" });
             }
@@ -1209,14 +1432,20 @@ export default async function handler(req: any, res: any) {
 
       if (req.method === "DELETE") {
         if (!isTripAdmin) {
+          logSecurityEvent("PERMISSION_DENIED", {
+            scope: "delete-member",
+            userId,
+            tripId,
+            ip: clientIp,
+          });
           return sendJson(res, 403, {
             success: false,
             error: "Access denied: Only trip admins can remove members.",
           });
         }
         const memberId = String(itemIdParam || req.query?.memberId || body?.memberId || body?.id || "").trim();
-        if (!memberId) {
-          return sendJson(res, 400, { success: false, error: "memberId is required" });
+        if (!memberId || !safeIdSchema.safeParse(memberId).success) {
+          return sendJson(res, 400, { success: false, error: "Valid memberId is required" });
         }
 
         if (pool) {
@@ -1226,8 +1455,7 @@ export default async function handler(req: any, res: any) {
               [memberId, tripId]
             );
             return sendJson(res, 200, { success: true, memberId });
-          } catch (err: any) {
-            console.error("Error deleting member:", err?.message || err);
+          } catch {
             if (process.env.NODE_ENV === "production") {
               return sendJson(res, 503, { success: false, error: "Database unavailable" });
             }
@@ -1248,14 +1476,19 @@ export default async function handler(req: any, res: any) {
       if (req.method === "POST" || req.method === "PUT") {
         const activity = body?.activity || body || {};
         const actId = String(itemIdParam || activity.id || `act_${Date.now()}`).trim();
+        if (!safeIdSchema.safeParse(actId).success) {
+          return sendJson(res, 400, { success: false, error: "Valid activity id is required" });
+        }
+        if (activity.detail && String(activity.detail).length > 1000) {
+          return sendJson(res, 400, { success: false, error: "Activity detail cannot exceed 1000 characters" });
+        }
         activity.id = actId;
 
         if (pool) {
           try {
             await insertActivityInDb(tripId, activity, userId);
             return sendJson(res, 200, { success: true, activityId: actId });
-          } catch (err: any) {
-            console.error("Error saving activity:", err?.message || err);
+          } catch {
             if (process.env.NODE_ENV === "production") {
               return sendJson(res, 503, { success: false, error: "Database unavailable" });
             }
@@ -1270,16 +1503,15 @@ export default async function handler(req: any, res: any) {
 
       if (req.method === "DELETE") {
         const actId = String(itemIdParam || req.query?.activityId || body?.activityId || body?.id || "").trim();
-        if (!actId) {
-          return sendJson(res, 400, { success: false, error: "activityId is required" });
+        if (!actId || !safeIdSchema.safeParse(actId).success) {
+          return sendJson(res, 400, { success: false, error: "Valid activityId is required" });
         }
 
         if (pool) {
           try {
             await pool.query("DELETE FROM public.activities WHERE id = $1 AND trip_id = $2;", [actId, tripId]);
             return sendJson(res, 200, { success: true, activityId: actId });
-          } catch (err: any) {
-            console.error("Error deleting activity:", err?.message || err);
+          } catch {
             if (process.env.NODE_ENV === "production") {
               return sendJson(res, 503, { success: false, error: "Database unavailable" });
             }
@@ -1299,6 +1531,12 @@ export default async function handler(req: any, res: any) {
   // 6. Delete Trip: DELETE /api/trips/:tripId
   if (req.method === "DELETE") {
     if (!authCheck.isOwner) {
+      logSecurityEvent("PERMISSION_DENIED", {
+        scope: "delete-trip-non-owner",
+        userId,
+        tripId,
+        ip: clientIp,
+      });
       return sendJson(res, 403, {
         success: false,
         error: "Access denied: Only the trip owner can delete this trip.",
@@ -1313,8 +1551,7 @@ export default async function handler(req: any, res: any) {
         await pool.query("DELETE FROM public.trip_members WHERE trip_id = $1;", [tripId]);
         await pool.query("DELETE FROM public.trips WHERE id = $1;", [tripId]);
         return sendJson(res, 200, { success: true, tripId });
-      } catch (err: any) {
-        console.error("Error in DELETE /api/trips/[tripId]:", err?.message || err);
+      } catch {
         if (process.env.NODE_ENV === "production") {
           return sendJson(res, 503, { success: false, error: "Database unavailable" });
         }
@@ -1360,8 +1597,7 @@ export default async function handler(req: any, res: any) {
           activities: activitiesRes.rows,
         },
       });
-    } catch (err: any) {
-      console.error("Error in GET /api/trips/[tripId]:", err);
+    } catch {
       if (process.env.NODE_ENV === "production") {
         return sendJson(res, 503, { success: false, error: "Database unavailable" });
       }

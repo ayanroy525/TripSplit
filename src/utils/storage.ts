@@ -228,6 +228,7 @@ export async function saveTripToDatabase(trip: Trip): Promise<void> {
   try {
     const res = await fetch(getApiUrl("/api/trips"), {
       method: "POST",
+      credentials: "include",
       headers: getAuthHeaders(true),
       body: JSON.stringify(trip),
     });
@@ -259,6 +260,7 @@ export async function getTripFromDatabase(tripId: string): Promise<Trip | null> 
   try {
     const res = await fetch(getApiUrl(`/api/trips/${encodeURIComponent(tripId)}`), {
       method: "GET",
+      credentials: "include",
       headers: getAuthHeaders(false),
     });
 
@@ -293,6 +295,7 @@ export async function getAllTripsFromDatabase(): Promise<Trip[]> {
   try {
     const res = await fetch(getApiUrl("/api/user-trips"), {
       method: "GET",
+      credentials: "include",
       headers: getAuthHeaders(false),
     });
 
@@ -454,6 +457,7 @@ export async function linkUserToExistingTripMembers(
   try {
     const res = await fetch(getApiUrl("/api/trips/link-members"), {
       method: "POST",
+      credentials: "include",
       headers: getAuthHeaders(true),
       body: JSON.stringify({
         name: user.name,
@@ -510,6 +514,7 @@ export function subscribeToUserTrips(
       const apiRes = await fetch(
         getApiUrl(`/api/user-trips?userId=${encodeURIComponent(userId)}`),
         {
+          credentials: "include",
           headers: getAuthHeaders(false),
         }
       );
@@ -650,6 +655,7 @@ export async function addExpenseToDatabase(tripId: string, expense: Expense): Pr
   try {
     const res = await fetch(getApiUrl(`/api/trips/${encodeURIComponent(tripId)}/expenses`), {
       method: "POST",
+      credentials: "include",
       headers: getAuthHeaders(true),
       body: JSON.stringify(expense),
     });
@@ -680,6 +686,7 @@ export async function updateExpenseInDatabase(tripId: string, expense: Expense):
       getApiUrl(`/api/trips/${encodeURIComponent(tripId)}/expenses/${encodeURIComponent(expense.id)}`),
       {
         method: "PUT",
+        credentials: "include",
         headers: getAuthHeaders(true),
         body: JSON.stringify(expense),
       }
@@ -711,6 +718,7 @@ export async function deleteExpenseFromDatabase(tripId: string, expenseId: strin
       getApiUrl(`/api/trips/${encodeURIComponent(tripId)}/expenses/${encodeURIComponent(expenseId)}`),
       {
         method: "DELETE",
+        credentials: "include",
         headers: getAuthHeaders(true),
         body: JSON.stringify({ expenseId }),
       }
@@ -747,6 +755,7 @@ export async function saveExpenseAtomic(
   try {
     const res = await fetch(getApiUrl(`/api/trips/${encodeURIComponent(tripId)}/expenses`), {
       method: "POST",
+      credentials: "include",
       headers: getAuthHeaders(true),
       body: JSON.stringify({
         ...expense,
@@ -785,6 +794,7 @@ export async function recordPaymentAtomic(
   try {
     const res = await fetch(getApiUrl(`/api/trips/${encodeURIComponent(tripId)}/payments`), {
       method: "POST",
+      credentials: "include",
       headers: getAuthHeaders(true),
       body: JSON.stringify({
         ...payment,
@@ -834,6 +844,7 @@ export async function confirmPaymentAtomic(
       getApiUrl(`/api/trips/${encodeURIComponent(tripId)}/payments/${encodeURIComponent(paymentId)}`),
       {
         method: "PUT",
+        credentials: "include",
         headers: getAuthHeaders(true),
         body: JSON.stringify(payload),
       }
@@ -863,6 +874,7 @@ export async function addPaymentToDatabase(tripId: string, payment: Payment): Pr
   try {
     const res = await fetch(getApiUrl(`/api/trips/${encodeURIComponent(tripId)}/payments`), {
       method: "POST",
+      credentials: "include",
       headers: getAuthHeaders(true),
       body: JSON.stringify(payment),
     });
@@ -893,6 +905,7 @@ export async function updatePaymentInDatabase(tripId: string, payment: Payment):
       getApiUrl(`/api/trips/${encodeURIComponent(tripId)}/payments/${encodeURIComponent(payment.id)}`),
       {
         method: "PUT",
+        credentials: "include",
         headers: getAuthHeaders(true),
         body: JSON.stringify(payment),
       }
@@ -924,6 +937,7 @@ export async function deletePaymentFromDatabase(tripId: string, paymentId: strin
       getApiUrl(`/api/trips/${encodeURIComponent(tripId)}/payments/${encodeURIComponent(paymentId)}`),
       {
         method: "DELETE",
+        credentials: "include",
         headers: getAuthHeaders(true),
         body: JSON.stringify({ paymentId }),
       }
@@ -958,6 +972,7 @@ export async function addMemberToDatabase(tripId: string, member: Member): Promi
   try {
     const res = await fetch(getApiUrl(`/api/trips/${encodeURIComponent(tripId)}/trip_members`), {
       method: "POST",
+      credentials: "include",
       headers: getAuthHeaders(true),
       body: JSON.stringify(fallbackMember),
     });
@@ -998,6 +1013,7 @@ export async function updateMemberInDatabase(tripId: string, member: Member): Pr
       getApiUrl(`/api/trips/${encodeURIComponent(tripId)}/trip_members/${encodeURIComponent(member.id)}`),
       {
         method: "PUT",
+        credentials: "include",
         headers: getAuthHeaders(true),
         body: JSON.stringify(member),
       }
@@ -1029,6 +1045,7 @@ export async function deleteMemberFromDatabase(tripId: string, memberId: string)
       getApiUrl(`/api/trips/${encodeURIComponent(tripId)}/trip_members/${encodeURIComponent(memberId)}`),
       {
         method: "DELETE",
+        credentials: "include",
         headers: getAuthHeaders(true),
         body: JSON.stringify({ memberId }),
       }
@@ -1058,6 +1075,7 @@ export async function addActivityToDatabase(tripId: string, activity: Activity):
   try {
     const res = await fetch(getApiUrl(`/api/trips/${encodeURIComponent(tripId)}/activities`), {
       method: "POST",
+      credentials: "include",
       headers: getAuthHeaders(true),
       body: JSON.stringify(activity),
     });
@@ -1086,6 +1104,7 @@ export async function deleteTripFromDatabase(tripId: string): Promise<void> {
   try {
     const res = await fetch(getApiUrl(`/api/trips/${encodeURIComponent(tripId)}`), {
       method: "DELETE",
+      credentials: "include",
       headers: getAuthHeaders(false),
     });
 
@@ -1493,7 +1512,8 @@ export async function getTripByInviteCode(
   try {
     const apiRes = await fetch(getApiUrl("/api/trips/invite/lookup"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      headers: getAuthHeaders(true),
       body: JSON.stringify({ inviteCode: clean }),
     });
     const ct = apiRes.headers.get("content-type") || "";
@@ -1551,6 +1571,7 @@ export async function joinTripByInviteCode(
   try {
     const apiRes = await fetch(getApiUrl("/api/trips/invite/join"), {
       method: "POST",
+      credentials: "include",
       headers: getAuthHeaders(true),
       body: JSON.stringify({
         inviteCode: clean,

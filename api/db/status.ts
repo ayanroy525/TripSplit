@@ -50,10 +50,10 @@ export default async function handler(req: any, res: any) {
       tables: tableCounts,
       checkedAt: new Date().toISOString(),
     });
-  } catch (err: any) {
+  } catch {
     return sendJson(res, 500, {
       connected: false,
-      error: err?.message || "Unknown database error",
+      error: "Database health check failed",
     });
   }
 }

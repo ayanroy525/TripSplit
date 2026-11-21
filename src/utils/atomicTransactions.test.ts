@@ -18,11 +18,6 @@ describe("Transaction Safety & Atomic Postgres RPC Stored Procedures", () => {
   beforeAll(async () => {
     const token = generateSessionToken("u_owner_test", "alice@example.com", "Alice");
     (globalThis as any).__TRIPSPLIT_TEST_AUTH_TOKEN__ = token;
-    if (typeof window !== "undefined") {
-      try {
-        localStorage.setItem("trip_expense_splitter_auth_token_v1", token);
-      } catch {}
-    }
 
     if (!pool) return;
     const client = await pool.connect();

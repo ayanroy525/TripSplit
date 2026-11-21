@@ -23,11 +23,10 @@ export default async function handler(req: any, res: any) {
       message: "Daily 2:00 AM diagnostic check completed successfully",
       diagnostic: result,
     });
-  } catch (err: any) {
-    console.error("Error executing daily check:", err);
+  } catch {
     return sendJson(res, 500, {
       success: false,
-      error: err?.message || "Internal server error during daily check",
+      error: "Internal server error during daily check",
     });
   }
 }

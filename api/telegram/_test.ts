@@ -1,5 +1,12 @@
 import { setCorsHeaders, sendJson, verifyAdminRequest } from "../_shared.js";
 import { sendTelegramMessage, getTelegramConfig, registerTelegramWebhook } from "./_client.js";
+import { z } from "zod";
+
+const telegramTestPayloadSchema = z.object({
+  chatId: z.union([z.string().trim().max(64), z.number()]).optional(),
+  customMessage: z.string().trim().max(4000, "Custom message cannot exceed 4000 characters").optional(),
+  type: z.enum(["test", "report"]).optional(),
+});
 
 export default async function handler(req: any, res: any) {
   setCorsHeaders(res, req);
@@ -25,14 +32,24 @@ export default async function handler(req: any, res: any) {
     if (typeof body === "string") {
       try {
         body = JSON.parse(body);
-      } catch {}
+      } catch {
+        return sendJson(res, 400, { success: false, error: "Invalid JSON body" });
+      }
     }
 
-    const { chatId, customMessage } = body || {};
+    const parsed = telegramTestPayloadSchema.safeParse(body || {});
+    if (!parsed.success) {
+      return sendJson(res, 400, {
+        success: false,
+        error: parsed.error.issues?.[0]?.message || "Invalid Telegram test payload",
+      });
+    }
+
+    const { chatId, customMessage } = parsed.data;
     const config = await getTelegramConfig();
 
     const targetToken = config.botToken;
-    const targetChatId = chatId ? String(chatId).trim() : config.chatId;
+    const targetChatId = chatId !== undefined ? String(chatId).trim() : config.chatId;
 
     if (!targetToken) {
       return sendJson(res, 400, {
@@ -74,7 +91,7 @@ export default async function handler(req: any, res: any) {
     if (!result.success) {
       return sendJson(res, 400, {
         success: false,
-        error: result.error || "Failed to deliver message to Telegram. Check TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.",
+        error: "Failed to deliver message to Telegram. Check TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.",
       });
     }
 
@@ -90,12 +107,11 @@ export default async function handler(req: any, res: any) {
     return sendJson(res, 200, {
       success: true,
       message: "Test message sent to Telegram successfully!",
-      telegramResponse: result.data,
     });
-  } catch (err: any) {
+  } catch {
     return sendJson(res, 500, {
       success: false,
-      error: err?.message || "Internal server error sending test message",
+      error: "Internal server error sending test message",
     });
   }
 }

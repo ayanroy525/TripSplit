@@ -34,12 +34,20 @@ export default async function handler(req: any, res: any) {
         message: "Daily 2 AM IST diagnostic completed",
         diagnostic: result,
       });
-    } catch (err: any) {
+    } catch {
       return sendJson(res, 500, {
         success: false,
-        error: err?.message || "Cron execution error",
+        error: "Cron execution error",
       });
     }
+  }
+
+  const healthAuth = await verifyCronOrAdminRequest(req);
+  if (!healthAuth.authorized) {
+    return sendJson(res, healthAuth.statusCode || 401, {
+      success: false,
+      error: healthAuth.error || "Unauthorized: Administrator or cron authentication required.",
+    });
   }
 
   return sendJson(res, 200, {

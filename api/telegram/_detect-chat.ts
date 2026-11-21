@@ -107,10 +107,10 @@ Your Telegram Chat ID (<code>${strChatId}</code>) is now linked to <b>TripSplit 
       },
       message: `Successfully connected to ${firstName} (Chat ID: ${strChatId})! Confirmation sent to your Telegram.`,
     });
-  } catch (err: any) {
+  } catch {
     return sendJson(res, 500, {
       success: false,
-      error: err?.message || "Internal server error detecting chat ID",
+      error: "Internal server error detecting chat ID",
     });
   }
 }

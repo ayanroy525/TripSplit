@@ -15,11 +15,6 @@ describe("Invite Code Lookup & Atomic Join System", () => {
   beforeAll(() => {
     const token = generateSessionToken(mockUser.id, mockUser.email, mockUser.name);
     (globalThis as any).__TRIPSPLIT_TEST_AUTH_TOKEN__ = token;
-    if (typeof window !== "undefined") {
-      try {
-        localStorage.setItem("trip_expense_splitter_auth_token_v1", token);
-      } catch {}
-    }
   });
 
   afterAll(async () => {

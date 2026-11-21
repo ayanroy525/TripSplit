@@ -1,7 +1,10 @@
 import {
   pool,
   hashPasswordNode,
+  validatePasswordStrength,
   generateSessionToken,
+  verifyCsrfRequest,
+  setSessionCookie,
   setCorsHeaders,
   parseBody,
   sendJson,
@@ -9,7 +12,11 @@ import {
   saveLocalUser,
   linkUserToTripMembersInDb,
   checkRateLimit,
+  sendRateLimitExceeded,
   getClientIp,
+  logSecurityEvent,
+  signupBodySchema,
+  validateWithSchema,
   type LocalUserRecord,
 } from "../_shared.js";
 
@@ -25,6 +32,11 @@ export default async function handler(req: any, res: any) {
     return sendJson(res, 405, { success: false, error: "Method Not Allowed" });
   }
 
+  const csrf = verifyCsrfRequest(req);
+  if (!csrf.valid) {
+    return sendJson(res, 403, { success: false, error: csrf.error || "CSRF validation failed" });
+  }
+
   if (process.env.NODE_ENV === "production" && (!process.env.SESSION_SECRET || !process.env.SESSION_SECRET.trim())) {
     console.error("CRITICAL SECURITY ERROR: SESSION_SECRET environment variable is required in production.");
     return sendJson(res, 500, {
@@ -34,16 +46,23 @@ export default async function handler(req: any, res: any) {
   }
 
   const clientIp = getClientIp(req);
-  const ipRate = checkRateLimit(`signup_ip_${clientIp}`, 8, 10 * 60 * 1000);
+  const ipRate = await checkRateLimit(`signup_ip_${clientIp}`, 8, 10 * 60 * 1000);
   if (!ipRate.allowed) {
-    return sendJson(res, 429, {
-      success: false,
-      error: `Too many registration attempts. Please wait ${Math.ceil(ipRate.retryAfterSec / 60)} minutes before trying again.`,
-    });
+    logSecurityEvent("RATE_LIMIT_EXCEEDED", { scope: "signup_ip", ip: clientIp });
+    return sendRateLimitExceeded(
+      res,
+      ipRate.retryAfterSec,
+      `Too many registration attempts. Please wait ${Math.ceil(ipRate.retryAfterSec / 60)} minutes before trying again.`
+    );
   }
 
   const body = parseBody(req);
-  const { name, email, phone, password, avatarColor, bio } = body;
+  const parsed = validateWithSchema(signupBodySchema, body);
+  if (!parsed.success) {
+    return sendJson(res, 400, { success: false, error: parsed.error });
+  }
+
+  const { name, email, phone, password, avatarColor, bio } = parsed.data;
   const trimmedName = (name || "").trim();
   const trimmedEmail = (email || "").trim().toLowerCase();
   const rawPhone = (phone || "").trim();
@@ -56,11 +75,15 @@ export default async function handler(req: any, res: any) {
   if (!trimmedEmail || !trimmedEmail.includes("@")) {
     return sendJson(res, 400, { success: false, error: "Please enter a valid email address." });
   }
-  if (!inputPassword || inputPassword.length < 6) {
-    return sendJson(res, 400, { success: false, error: "Password must be at least 6 characters long." });
+
+  const strength = validatePasswordStrength(inputPassword);
+  if (!strength.valid) {
+    return sendJson(res, 400, {
+      success: false,
+      error: strength.error || "Password must be at least 8 characters long.",
+    });
   }
 
-  // Check if account already exists in local store (non-production only)
   if (process.env.NODE_ENV !== "production") {
     const existingLocal = findLocalUser(trimmedEmail) || (cleanDigits.length >= 7 ? findLocalUser(cleanDigits) : null);
     if (existingLocal) {
@@ -87,8 +110,7 @@ export default async function handler(req: any, res: any) {
           error: "An account with this email or phone already exists. Please log in with your password.",
         });
       }
-    } catch (err) {
-      console.warn("Notice: PostgreSQL check during signup:", err);
+    } catch {
       if (process.env.NODE_ENV === "production") {
         return sendJson(res, 503, { success: false, error: "Database unavailable" });
       }
@@ -131,15 +153,13 @@ export default async function handler(req: any, res: any) {
           hashedPassword,
         ]
       );
-    } catch (err) {
-      console.warn("Notice: PostgreSQL insert during signup deferred:", err);
+    } catch {
       if (process.env.NODE_ENV === "production") {
         return sendJson(res, 503, { success: false, error: "Database unavailable" });
       }
     }
   }
 
-  // Server-side smart member linking: link any invited placeholder trip_members matching this user's email/phone
   await linkUserToTripMembersInDb(pool, userId, trimmedEmail, rawPhone || null, trimmedName);
 
   const userAccount = {
@@ -152,6 +172,9 @@ export default async function handler(req: any, res: any) {
     createdAt,
   };
 
+  logSecurityEvent("AUTH_SIGNUP_SUCCESS", { userId, ip: clientIp });
+
   const sessionToken = generateSessionToken(userId, trimmedEmail, trimmedName);
-  return sendJson(res, 200, { success: true, token: sessionToken, user: userAccount });
+  setSessionCookie(res, sessionToken);
+  return sendJson(res, 200, { success: true, user: userAccount });
 }

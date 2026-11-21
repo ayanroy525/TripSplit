@@ -1,9 +1,8 @@
 import "dotenv/config";
 import { Pool } from "pg";
 import crypto from "crypto";
-import fs from "fs";
-import path from "path";
 import bcrypt from "bcryptjs";
+import { z } from "zod";
 
 const rawConn = (
   process.env.POSTGRES_URL ||
@@ -48,7 +47,6 @@ export function getDatabaseSslConfig(): boolean | { rejectUnauthorized: boolean;
   if (allowInsecureSSL) {
     return { rejectUnauthorized: false };
   }
-  // For Supabase databases, provide the official Supabase Root CA for strict verification
   const isSupabase = rawConn.includes("supabase.co") || rawConn.includes("supabase.com");
   if (isSupabase) {
     return {
@@ -56,7 +54,6 @@ export function getDatabaseSslConfig(): boolean | { rejectUnauthorized: boolean;
       ca: process.env.SUPABASE_CA_CERT || SUPABASE_ROOT_CA,
     };
   }
-  // Default to secure TLS verification
   return { rejectUnauthorized: true };
 }
 
@@ -73,7 +70,6 @@ export const pool = rawConn
     })
   : null;
 
-// Keep-alive warm ping to prevent cold disconnects and TCP/TLS renegotiation overhead
 if (pool) {
   setInterval(async () => {
     try {
@@ -82,7 +78,14 @@ if (pool) {
   }, 25000);
 }
 
-// Session & Auth secret resolution with strict validation
+export function timingSafeCompare(a: string, b: string): boolean {
+  if (!a || !b || typeof a !== "string" || typeof b !== "string") return false;
+  const bufA = Buffer.from(a, "utf8");
+  const bufB = Buffer.from(b, "utf8");
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
 export function getValidatedSessionSecret(): string {
   if (process.env.SESSION_SECRET && process.env.SESSION_SECRET.trim() !== "") {
     return process.env.SESSION_SECRET.trim();
@@ -123,6 +126,41 @@ export const ADMIN_EMAILS = [
   "ayanroy525@gmail.com",
   (process.env.ADMIN_EMAIL || "").trim().toLowerCase(),
 ].filter(Boolean);
+
+export const SESSION_COOKIE_NAME = "tripsplit_session";
+const SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60; // 30 days
+
+export function parseCookies(req: any): Record<string, string> {
+  const result: Record<string, string> = {};
+  const rawCookie = req?.headers?.cookie || req?.headers?.Cookie;
+  if (!rawCookie || typeof rawCookie !== "string") return result;
+
+  for (const part of rawCookie.split(";")) {
+    const eqIdx = part.indexOf("=");
+    if (eqIdx <= 0) continue;
+    const key = part.slice(0, eqIdx).trim();
+    const val = part.slice(eqIdx + 1).trim();
+    if (!key) continue;
+    try {
+      result[key] = decodeURIComponent(val);
+    } catch {
+      result[key] = val;
+    }
+  }
+  return result;
+}
+
+export function setSessionCookie(res: any, token: string): void {
+  if (!res || typeof res.setHeader !== "function") return;
+  const cookieValue = `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${SESSION_MAX_AGE_SECONDS}`;
+  res.setHeader("Set-Cookie", cookieValue);
+}
+
+export function clearSessionCookie(res: any): void {
+  if (!res || typeof res.setHeader !== "function") return;
+  const cookieValue = `${SESSION_COOKIE_NAME}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT`;
+  res.setHeader("Set-Cookie", cookieValue);
+}
 
 export interface SessionPayload {
   userId: string;
@@ -168,7 +206,7 @@ export function verifySessionToken(token: string): SessionPayload | null {
         .createHmac("sha256", sec)
         .update(`${headerBase64}.${payloadBase64}`)
         .digest("base64url");
-      return expected === signatureBase64;
+      return timingSafeCompare(expected, signatureBase64);
     });
     if (!isValidSig) return null;
     try {
@@ -189,7 +227,7 @@ export function verifySessionToken(token: string): SessionPayload | null {
     const isValidSig = candidateSecrets.some((sec) => {
       if (!sec) return false;
       const expected = crypto.createHmac("sha256", sec).update(data).digest("base64url");
-      return expected === sig;
+      return timingSafeCompare(expected, sig);
     });
     if (!isValidSig) return null;
     try {
@@ -298,6 +336,41 @@ export async function verifyBearerTokenAsync(token: string): Promise<{
   return { session };
 }
 
+export function verifyCsrfRequest(req: any): { valid: boolean; error?: string } {
+  const method = String(req?.method || "GET").toUpperCase();
+  if (method === "GET" || method === "HEAD" || method === "OPTIONS") {
+    return { valid: true };
+  }
+
+  // Check Origin header if present
+  const origin = String(req?.headers?.origin || req?.headers?.Origin || "").trim();
+  if (origin && !isOriginAllowed(origin)) {
+    logSecurityEvent("CSRF_REJECTED", {
+      reason: "DISALLOWED_ORIGIN",
+      method,
+      origin,
+      ip: getClientIp(req),
+    });
+    return { valid: false, error: "CSRF validation failed: untrusted origin" };
+  }
+
+  // Require custom header X-Requested-With on state-changing requests
+  const requestedWith = String(
+    req?.headers?.["x-requested-with"] || req?.headers?.["X-Requested-With"] || ""
+  ).trim();
+  if (!requestedWith) {
+    logSecurityEvent("CSRF_REJECTED", {
+      reason: "MISSING_CUSTOM_HEADER",
+      method,
+      origin: origin || null,
+      ip: getClientIp(req),
+    });
+    return { valid: false, error: "CSRF validation failed: missing X-Requested-With header" };
+  }
+
+  return { valid: true };
+}
+
 export interface AuthVerificationResult {
   authorized: boolean;
   statusCode: number;
@@ -305,6 +378,7 @@ export interface AuthVerificationResult {
   userId?: string;
   email?: string;
   session?: SessionPayload;
+  authSource?: "cookie" | "bearer";
 }
 
 export async function verifyAuthRequest(req: any): Promise<AuthVerificationResult> {
@@ -317,6 +391,35 @@ export async function verifyAuthRequest(req: any): Promise<AuthVerificationResul
     };
   }
 
+  // 1. Read HttpOnly cookie first
+  const cookies = parseCookies(req);
+  const cookieToken = (cookies[SESSION_COOKIE_NAME] || "").trim();
+
+  // 2. Fall back to Authorization header only for existing sessions during migration
+  const authHeader = String(req?.headers?.authorization || req?.headers?.Authorization || "");
+  const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+
+  const token = cookieToken || bearerToken;
+  const authSource: "cookie" | "bearer" = cookieToken ? "cookie" : "bearer";
+
+  if (!token && !(req?.userId && req?.session)) {
+    return {
+      authorized: false,
+      statusCode: 401,
+      error: "Authorization token required",
+    };
+  }
+
+  // 3. Enforce CSRF protection on all state-changing requests
+  const csrf = verifyCsrfRequest(req);
+  if (!csrf.valid) {
+    return {
+      authorized: false,
+      statusCode: 403,
+      error: csrf.error || "CSRF validation failed",
+    };
+  }
+
   if (req?.userId && req?.session) {
     return {
       authorized: true,
@@ -324,17 +427,6 @@ export async function verifyAuthRequest(req: any): Promise<AuthVerificationResul
       userId: req.userId,
       email: req.session.email,
       session: req.session,
-    };
-  }
-
-  const authHeader = String(req?.headers?.authorization || req?.headers?.Authorization || "");
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-
-  if (!token) {
-    return {
-      authorized: false,
-      statusCode: 401,
-      error: "Authorization token required",
     };
   }
 
@@ -379,6 +471,7 @@ export async function verifyAuthRequest(req: any): Promise<AuthVerificationResul
     userId: session.userId,
     email: session.email,
     session,
+    authSource,
   };
 }
 
@@ -405,6 +498,11 @@ export async function verifyAdminRequest(req: any): Promise<AuthVerificationResu
 
   const isOwner = ADMIN_EMAILS.some((adm) => adm && userEmail === adm);
   if (!isOwner) {
+    logSecurityEvent("PERMISSION_DENIED", {
+      scope: "ADMIN_ROUTE",
+      userId: authResult.userId,
+      ip: getClientIp(req),
+    });
     return {
       authorized: false,
       statusCode: 403,
@@ -427,7 +525,39 @@ export async function verifyCronOrAdminRequest(req: any): Promise<AuthVerificati
   const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
   const cronHeader = String(req?.headers?.["x-cron-secret"] || req?.headers?.["X-Cron-Secret"] || "").trim();
 
-  if (cronSecret && (bearerToken === cronSecret || cronHeader === cronSecret)) {
+  // If the caller explicitly presented x-cron-secret, fail closed if CRON_SECRET is missing or mismatched
+  if (cronHeader) {
+    if (!cronSecret) {
+      logSecurityEvent("PERMISSION_DENIED", {
+        scope: "CRON_SECRET_MISSING",
+        ip: getClientIp(req),
+      });
+      return {
+        authorized: false,
+        statusCode: 503,
+        error: "Cron secret is not configured",
+      };
+    }
+    if (timingSafeCompare(cronHeader, cronSecret)) {
+      return {
+        authorized: true,
+        statusCode: 200,
+        userId: "system_cron",
+      };
+    }
+    logSecurityEvent("PERMISSION_DENIED", {
+      scope: "CRON_SECRET_MISMATCH",
+      ip: getClientIp(req),
+    });
+    return {
+      authorized: false,
+      statusCode: 401,
+      error: "Invalid cron secret",
+    };
+  }
+
+  // Constant-time check for Bearer <CRON_SECRET>
+  if (cronSecret && bearerToken && timingSafeCompare(bearerToken, cronSecret)) {
     return {
       authorized: true,
       statusCode: 200,
@@ -435,16 +565,7 @@ export async function verifyCronOrAdminRequest(req: any): Promise<AuthVerificati
     };
   }
 
-  // On Vercel serverless, if no explicit CRON_SECRET env var is set, allow Vercel's native Cron scheduler
-  const userAgent = String(req?.headers?.["user-agent"] || "").trim();
-  if (!cronSecret && process.env.VERCEL && userAgent === "vercel-cron/1.0" && !authHeader) {
-    return {
-      authorized: true,
-      statusCode: 200,
-      userId: "vercel_cron",
-    };
-  }
-
+  // Fall back to authenticated admin user session check (fails closed if neither valid cron secret nor admin session)
   return verifyAdminRequest(req);
 }
 
@@ -502,8 +623,7 @@ export async function checkTripAuthorization(
 
         return { isOwner: false, isMember: false, canAccess: false };
       }
-    } catch (err) {
-      console.warn("Notice checking trip authorization in PostgreSQL:", err);
+    } catch {
       if (process.env.NODE_ENV === "production") {
         return { isOwner: false, isMember: false, canAccess: false };
       }
@@ -548,8 +668,93 @@ export function sanitizeReceiptUrl(rawUrl: any): string {
   return "";
 }
 
+// Top common passwords blocklist (case-insensitive)
+export const COMMON_PASSWORDS = new Set([
+  "password",
+  "password1",
+  "password123",
+  "passw0rd",
+  "p@ssw0rd",
+  "12345678",
+  "123456789",
+  "1234567890",
+  "87654321",
+  "qwertyui",
+  "qwerty123",
+  "qwertyuiop",
+  "1q2w3e4r",
+  "abcd1234",
+  "abc12345",
+  "admin123",
+  "administrator",
+  "letmein1",
+  "letmein123",
+  "welcome1",
+  "welcome123",
+  "iloveyou",
+  "iloveyou1",
+  "monkey123",
+  "dragon123",
+  "sunshine",
+  "princess",
+  "football",
+  "baseball",
+  "trustno1",
+  "superman",
+  "11111111",
+  "00000000",
+  "88888888",
+  "99999999",
+  "tripsplit",
+  "tripsplit1",
+  "changeme",
+  "master12",
+  "shadow12",
+  "ashley12",
+  "michael1",
+  "charlie1",
+  "donald12",
+  "whatever",
+  "starwars",
+  "computer",
+  "security",
+  "zaq12wsx",
+  "asdfghjk",
+  "asdf1234",
+  "zxcvbnm1",
+]);
+
+export function validatePasswordStrength(password: unknown): { valid: boolean; error?: string } {
+  if (typeof password !== "string") {
+    return { valid: false, error: "Password must be at least 8 characters long." };
+  }
+  if (password.length < 8) {
+    return { valid: false, error: "Password must be at least 8 characters long." };
+  }
+  if (password.length > 128) {
+    return { valid: false, error: "Password cannot exceed 128 characters." };
+  }
+  const lower = password.toLowerCase();
+  const trimmedLower = password.trim().toLowerCase();
+  if (COMMON_PASSWORDS.has(lower) || COMMON_PASSWORDS.has(trimmedLower)) {
+    return {
+      valid: false,
+      error: "This password is too common. Please choose a stronger password.",
+    };
+  }
+  if (/^(.)\1{7,}$/.test(password)) {
+    return {
+      valid: false,
+      error: "This password is too common. Please choose a stronger password.",
+    };
+  }
+  return { valid: true };
+}
+
+export const BCRYPT_COST = 12;
+
 export function hashPasswordNode(password: string): string {
-  return bcrypt.hashSync(password, 10);
+  return bcrypt.hashSync(password, BCRYPT_COST);
 }
 
 export interface PasswordVerificationResult {
@@ -576,7 +781,12 @@ export function verifyPasswordMatchNode(
   ) {
     try {
       const match = bcrypt.compareSync(inputPassword, trimmedStored);
-      return { valid: match, needsRehash: false, method: match ? "bcrypt" : "none" };
+      const rounds = bcrypt.getRounds(trimmedStored);
+      return {
+        valid: match,
+        needsRehash: match && rounds < BCRYPT_COST,
+        method: match ? "bcrypt" : "none",
+      };
     } catch {
       return { valid: false, needsRehash: false, method: "none" };
     }
@@ -676,50 +886,168 @@ export function setCorsHeaders(res: any, req?: any): boolean {
     "Content-Type, Authorization, X-Requested-With, X-Telegram-Bot-Api-Secret-Token, X-Cron-Secret"
   );
   res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("X-Download-Options", "noopen");
   res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
   return allowed;
 }
 
-// In-Memory Rate Limiter for Login/Signup Brute-Force Protection
+// Postgres-Backed Rate Limiter (public.rate_limits)
+export const RATE_LIMIT_UPSERT_SQL = `
+  INSERT INTO public.rate_limits (key, count, reset_at)
+  VALUES ($1, 1, NOW() + ($2::bigint * interval '1 millisecond'))
+  ON CONFLICT (key) DO UPDATE SET
+    count = CASE
+      WHEN public.rate_limits.reset_at <= NOW() THEN 1
+      ELSE public.rate_limits.count + 1
+    END,
+    reset_at = CASE
+      WHEN public.rate_limits.reset_at <= NOW() THEN NOW() + ($2::bigint * interval '1 millisecond')
+      ELSE public.rate_limits.reset_at
+    END
+  RETURNING count, GREATEST(1, CEIL(EXTRACT(EPOCH FROM (reset_at - NOW()))))::int AS retry_after_sec;
+`;
+
+export interface RateLimitDbExecutor {
+  query: (sql: string, params?: any[]) => Promise<{ rows: any[] }>;
+}
+
 interface RateLimitRecord {
   count: number;
   resetAt: number;
 }
-const rateLimitBuckets = new Map<string, RateLimitRecord>();
+const fallbackRateLimitTable = new Map<string, RateLimitRecord>();
 
-export function checkRateLimit(
+let customRateLimitPool: RateLimitDbExecutor | null = null;
+let rateLimitsTableInitialized = false;
+
+export function setRateLimitPoolForTesting(executor: RateLimitDbExecutor | null): void {
+  customRateLimitPool = executor;
+}
+
+async function ensureRateLimitsTable(db: RateLimitDbExecutor): Promise<void> {
+  if (rateLimitsTableInitialized || customRateLimitPool) return;
+  try {
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS public.rate_limits (
+        key text PRIMARY KEY,
+        count int NOT NULL DEFAULT 1,
+        reset_at timestamptz NOT NULL
+      );
+      ALTER TABLE public.rate_limits ENABLE ROW LEVEL SECURITY;
+      REVOKE ALL ON TABLE public.rate_limits FROM anon, authenticated;
+    `);
+    rateLimitsTableInitialized = true;
+  } catch {}
+}
+
+export async function checkRateLimit(
   key: string,
   maxAttempts = 5,
-  windowMs = 5 * 60 * 1000
-): { allowed: boolean; remaining: number; retryAfterSec: number } {
-  const now = Date.now();
-  const record = rateLimitBuckets.get(key);
-
-  if (!record || now >= record.resetAt) {
-    rateLimitBuckets.set(key, { count: 1, resetAt: now + windowMs });
-    return { allowed: true, remaining: maxAttempts - 1, retryAfterSec: 0 };
+  windowMs = 5 * 60 * 1000,
+  dbExecutor: RateLimitDbExecutor | null = customRateLimitPool || pool
+): Promise<{ allowed: boolean; remaining: number; retryAfterSec: number }> {
+  if (dbExecutor) {
+    try {
+      await ensureRateLimitsTable(dbExecutor);
+      const res = await dbExecutor.query(RATE_LIMIT_UPSERT_SQL, [key, windowMs]);
+      const row = res.rows[0];
+      const count = Number(row?.count ?? 1);
+      const retryAfterSec = Math.max(1, Number(row?.retry_after_sec ?? Math.ceil(windowMs / 1000)));
+      if (count > maxAttempts) {
+        return { allowed: false, remaining: 0, retryAfterSec };
+      }
+      return {
+        allowed: true,
+        remaining: Math.max(0, maxAttempts - count),
+        retryAfterSec: 0,
+      };
+    } catch (err) {
+      if (process.env.NODE_ENV === "production") {
+        // Fail closed on rate-limit DB error in production
+        return {
+          allowed: false,
+          remaining: 0,
+          retryAfterSec: Math.max(1, Math.ceil(windowMs / 1000)),
+        };
+      }
+    }
   }
 
-  if (record.count >= maxAttempts) {
-    const retryAfterSec = Math.ceil((record.resetAt - now) / 1000);
-    return { allowed: false, remaining: 0, retryAfterSec };
+  // Fallback simulation of public.rate_limits when running locally without a Postgres pool
+  const now = Date.now();
+  const record = fallbackRateLimitTable.get(key);
+
+  if (!record || now >= record.resetAt) {
+    fallbackRateLimitTable.set(key, { count: 1, resetAt: now + windowMs });
+    return { allowed: true, remaining: Math.max(0, maxAttempts - 1), retryAfterSec: 0 };
   }
 
   record.count += 1;
-  return { allowed: true, remaining: maxAttempts - record.count, retryAfterSec: 0 };
+  if (record.count > maxAttempts) {
+    const retryAfterSec = Math.max(1, Math.ceil((record.resetAt - now) / 1000));
+    return { allowed: false, remaining: 0, retryAfterSec };
+  }
+
+  return { allowed: true, remaining: Math.max(0, maxAttempts - record.count), retryAfterSec: 0 };
 }
 
-export function resetRateLimit(key: string): void {
-  rateLimitBuckets.delete(key);
+export async function resetRateLimit(
+  key: string,
+  dbExecutor: RateLimitDbExecutor | null = customRateLimitPool || pool
+): Promise<void> {
+  fallbackRateLimitTable.delete(key);
+  if (dbExecutor) {
+    try {
+      await dbExecutor.query("DELETE FROM public.rate_limits WHERE key = $1;", [key]);
+    } catch {}
+  }
+}
+
+export function sendRateLimitExceeded(
+  res: any,
+  retryAfterSec: number,
+  message = "Too many attempts. Please try again later."
+): void {
+  const safeRetry = Math.max(1, Math.ceil(retryAfterSec || 60));
+  if (res && typeof res.setHeader === "function") {
+    res.setHeader("Retry-After", String(safeRetry));
+  }
+  sendJson(res, 429, {
+    error: message,
+    retryAfterSec: safeRetry,
+  });
 }
 
 export function getClientIp(req: any): string {
+  // 1. On Vercel, use x-vercel-forwarded-for (populated by Vercel edge proxy)
+  const vercelForwarded = req?.headers?.["x-vercel-forwarded-for"];
+  if (typeof vercelForwarded === "string" && vercelForwarded.trim()) {
+    const hops = vercelForwarded
+      .split(",")
+      .map((s: string) => s.trim())
+      .filter(Boolean);
+    if (hops.length > 0) {
+      return hops[hops.length - 1];
+    }
+  }
+
+  // 2. Otherwise use the LAST hop of x-forwarded-for (appended by the trusted reverse proxy), never the client-controlled first hop
+  const xff = req?.headers?.["x-forwarded-for"];
+  if (typeof xff === "string" && xff.trim()) {
+    const hops = xff
+      .split(",")
+      .map((s: string) => s.trim())
+      .filter(Boolean);
+    if (hops.length > 0) {
+      return hops[hops.length - 1];
+    }
+  }
+
   return (
-    req.headers?.["x-forwarded-for"]?.split(",")?.[0]?.trim() ||
-    req.headers?.["x-real-ip"] ||
-    req.connection?.remoteAddress ||
-    req.socket?.remoteAddress ||
+    req?.socket?.remoteAddress ||
+    req?.connection?.remoteAddress ||
     "127.0.0.1"
   );
 }
@@ -738,13 +1066,33 @@ export function parseBody(req: any): any {
   return {};
 }
 
+// Structured security audit logger (strips any sensitive keys if accidentally passed)
+const SENSITIVE_LOG_KEYS = new Set([
+  "password",
+  "newpassword",
+  "currentpassword",
+  "password_hash",
+  "passwordhash",
+  "token",
+  "bottoken",
+  "telegram_bot_token",
+  "secret",
+  "authorization",
+  "cookie",
+]);
+
 export function logSecurityEvent(event: string, details: Record<string, any>): void {
+  const safeDetails: Record<string, any> = {};
+  for (const [k, v] of Object.entries(details || {})) {
+    if (SENSITIVE_LOG_KEYS.has(k.toLowerCase())) continue;
+    safeDetails[k] = v;
+  }
   const logRecord = {
     level: "INFO",
     type: "SECURITY_AUDIT",
     event,
     timestamp: new Date().toISOString(),
-    ...details,
+    ...safeDetails,
   };
   console.log(JSON.stringify(logRecord));
 }
@@ -763,7 +1111,264 @@ export function sendJson(res: any, statusCode: number, data: any) {
   }
 }
 
-// In-memory fallback for serverless environments (Vercel/Cloudflare)
+// ============================================================================
+// Zod Input Validation Schemas (Requirement 5)
+// ============================================================================
+
+export const SAFE_ID_REGEX = /^[A-Za-z0-9_:-]{1,64}$/;
+export const INVITE_CODE_REGEX = /^[A-Za-z0-9_-]{4,32}$/;
+
+export const safeIdSchema = z
+  .string()
+  .trim()
+  .min(1, "ID is required")
+  .max(64, "ID cannot exceed 64 characters")
+  .regex(SAFE_ID_REGEX, "Invalid ID format");
+
+export const optionalSafeIdSchema = z
+  .string()
+  .trim()
+  .max(64, "ID cannot exceed 64 characters")
+  .regex(SAFE_ID_REGEX, "Invalid ID format")
+  .optional()
+  .nullable();
+
+export const inviteCodeSchema = z
+  .string()
+  .trim()
+  .min(4, "Invite code is too short")
+  .max(32, "Invite code cannot exceed 32 characters")
+  .regex(INVITE_CODE_REGEX, "Invalid invite code format");
+
+export const amountSchema = z
+  .number({ message: "Amount must be a valid number" })
+  .finite("Amount must be a finite number")
+  .min(0, "Amount cannot be negative")
+  .max(100_000_000, "Amount exceeds maximum allowed limit");
+
+export const memberRoleSchema = z.enum(["owner", "admin", "member", "editor", "viewer"]);
+export const memberStatusSchema = z.enum(["accepted", "pending", "invited", "active", "removed"]);
+export const splitMethodSchema = z.enum([
+  "equal",
+  "exact",
+  "percentage",
+  "shares",
+  "custom",
+  "itemized",
+  "adjustment",
+]);
+export const currencySchema = z.enum([
+  "INR",
+  "USD",
+  "EUR",
+  "GBP",
+  "AED",
+  "JPY",
+  "SGD",
+  "THB",
+  "AUD",
+  "CAD",
+  "CHF",
+  "MYR",
+  "IDR",
+  "VND",
+  "LKR",
+  "NPR",
+]);
+
+export const loginBodySchema = z.object({
+  identifier: z.string().trim().max(160).optional(),
+  email: z.string().trim().max(160).optional(),
+  password: z.string().min(1, "Password is required").max(128, "Password exceeds maximum length"),
+}).refine((data) => Boolean((data.identifier || data.email || "").trim()), {
+  message: "Identifier or email is required",
+});
+
+export const signupBodySchema = z.object({
+  email: z.string().trim().email("Invalid email format").max(160).optional().or(z.literal("")),
+  name: z.string().trim().min(1, "Name is required").max(100, "Name cannot exceed 100 characters"),
+  phone: z.string().trim().max(30, "Phone number is too long").optional().nullable(),
+  password: z.string().min(8, "Password must be at least 8 characters long.").max(128, "Password cannot exceed 128 characters."),
+  avatarColor: z.string().trim().max(64).optional(),
+  avatarUrl: z.string().trim().max(500_000).optional(),
+  bio: z.string().trim().max(500, "Bio cannot exceed 500 characters").optional(),
+});
+
+export const updatePasswordBodySchema = z.object({
+  userId: safeIdSchema.optional(),
+  email: z.string().trim().max(160).optional(),
+  currentPassword: z.string().max(128).optional(),
+  newPassword: z.string().min(8, "Password must be at least 8 characters long.").max(128, "Password cannot exceed 128 characters."),
+});
+
+export const inviteLookupQuerySchema = z.object({
+  code: inviteCodeSchema,
+});
+
+export const inviteJoinBodySchema = z.object({
+  code: inviteCodeSchema,
+  name: z.string().trim().max(100).optional(),
+  email: z.string().trim().email("Invalid email").max(160).optional().or(z.literal("")),
+  phone: z.string().trim().max(30).optional().nullable(),
+  avatarColor: z.string().trim().max(64).optional(),
+});
+
+export const memberBodySchema = z.object({
+  id: safeIdSchema.optional(),
+  trip_id: safeIdSchema.optional(),
+  tripId: safeIdSchema.optional(),
+  user_id: optionalSafeIdSchema,
+  userId: optionalSafeIdSchema,
+  name: z.string().trim().min(1, "Member name is required").max(100, "Member name is too long"),
+  email: z.string().trim().max(160).optional().nullable(),
+  phone: z.string().trim().max(30).optional().nullable(),
+  avatar_color: z.string().trim().max(64).optional().nullable(),
+  avatarColor: z.string().trim().max(64).optional().nullable(),
+  avatar_url: z.string().trim().max(500_000).optional().nullable(),
+  avatarUrl: z.string().trim().max(500_000).optional().nullable(),
+  role: memberRoleSchema.optional(),
+  status: memberStatusSchema.optional(),
+  joined_at: z.string().trim().max(64).optional().nullable(),
+  joinedAt: z.string().trim().max(64).optional().nullable(),
+});
+
+export const expenseBodySchema = z.object({
+  id: safeIdSchema.optional(),
+  trip_id: safeIdSchema.optional(),
+  tripId: safeIdSchema.optional(),
+  title: z.string().trim().min(1, "Expense title is required").max(160, "Expense title is too long"),
+  amount: amountSchema,
+  category: z.string().trim().max(64).optional(),
+  paid_by: safeIdSchema.optional(),
+  paidBy: safeIdSchema.optional(),
+  date: z.string().trim().max(64).optional(),
+  method: splitMethodSchema.optional(),
+  split_type: splitMethodSchema.optional(),
+  splitType: splitMethodSchema.optional(),
+  splits: z.record(z.string().regex(SAFE_ID_REGEX), amountSchema).optional(),
+  split_With: z.record(z.string(), z.any()).optional(),
+  splitDetails: z.record(z.string(), z.any()).optional(),
+  split_details: z.record(z.string(), z.any()).optional(),
+  notes: z.string().trim().max(1000, "Notes cannot exceed 1000 characters").optional().nullable(),
+  receipt_url: z.string().max(2_000_000).optional().nullable(),
+  receiptUrl: z.string().max(2_000_000).optional().nullable(),
+  deleted: z.boolean().optional(),
+  created_at: z.string().trim().max(64).optional().nullable(),
+  createdAt: z.string().trim().max(64).optional().nullable(),
+});
+
+export const paymentBodySchema = z.object({
+  id: safeIdSchema.optional(),
+  trip_id: safeIdSchema.optional(),
+  tripId: safeIdSchema.optional(),
+  from_member: safeIdSchema.optional(),
+  fromMember: safeIdSchema.optional(),
+  from: safeIdSchema.optional(),
+  to_member: safeIdSchema.optional(),
+  toMember: safeIdSchema.optional(),
+  to: safeIdSchema.optional(),
+  amount: amountSchema,
+  date: z.string().trim().max(64).optional(),
+  method: z.string().trim().max(64).optional().nullable(),
+  note: z.string().trim().max(500).optional().nullable(),
+  notes: z.string().trim().max(500).optional().nullable(),
+  created_at: z.string().trim().max(64).optional().nullable(),
+  createdAt: z.string().trim().max(64).optional().nullable(),
+});
+
+export const activityBodySchema = z.object({
+  id: safeIdSchema.optional(),
+  trip_id: safeIdSchema.optional(),
+  tripId: safeIdSchema.optional(),
+  type: z.string().trim().max(64).optional(),
+  action: z.string().trim().max(100).optional(),
+  description: z.string().trim().max(1000).optional(),
+  details: z.string().trim().max(1000).optional().nullable(),
+  actor_id: optionalSafeIdSchema,
+  actorId: optionalSafeIdSchema,
+  actor_name: z.string().trim().max(100).optional().nullable(),
+  actorName: z.string().trim().max(100).optional().nullable(),
+  user_name: z.string().trim().max(100).optional().nullable(),
+  userName: z.string().trim().max(100).optional().nullable(),
+  amount: amountSchema.optional().nullable(),
+  category: z.string().trim().max(64).optional().nullable(),
+  timestamp: z.string().trim().max(64).optional(),
+  created_at: z.string().trim().max(64).optional(),
+});
+
+export const tripUpsertBodySchema = z.object({
+  id: safeIdSchema.optional(),
+  title: z.string().trim().max(160, "Trip title cannot exceed 160 characters").optional(),
+  name: z.string().trim().max(160, "Trip name cannot exceed 160 characters").optional(),
+  location: z.string().trim().max(160).optional().nullable(),
+  destination: z.string().trim().max(160).optional().nullable(),
+  startDate: z.string().trim().max(64).optional().nullable(),
+  start_date: z.string().trim().max(64).optional().nullable(),
+  endDate: z.string().trim().max(64).optional().nullable(),
+  end_date: z.string().trim().max(64).optional().nullable(),
+  currency: currencySchema.optional(),
+  budget: amountSchema.optional().nullable(),
+  coverImage: z.string().max(1_000_000).optional().nullable(),
+  cover_image: z.string().max(1_000_000).optional().nullable(),
+  owner_id: optionalSafeIdSchema,
+  ownerId: optionalSafeIdSchema,
+  invite_code: inviteCodeSchema.optional().nullable(),
+  inviteCode: inviteCodeSchema.optional().nullable(),
+  invite_expires_at: z.string().trim().max(64).optional().nullable(),
+  inviteExpiresAt: z.string().trim().max(64).optional().nullable(),
+  member_user_ids: z.array(safeIdSchema).max(200).optional(),
+  members: z.array(memberBodySchema).max(200).optional(),
+  expenses: z.array(expenseBodySchema).max(2000).optional(),
+  payments: z.array(paymentBodySchema).max(2000).optional(),
+  activities: z.array(activityBodySchema).max(2000).optional(),
+  trip: z.any().optional(),
+});
+
+export const mutationActionSchema = z.enum([
+  "UPSERT_TRIP",
+  "DELETE_TRIP",
+  "SAVE_EXPENSE_ATOMIC",
+  "DELETE_EXPENSE_ATOMIC",
+  "UPSERT_EXPENSE",
+  "DELETE_EXPENSE",
+  "UPSERT_PAYMENT",
+  "DELETE_PAYMENT",
+  "UPSERT_MEMBER",
+  "DELETE_MEMBER",
+  "UPSERT_ACTIVITY",
+  "DELETE_ACTIVITY",
+  "LINK_USER_TO_MEMBERS",
+]);
+
+export const syncMutationBodySchema = z.object({
+  action: mutationActionSchema,
+  payload: z.record(z.string(), z.any()),
+});
+
+export const telegramSettingsBodySchema = z.object({
+  webhookUrl: z.string().trim().url("Invalid webhook URL").max(512).optional().or(z.literal("")),
+  dailyReportEnabled: z.boolean().optional(),
+  registerWebhook: z.boolean().optional(),
+});
+
+export const telegramTestBodySchema = z.object({
+  type: z.enum(["test", "report"]).optional(),
+});
+
+export function validateWithSchema<T>(
+  schema: z.ZodType<T>,
+  data: unknown
+): { success: true; data: T } | { success: false; error: string } {
+  const parsed = schema.safeParse(data);
+  if (parsed.success) {
+    return { success: true, data: parsed.data };
+  }
+  const firstIssue = parsed.error.issues?.[0];
+  const safeMessage = firstIssue?.message || "Invalid request parameters";
+  return { success: false, error: safeMessage };
+}
+
+// In-memory fallback for non-production environments
 export interface LocalUserRecord {
   id: string;
   email: string | null;
@@ -846,7 +1451,6 @@ export function saveLocalStore(data: ServerStoreSchema): void {
   if (process.env.NODE_ENV === "production") {
     throw new Error("Local JSON/in-memory store fallback is disabled in production.");
   }
-  // Security: Keep fallback state strictly in-memory; never write user/auth records to disk
   inMemoryStore = {
     users: Array.isArray(data.users) ? data.users : [],
     trips: Array.isArray(data.trips) ? data.trips : [],
@@ -945,11 +1549,6 @@ export function getFullTripsForUser(userId: string) {
   }));
 }
 
-/**
- * Server-side Smart User-Member Linking:
- * Links any invited placeholder rows in public.trip_members matching the user's email or phone
- * to the authenticated userId and adds userId to public.trips.member_user_ids.
- */
 export async function linkUserToTripMembersInDb(
   dbPool: any,
   userId: string,
@@ -968,35 +1567,35 @@ export async function linkUserToTripMembersInDb(
   const linkedTripIds = new Set<string>();
   let linkedMembersCount = 0;
 
-  // 1. Update in-memory store
-  const store = getLocalStore();
-  for (const m of store.trip_members) {
-    const emailMatch = cleanEmail && m.email && m.email.trim().toLowerCase() === cleanEmail;
-    const mDigits = (m.phone || "").replace(/\D/g, "");
-    const phoneMatch =
-      phoneTail &&
-      mDigits.length >= 7 &&
-      (mDigits.endsWith(phoneTail) || phoneTail.endsWith(mDigits));
+  if (process.env.NODE_ENV !== "production") {
+    const store = getLocalStore();
+    for (const m of store.trip_members) {
+      const emailMatch = cleanEmail && m.email && m.email.trim().toLowerCase() === cleanEmail;
+      const mDigits = (m.phone || "").replace(/\D/g, "");
+      const phoneMatch =
+        phoneTail &&
+        mDigits.length >= 7 &&
+        (mDigits.endsWith(phoneTail) || phoneTail.endsWith(mDigits));
 
-    if ((emailMatch || phoneMatch) && m.user_id !== userId) {
-      m.user_id = userId;
-      if ((!m.name || m.name === "Traveler" || m.name === "Member" || m.name === "Guest") && name) {
-        m.name = name;
-      }
-      linkedTripIds.add(m.trip_id);
-      linkedMembersCount++;
-    }
-  }
-  for (const t of store.trips) {
-    if (linkedTripIds.has(t.id)) {
-      const current = Array.isArray(t.member_user_ids) ? t.member_user_ids : [];
-      if (!current.includes(userId)) {
-        t.member_user_ids = [...current, userId];
+      if ((emailMatch || phoneMatch) && m.user_id !== userId) {
+        m.user_id = userId;
+        if ((!m.name || m.name === "Traveler" || m.name === "Member" || m.name === "Guest") && name) {
+          m.name = name;
+        }
+        linkedTripIds.add(m.trip_id);
+        linkedMembersCount++;
       }
     }
+    for (const t of store.trips) {
+      if (linkedTripIds.has(t.id)) {
+        const current = Array.isArray(t.member_user_ids) ? t.member_user_ids : [];
+        if (!current.includes(userId)) {
+          t.member_user_ids = [...current, userId];
+        }
+      }
+    }
   }
 
-  // 2. Update PostgreSQL if available
   if (dbPool) {
     try {
       const matchRes = await dbPool.query(
@@ -1040,11 +1639,8 @@ export async function linkUserToTripMembersInDb(
           [userId, tripIdList]
         );
       }
-    } catch (err: any) {
-      console.warn("Notice in linkUserToTripMembersInDb:", err?.message || err);
-    }
+    } catch {}
   }
 
   return { linkedTripsCount: linkedTripIds.size, linkedMembersCount };
 }
-

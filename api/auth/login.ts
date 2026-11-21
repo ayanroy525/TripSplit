@@ -2,8 +2,12 @@ import {
   pool,
   hashPasswordNode,
   verifyPasswordMatchNode,
+  validatePasswordStrength,
   generateSessionToken,
   verifyAuthRequest,
+  verifyCsrfRequest,
+  setSessionCookie,
+  clearSessionCookie,
   setCorsHeaders,
   parseBody,
   sendJson,
@@ -14,8 +18,11 @@ import {
   linkUserToTripMembersInDb,
   checkRateLimit,
   resetRateLimit,
+  sendRateLimitExceeded,
   getClientIp,
   logSecurityEvent,
+  updatePasswordBodySchema,
+  validateWithSchema,
 } from "../_shared.js";
 
 export default async function handler(req: any, res: any) {
@@ -41,6 +48,20 @@ export default async function handler(req: any, res: any) {
   const url = String(req.url || "");
   const body = parseBody(req);
   const queryAction = String(req.query?.action || body?.action || "").trim();
+  const clientIp = getClientIp(req);
+
+  // 0. Handle /api/auth/logout (or ?action=logout)
+  if (queryAction === "logout" || url.includes("/logout")) {
+    const csrf = verifyCsrfRequest(req);
+    if (!csrf.valid) {
+      return sendJson(res, 403, { success: false, error: csrf.error || "CSRF validation failed" });
+    }
+    clearSessionCookie(res);
+    return sendJson(res, 200, {
+      success: true,
+      message: "Logged out successfully.",
+    });
+  }
 
   // 1. Handle /api/auth/revoke-all-sessions (or ?action=revoke-all-sessions)
   if (queryAction === "revoke-all-sessions" || url.includes("/revoke-all-sessions")) {
@@ -59,8 +80,7 @@ export default async function handler(req: any, res: any) {
           "UPDATE public.users SET token_version = COALESCE(token_version, 1) + 1, updated_at = NOW() WHERE id = $1;",
           [userId]
         );
-      } catch (err: any) {
-        console.warn("Notice updating token_version in pool:", err?.message || err);
+      } catch {
         if (process.env.NODE_ENV === "production") {
           return sendJson(res, 503, { success: false, error: "Database unavailable" });
         }
@@ -78,7 +98,8 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    logSecurityEvent("AUTH_SESSIONS_REVOKED", { userId, ip: getClientIp(req) });
+    clearSessionCookie(res);
+    logSecurityEvent("AUTH_SESSIONS_REVOKED", { userId, ip: clientIp });
     return sendJson(res, 200, {
       success: true,
       message: "All existing sessions have been revoked. Please log in again with new credentials.",
@@ -87,26 +108,35 @@ export default async function handler(req: any, res: any) {
 
   // 2. Handle /api/auth/update-password (or ?action=update-password)
   if (queryAction === "update-password" || url.includes("/update-password")) {
-    const { newPassword } = body;
-    if (!newPassword || typeof newPassword !== "string" || newPassword.length < 6) {
-      return sendJson(res, 400, {
-        success: false,
-        error: "Password must be at least 6 characters long.",
+    const pwRate = await checkRateLimit(`pw_ip_${clientIp}`, 5, 5 * 60 * 1000);
+    if (!pwRate.allowed) {
+      logSecurityEvent("RATE_LIMIT_EXCEEDED", {
+        scope: "update-password",
+        ip: clientIp,
       });
+      return sendRateLimitExceeded(
+        res,
+        pwRate.retryAfterSec,
+        "Too many password update attempts. Please try again later."
+      );
     }
 
     let resolvedUserId = "";
     let resolvedEmail = "";
 
-    // First check standard backend session / Supabase bearer token via verifyAuthRequest
     const authResult = await verifyAuthRequest(req);
+    if (authResult.statusCode === 403) {
+      return sendJson(res, 403, {
+        success: false,
+        error: authResult.error || "CSRF validation failed",
+      });
+    }
     if (authResult.authorized && authResult.userId) {
       resolvedUserId = authResult.userId;
       if (authResult.session?.email) {
         resolvedEmail = authResult.session.email.trim().toLowerCase();
       }
     } else {
-      // Also support Supabase recovery token verification via Supabase Auth REST endpoint
       const authHeader = String(req.headers?.authorization || req.headers?.Authorization || "");
       const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
       const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || "";
@@ -117,6 +147,10 @@ export default async function handler(req: any, res: any) {
         "";
 
       if (bearerToken && supabaseUrl && supabaseKey) {
+        const csrf = verifyCsrfRequest(req);
+        if (!csrf.valid) {
+          return sendJson(res, 403, { success: false, error: csrf.error || "CSRF validation failed" });
+        }
         try {
           const userResp = await fetch(`${supabaseUrl.replace(/\/$/, "")}/auth/v1/user`, {
             headers: {
@@ -131,9 +165,7 @@ export default async function handler(req: any, res: any) {
               resolvedEmail = supaUser.email ? String(supaUser.email).trim().toLowerCase() : "";
             }
           }
-        } catch (err) {
-          console.warn("Notice verifying Supabase recovery token:", err);
-        }
+        } catch {}
       }
     }
 
@@ -141,6 +173,23 @@ export default async function handler(req: any, res: any) {
       return sendJson(res, 401, {
         success: false,
         error: "Unauthorized: Valid session or recovery token required to update password.",
+      });
+    }
+
+    const pwValidation = validateWithSchema(updatePasswordBodySchema, body);
+    if (!pwValidation.success) {
+      return sendJson(res, 400, {
+        success: false,
+        error: pwValidation.error,
+      });
+    }
+
+    const { newPassword } = pwValidation.data;
+    const strength = validatePasswordStrength(newPassword);
+    if (!strength.valid) {
+      return sendJson(res, 400, {
+        success: false,
+        error: strength.error || "Password does not meet security requirements.",
       });
     }
 
@@ -173,8 +222,7 @@ export default async function handler(req: any, res: any) {
         if (updatedUser) {
           newTokenVersion = Number(updatedUser.token_version || 1);
         }
-      } catch (err: any) {
-        console.warn("Notice updating password in PostgreSQL:", err?.message || err);
+      } catch {
         if (process.env.NODE_ENV === "production") {
           return sendJson(res, 503, { success: false, error: "Database unavailable" });
         }
@@ -205,53 +253,73 @@ export default async function handler(req: any, res: any) {
     const finalUserId = updatedUser?.id || resolvedUserId;
     const finalEmail = updatedUser?.email || resolvedEmail;
     const finalName = updatedUser?.name || "Traveler";
-    const freshToken = finalUserId
-      ? generateSessionToken(finalUserId, finalEmail, finalName, newTokenVersion)
-      : undefined;
+    if (finalUserId) {
+      const freshToken = generateSessionToken(finalUserId, finalEmail, finalName, newTokenVersion);
+      setSessionCookie(res, freshToken);
+    }
 
     logSecurityEvent("AUTH_PASSWORD_UPDATED", {
       userId: finalUserId,
-      ip: getClientIp(req),
+      ip: clientIp,
     });
 
     return sendJson(res, 200, {
       success: true,
-      token: freshToken,
       message: "Password updated and synchronized across all sign-in methods.",
     });
   }
 
   // 3. Standard Login Flow
-  const clientIp = getClientIp(req);
-  const ipRate = checkRateLimit(`login_ip_${clientIp}`, 10, 5 * 60 * 1000);
-  if (!ipRate.allowed) {
-    return sendJson(res, 429, {
-      success: false,
-      error: `Too many login attempts. Please try again in ${Math.ceil(ipRate.retryAfterSec / 60)} minutes.`,
-    });
+  const loginCsrf = verifyCsrfRequest(req);
+  if (!loginCsrf.valid) {
+    return sendJson(res, 403, { success: false, error: loginCsrf.error || "CSRF validation failed" });
   }
 
-  const { emailOrPhone, email, phone, password } = body;
-  const rawInput = (emailOrPhone || email || phone || "").trim();
-  const inputPassword = password || "";
+  const ipRate = await checkRateLimit(`login_ip_${clientIp}`, 10, 5 * 60 * 1000);
+  if (!ipRate.allowed) {
+    logSecurityEvent("RATE_LIMIT_EXCEEDED", { scope: "login_ip", ip: clientIp });
+    return sendRateLimitExceeded(
+      res,
+      ipRate.retryAfterSec,
+      `Too many login attempts. Please try again in ${Math.ceil(ipRate.retryAfterSec / 60)} minutes.`
+    );
+  }
 
-  if (!rawInput) {
+  const rawIdentifier = body?.emailOrPhone ?? body?.identifier ?? body?.email ?? body?.phone;
+  const rawPassword = body?.password;
+
+  if (typeof rawIdentifier !== "string" || !rawIdentifier.trim()) {
     return sendJson(res, 400, { success: false, error: "Please enter your email or phone number." });
   }
-  if (!inputPassword) {
+  if (rawIdentifier.trim().length > 160) {
+    return sendJson(res, 400, { success: false, error: "Identifier exceeds maximum length." });
+  }
+  if (typeof rawPassword !== "string" || !rawPassword) {
     return sendJson(res, 400, { success: false, error: "Please enter your password." });
   }
+  if (rawPassword.length > 128) {
+    return sendJson(res, 400, { success: false, error: "Password exceeds maximum length." });
+  }
+
+  const rawInput = rawIdentifier.trim();
+  const inputPassword = rawPassword;
 
   const cleanDigits = rawInput.replace(/\D/g, "");
   const trimmedLower = rawInput.toLowerCase();
 
   const accountKey = `login_acc_${trimmedLower || cleanDigits}`;
-  const accountRate = checkRateLimit(accountKey, 5, 5 * 60 * 1000);
+  const accountRate = await checkRateLimit(accountKey, 5, 5 * 60 * 1000);
   if (!accountRate.allowed) {
-    return sendJson(res, 429, {
-      success: false,
-      error: `Too many failed login attempts. Please try again in ${Math.ceil(accountRate.retryAfterSec / 60)} minutes.`,
+    logSecurityEvent("RATE_LIMIT_EXCEEDED", {
+      scope: "login_account",
+      ip: clientIp,
+      identifier: trimmedLower.slice(0, 3) + "***",
     });
+    return sendRateLimitExceeded(
+      res,
+      accountRate.retryAfterSec,
+      `Too many failed login attempts. Please try again in ${Math.ceil(accountRate.retryAfterSec / 60)} minutes.`
+    );
   }
 
   let candidateUsers: any[] = [];
@@ -274,17 +342,14 @@ export default async function handler(req: any, res: any) {
       `;
       const userRes = await pool.query(usersQuery, [trimmedLower, phoneTail]);
       candidateUsers = userRes.rows || [];
-
       usedPostgres = true;
-    } catch (dbErr: any) {
+    } catch {
       dbDownError = true;
-      console.warn("Notice: PostgreSQL unavailable in api/auth/login:", dbErr?.message || dbErr);
     }
   } else {
     dbDownError = true;
   }
 
-  // In-memory fallback (non-production only)
   if (candidateUsers.length === 0 && process.env.NODE_ENV !== "production") {
     const localUser = findLocalUser(rawInput);
     if (localUser) {
@@ -292,8 +357,6 @@ export default async function handler(req: any, res: any) {
     }
   }
 
-  // Serverless HTTPS Fallback: When POSTGRES_URL pool is not configured on Vercel,
-  // verify credentials directly against Supabase Auth REST API + public.users over HTTPS
   if (candidateUsers.length === 0) {
     const supabaseUrl = (
       process.env.VITE_SUPABASE_URL ||
@@ -383,7 +446,7 @@ export default async function handler(req: any, res: any) {
                 createdAt: profileRow?.created_at || supaUser.created_at || new Date().toISOString(),
               };
 
-              resetRateLimit(accountKey);
+              await resetRateLimit(accountKey);
               logSecurityEvent("AUTH_LOGIN_SUCCESS", {
                 ip: clientIp,
                 userId: userAccount.id,
@@ -391,18 +454,15 @@ export default async function handler(req: any, res: any) {
               });
 
               const sessionToken = generateSessionToken(userAccount.id, userAccount.email, userAccount.name, 1);
+              setSessionCookie(res, sessionToken);
               return sendJson(res, 200, {
                 success: true,
-                token: sessionToken,
-                supabaseAccessToken: accessToken,
                 user: userAccount,
               });
             }
           }
         }
-      } catch (supaErr: any) {
-        console.warn("Notice: Supabase HTTPS auth fallback in api/auth/login:", supaErr?.message || supaErr);
-      }
+      } catch {}
     } else if (process.env.NODE_ENV === "production" && dbDownError) {
       return sendJson(res, 503, { success: false, error: "Database unavailable" });
     }
@@ -427,7 +487,6 @@ export default async function handler(req: any, res: any) {
   let foundUser: any = candidateUsers[0];
   let passCheck = verifyPasswordMatchNode(inputPassword, foundUser.password_hash);
 
-  // If multiple accounts share the same phone number or name, check remaining candidates
   if (!passCheck.valid && candidateUsers.length > 1) {
     for (let i = 1; i < candidateUsers.length; i++) {
       const check = verifyPasswordMatchNode(inputPassword, candidateUsers[i].password_hash);
@@ -447,15 +506,13 @@ export default async function handler(req: any, res: any) {
     });
   }
 
-  // Login succeeded: clear failed rate limit counter for this account
-  resetRateLimit(accountKey);
+  await resetRateLimit(accountKey);
   logSecurityEvent("AUTH_LOGIN_SUCCESS", {
     ip: clientIp,
     userId: foundUser.id,
     rehashUpgraded: passCheck.needsRehash,
   });
 
-  // Auto-upgrade legacy hash to modern bcrypt on successful login
   if (passCheck.needsRehash || !foundUser.password_hash?.startsWith("$2")) {
     const modernHash = hashPasswordNode(inputPassword);
     if (usedPostgres && pool) {
@@ -464,7 +521,7 @@ export default async function handler(req: any, res: any) {
           modernHash,
           foundUser.id,
         ]);
-      } catch (e) {}
+      } catch {}
     }
     if (process.env.NODE_ENV !== "production") {
       foundUser.password_hash = modernHash;
@@ -472,7 +529,6 @@ export default async function handler(req: any, res: any) {
     }
   }
 
-  // Server-side smart member linking: link any invited placeholder trip_members matching this user's email/phone
   await linkUserToTripMembersInDb(pool, foundUser.id, foundUser.email, foundUser.phone, foundUser.name);
 
   const userAccount = {
@@ -488,5 +544,6 @@ export default async function handler(req: any, res: any) {
 
   const tokenVersion = Number(foundUser.token_version || 1);
   const sessionToken = generateSessionToken(foundUser.id, foundUser.email, foundUser.name, tokenVersion);
-  return sendJson(res, 200, { success: true, token: sessionToken, user: userAccount });
+  setSessionCookie(res, sessionToken);
+  return sendJson(res, 200, { success: true, user: userAccount });
 }
