@@ -1,7 +1,10 @@
 agent/
 .agents/
 skills-lock.json
-scripts/
+scripts/apply-migration-*.ts
+scripts/apply-sync-trigger.ts
+scripts/generate_audit_pdf.ts
+scripts/init-supabase-schema.ts
 src/**/*.test.ts
 src/**/*.test.tsx
 .env*

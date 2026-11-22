@@ -7,7 +7,12 @@ const __dirname = path.dirname(__filename);
 
 const targetFile = path.resolve(__dirname, "../node_modules/vite-plugin-pwa/dist/index.js");
 
-if (fs.existsSync(targetFile)) {
+if (!fs.existsSync(targetFile)) {
+  console.warn(`[patch-pwa] Target file not found yet (${targetFile}); skipping patch.`);
+  process.exit(0);
+}
+
+try {
   let content = fs.readFileSync(targetFile, "utf-8");
   let modified = false;
 
@@ -43,6 +48,8 @@ if (fs.existsSync(targetFile)) {
     fs.writeFileSync(targetFile, content, "utf-8");
     console.log("vite-plugin-pwa successfully patched for Node 22 ESM compatibility.");
   }
+} catch (e) {
+  console.warn("[patch-pwa] Warning while patching vite-plugin-pwa:", e?.message || e);
 }
 
 try {
