@@ -24,6 +24,7 @@ export default async function handler(req: any, res: any) {
       diagnostic: result,
     });
   } catch {
+    console.error("Error executing daily check");
     return sendJson(res, 500, {
       success: false,
       error: "Internal server error during daily check",

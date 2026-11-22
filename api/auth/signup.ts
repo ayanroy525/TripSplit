@@ -17,10 +17,11 @@ import {
   logSecurityEvent,
   signupBodySchema,
   validateWithSchema,
+  withSentry,
   type LocalUserRecord,
 } from "../_shared.js";
 
-export default async function handler(req: any, res: any) {
+async function handler(req: any, res: any) {
   setCorsHeaders(res, req);
 
   if (req.method === "OPTIONS") {
@@ -175,6 +176,8 @@ export default async function handler(req: any, res: any) {
   logSecurityEvent("AUTH_SIGNUP_SUCCESS", { userId, ip: clientIp });
 
   const sessionToken = generateSessionToken(userId, trimmedEmail, trimmedName);
-  setSessionCookie(res, sessionToken);
+  setSessionCookie(res, sessionToken, req);
   return sendJson(res, 200, { success: true, user: userAccount });
 }
+
+export default withSentry(handler);

@@ -244,12 +244,14 @@ export function getTelegramWebhookSecret(): string {
       return sanitized;
     }
   }
-  const sessionSecret = cleanEnvValue(process.env.SESSION_SECRET || process.env.AUTH_SECRET);
-  if (process.env.NODE_ENV === "production" && !sessionSecret) {
+  if (process.env.NODE_ENV === "production") {
     return "";
   }
   return crypto
-    .createHmac("sha256", sessionSecret || "tripsplit_auth_token_secret_seed")
+    .createHmac(
+      "sha256",
+      process.env.SESSION_SECRET || process.env.AUTH_SECRET || "tripsplit_auth_token_secret_seed"
+    )
     .update("telegram_webhook_secret_token")
     .digest("hex")
     .slice(0, 32);
@@ -267,6 +269,20 @@ export async function registerTelegramWebhook(
   if (!token) return { success: false, error: "No bot token configured" };
 
   const secretToken = getTelegramWebhookSecret();
+  if (!secretToken) {
+    return { success: false, error: "TELEGRAM_WEBHOOK_SECRET is not configured" };
+  }
+
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(webhookUrl);
+  } catch {
+    return { success: false, error: "Invalid webhook URL" };
+  }
+  if (parsedUrl.protocol !== "https:") {
+    return { success: false, error: "Webhook URL must use HTTPS" };
+  }
+
   const url = `https://api.telegram.org/bot${token}/setWebhook`;
   try {
     const res = await fetch(url, {
@@ -283,8 +299,8 @@ export async function registerTelegramWebhook(
       await saveTelegramConfig({ webhookUrl });
       return { success: true, description: data.description || "Webhook registered successfully" };
     }
-    return { success: false, error: data.description || "Failed to register webhook" };
-  } catch (err: any) {
-    return { success: false, error: err?.message || String(err) };
+    return { success: false, error: "Failed to register webhook" };
+  } catch {
+    return { success: false, error: "Failed to reach Telegram API" };
   }
 }

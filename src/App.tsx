@@ -19,6 +19,7 @@ import { useNotifications } from "./context/NotificationContext";
 import { useTripData } from "./hooks/useTripData";
 import { useTripActions } from "./hooks/useTripActions";
 import { getTripPermissions } from "./utils/permissions";
+import { setSentryTripTag } from "./utils/sentry";
 
 // Views (Initial & Core)
 import { HomeDashboardView } from "./components/HomeDashboardView";
@@ -184,6 +185,11 @@ export default function App() {
       setAutoOpenJoinModal(false);
     }
   }, [autoOpenJoinModal, setAutoOpenJoinModal]);
+
+  // Tag Sentry errors with the current trip id
+  React.useEffect(() => {
+    setSentryTripTag(activeTripId || trip?.id || null);
+  }, [activeTripId, trip?.id]);
 
   // Modal open helper with preselection
   const handleOpenSettleModalWithParams = (debtorId?: string, creditorId?: string, amount?: number) => {

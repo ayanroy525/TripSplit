@@ -554,12 +554,13 @@ export default async function handler(req: any, res: any) {
           [clean]
         );
         const trip = tripRes.rows[0];
-        if (!trip) {
+        if (!trip && process.env.NODE_ENV === "production") {
           return sendJson(res, 404, {
             success: false,
             error: `Invite code '${clean}' is invalid or expired. Please check with your trip organizer.`,
           });
         }
+        if (trip) {
         if (trip.invite_expires_at && new Date(trip.invite_expires_at) < new Date()) {
           return sendJson(res, 410, {
             success: false,
@@ -670,6 +671,7 @@ export default async function handler(req: any, res: any) {
             activities: activitiesRes.rows,
           },
         });
+        }
       } catch (err: any) {
         console.warn("PostgreSQL join error in serverless handler:", err?.message || err);
         if (process.env.NODE_ENV === "production") {

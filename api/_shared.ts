@@ -3,6 +3,7 @@ import { Pool } from "pg";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
+import * as Sentry from "@sentry/node";
 
 const rawConn = (
   process.env.POSTGRES_URL ||
@@ -150,15 +151,39 @@ export function parseCookies(req: any): Record<string, string> {
   return result;
 }
 
-export function setSessionCookie(res: any, token: string): void {
+function isNonProdIframePreviewRequest(req?: any): boolean {
+  if (process.env.NODE_ENV === "production" || !req) return false;
+  const hostHeader = String(
+    req?.headers?.["x-forwarded-host"] || req?.headers?.host || ""
+  )
+    .split(",")[0]
+    .trim()
+    .toLowerCase();
+  const originHeader = String(req?.headers?.origin || req?.headers?.Origin || "")
+    .trim()
+    .toLowerCase();
+  const hostWithoutPort = hostHeader.split(":")[0];
+  return (
+    hostWithoutPort.endsWith(".run.app") ||
+    originHeader.includes(".run.app")
+  );
+}
+
+export function setSessionCookie(res: any, token: string, req?: any): void {
   if (!res || typeof res.setHeader !== "function") return;
-  const cookieValue = `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${SESSION_MAX_AGE_SECONDS}`;
+  const sameSitePart = isNonProdIframePreviewRequest(req)
+    ? "SameSite=None; Partitioned"
+    : "SameSite=Lax";
+  const cookieValue = `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}; HttpOnly; Secure; ${sameSitePart}; Path=/; Max-Age=${SESSION_MAX_AGE_SECONDS}`;
   res.setHeader("Set-Cookie", cookieValue);
 }
 
-export function clearSessionCookie(res: any): void {
+export function clearSessionCookie(res: any, req?: any): void {
   if (!res || typeof res.setHeader !== "function") return;
-  const cookieValue = `${SESSION_COOKIE_NAME}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT`;
+  const sameSitePart = isNonProdIframePreviewRequest(req)
+    ? "SameSite=None; Partitioned"
+    : "SameSite=Lax";
+  const cookieValue = `${SESSION_COOKIE_NAME}=; HttpOnly; Secure; ${sameSitePart}; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT`;
   res.setHeader("Set-Cookie", cookieValue);
 }
 
@@ -336,15 +361,35 @@ export async function verifyBearerTokenAsync(token: string): Promise<{
   return { session };
 }
 
+function isSameOriginRequest(req: any, origin: string): boolean {
+  if (!req || !origin || origin === "null") return false;
+  try {
+    const parsedOrigin = new URL(origin);
+    if (parsedOrigin.protocol !== "http:" && parsedOrigin.protocol !== "https:") {
+      return false;
+    }
+    const rawHost = String(
+      req?.headers?.["x-forwarded-host"] || req?.headers?.host || ""
+    )
+      .split(",")[0]
+      .trim()
+      .toLowerCase();
+    if (!rawHost) return false;
+    return parsedOrigin.host.toLowerCase() === rawHost;
+  } catch {
+    return false;
+  }
+}
+
 export function verifyCsrfRequest(req: any): { valid: boolean; error?: string } {
   const method = String(req?.method || "GET").toUpperCase();
   if (method === "GET" || method === "HEAD" || method === "OPTIONS") {
     return { valid: true };
   }
 
-  // Check Origin header if present
+  // Check Origin header if present: allow same-origin requests or explicitly allowlisted origins
   const origin = String(req?.headers?.origin || req?.headers?.Origin || "").trim();
-  if (origin && !isOriginAllowed(origin)) {
+  if (origin && !isSameOriginRequest(req, origin) && !isOriginAllowed(origin)) {
     logSecurityEvent("CSRF_REJECTED", {
       reason: "DISALLOWED_ORIGIN",
       method,
@@ -410,7 +455,7 @@ export async function verifyAuthRequest(req: any): Promise<AuthVerificationResul
     };
   }
 
-  // 3. Enforce CSRF protection on all state-changing requests
+  // 3. Enforce CSRF protection on all state-changing authenticated requests
   const csrf = verifyCsrfRequest(req);
   if (!csrf.valid) {
     return {
@@ -826,16 +871,25 @@ export function isOriginAllowed(origin: string): boolean {
       return true;
     }
 
-    // 2. Allow APP_URL env var
-    const appUrlRaw = (process.env.APP_URL || "").trim();
-    if (appUrlRaw) {
+    // 2. Allow APP_URL, VERCEL_URL, and VERCEL_PROJECT_PRODUCTION_URL env vars (exact origin match only)
+    const envOriginCandidates = [
+      process.env.APP_URL,
+      process.env.VERCEL_URL,
+      process.env.VERCEL_PROJECT_PRODUCTION_URL,
+    ]
+      .map((s) => (s || "").trim())
+      .filter(Boolean);
+
+    for (const candidateRaw of envOriginCandidates) {
       try {
-        const appParsed = new URL(appUrlRaw.startsWith("http") ? appUrlRaw : `https://${appUrlRaw}`);
-        if (normalizedOrigin === appParsed.origin.toLowerCase()) {
+        const candidateParsed = new URL(
+          candidateRaw.startsWith("http") ? candidateRaw : `https://${candidateRaw}`
+        );
+        if (normalizedOrigin === candidateParsed.origin.toLowerCase()) {
           return true;
         }
       } catch {
-        if (normalizedOrigin === appUrlRaw.replace(/\/$/, "").toLowerCase()) {
+        if (normalizedOrigin === candidateRaw.replace(/\/$/, "").toLowerCase()) {
           return true;
         }
       }
@@ -926,8 +980,8 @@ export function setRateLimitPoolForTesting(executor: RateLimitDbExecutor | null)
   customRateLimitPool = executor;
 }
 
-async function ensureRateLimitsTable(db: RateLimitDbExecutor): Promise<void> {
-  if (rateLimitsTableInitialized || customRateLimitPool) return;
+async function ensureRateLimitsTable(db: RateLimitDbExecutor, force = false): Promise<void> {
+  if ((rateLimitsTableInitialized && !force) || customRateLimitPool) return;
   try {
     await db.query(`
       CREATE TABLE IF NOT EXISTS public.rate_limits (
@@ -935,9 +989,13 @@ async function ensureRateLimitsTable(db: RateLimitDbExecutor): Promise<void> {
         count int NOT NULL DEFAULT 1,
         reset_at timestamptz NOT NULL
       );
-      ALTER TABLE public.rate_limits ENABLE ROW LEVEL SECURITY;
-      REVOKE ALL ON TABLE public.rate_limits FROM anon, authenticated;
     `);
+    try {
+      await db.query("ALTER TABLE public.rate_limits ENABLE ROW LEVEL SECURITY;");
+    } catch {}
+    try {
+      await db.query("REVOKE ALL ON TABLE public.rate_limits FROM anon, authenticated;");
+    } catch {}
     rateLimitsTableInitialized = true;
   } catch {}
 }
@@ -951,7 +1009,18 @@ export async function checkRateLimit(
   if (dbExecutor) {
     try {
       await ensureRateLimitsTable(dbExecutor);
-      const res = await dbExecutor.query(RATE_LIMIT_UPSERT_SQL, [key, windowMs]);
+      let res: { rows: any[] };
+      try {
+        res = await dbExecutor.query(RATE_LIMIT_UPSERT_SQL, [key, windowMs]);
+      } catch (queryErr: any) {
+        if (queryErr?.code === "42P01") {
+          // Table did not exist yet — create and retry once
+          await ensureRateLimitsTable(dbExecutor, true);
+          res = await dbExecutor.query(RATE_LIMIT_UPSERT_SQL, [key, windowMs]);
+        } else {
+          throw queryErr;
+        }
+      }
       const row = res.rows[0];
       const count = Number(row?.count ?? 1);
       const retryAfterSec = Math.max(1, Number(row?.retry_after_sec ?? Math.ceil(windowMs / 1000)));
@@ -963,8 +1032,9 @@ export async function checkRateLimit(
         remaining: Math.max(0, maxAttempts - count),
         retryAfterSec: 0,
       };
-    } catch (err) {
+    } catch (err: any) {
       if (process.env.NODE_ENV === "production") {
+        console.error("[RateLimit] Postgres check failed:", err?.code || "UNKNOWN");
         // Fail closed on rate-limit DB error in production
         return {
           allowed: false,
@@ -1358,7 +1428,7 @@ export const telegramTestBodySchema = z.object({
 export function validateWithSchema<T>(
   schema: z.ZodType<T>,
   data: unknown
-): { success: true; data: T } | { success: false; error: string } {
+): { success: boolean; data?: T; error?: string } {
   const parsed = schema.safeParse(data);
   if (parsed.success) {
     return { success: true, data: parsed.data };
@@ -1644,3 +1714,172 @@ export async function linkUserToTripMembersInDb(
 
   return { linkedTripsCount: linkedTripIds.size, linkedMembersCount };
 }
+
+// ============================================================================
+// Server-Side Sentry Error Monitoring & PII/DB Scrubbing
+// ============================================================================
+
+const SERVER_SENSITIVE_KEY_PATTERN =
+  /pass(word|wd)?|pwd|secret|token|auth(orization)?|cookie|jwt|session|phone|mobile|tel|email|mail|body|payload|credential|api[-_]?key/i;
+
+const SERVER_DB_ERROR_PATTERN =
+  /duplicate key value|violates\s+(?:unique|foreign key|not-null|check)\s+constraint|permission denied for (?:table|relation|schema|function)|relation\s+"[^"]+"\s+does not exist|column\s+"[^"]+"\s+does not exist|syntax error at or near|postgres(?:ql)?:\/\/|SQLSTATE|invalid input syntax for type/i;
+
+const SERVER_EMAIL_PATTERN = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+const SERVER_BEARER_PATTERN = /\bBearer\s+[A-Za-z0-9\-._~+/]+=*/gi;
+const SERVER_JWT_PATTERN = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g;
+const SERVER_PHONE_PATTERN = /(?<!\w)(?:\+?\d{1,3}[\s.-]?)?(?:\(?\d{3,4}\)?[\s.-]?)\d{3,4}[\s.-]?\d{3,4}(?!\w)/g;
+const SERVER_KV_SECRET_PATTERN =
+  /\b(password|passwd|pwd|token|secret|authorization|cookie)\s*[:=]\s*[^\s,&;"']+/gi;
+
+let serverSentryInitialized = false;
+
+export function initServerSentry(): boolean {
+  if (serverSentryInitialized) return true;
+  const dsn = (process.env.SENTRY_DSN || "").trim();
+  if (!dsn) return false;
+
+  Sentry.init({
+    dsn,
+    environment: process.env.VERCEL_ENV || process.env.NODE_ENV || "development",
+    release: (process.env.APP_VERSION || process.env.VERCEL_GIT_COMMIT_SHA || "").trim() || undefined,
+    tracesSampleRate: 0.1,
+    beforeSend(event) {
+      return scrubServerSentryEvent(event);
+    },
+  });
+
+  serverSentryInitialized = true;
+  return true;
+}
+
+function scrubServerString(value: string): string {
+  if (SERVER_DB_ERROR_PATTERN.test(value)) {
+    return "[REDACTED_DB_ERROR]";
+  }
+  return value
+    .replace(SERVER_BEARER_PATTERN, "Bearer [REDACTED]")
+    .replace(SERVER_JWT_PATTERN, "[REDACTED_JWT]")
+    .replace(SERVER_EMAIL_PATTERN, "[REDACTED_EMAIL]")
+    .replace(SERVER_KV_SECRET_PATTERN, "$1=[REDACTED]")
+    .replace(SERVER_PHONE_PATTERN, (match) => {
+      const digits = match.replace(/\D/g, "");
+      return digits.length >= 7 && digits.length <= 15 ? "[REDACTED_PHONE]" : match;
+    });
+}
+
+function scrubServerUnknown(value: unknown, depth = 0): unknown {
+  if (depth > 6 || value === null || value === undefined) return value;
+  if (typeof value === "string") return scrubServerString(value);
+  if (typeof value !== "object") return value;
+
+  if (Array.isArray(value)) {
+    return value.map((item) => scrubServerUnknown(item, depth + 1));
+  }
+
+  const scrubbed: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+    if (SERVER_SENSITIVE_KEY_PATTERN.test(key)) {
+      scrubbed[key] = "[REDACTED]";
+    } else {
+      scrubbed[key] = scrubServerUnknown(val, depth + 1);
+    }
+  }
+  return scrubbed;
+}
+
+export function scrubServerSentryEvent<T extends Record<string, any>>(event: T): T {
+  if (!event || typeof event !== "object") return event;
+  const evt: Record<string, any> = event;
+
+  if (evt.user) {
+    evt.user = evt.user.id ? { id: String(evt.user.id) } : undefined;
+  }
+
+  if (evt.request) {
+    delete evt.request.data;
+    delete evt.request.headers;
+    delete evt.request.cookies;
+    delete evt.request.query_string;
+    if (typeof evt.request.url === "string") {
+      evt.request.url = scrubServerString(evt.request.url.split("?")[0]);
+    }
+  }
+
+  if (typeof evt.message === "string") {
+    evt.message = scrubServerString(evt.message);
+  }
+
+  if (evt.exception?.values && Array.isArray(evt.exception.values)) {
+    evt.exception.values = evt.exception.values.map((ex: any) => ({
+      ...ex,
+      value: typeof ex?.value === "string" ? scrubServerString(ex.value) : ex?.value,
+    }));
+  }
+
+  if (Array.isArray(evt.breadcrumbs)) {
+    evt.breadcrumbs = evt.breadcrumbs.map((crumb: any) => ({
+      ...crumb,
+      message: typeof crumb?.message === "string" ? scrubServerString(crumb.message) : crumb?.message,
+      data: crumb?.data ? scrubServerUnknown(crumb.data) : undefined,
+    }));
+  }
+
+  if (evt.extra) {
+    evt.extra = scrubServerUnknown(evt.extra);
+  }
+
+  if (evt.contexts) {
+    evt.contexts = scrubServerUnknown(evt.contexts);
+  }
+
+  return evt as T;
+}
+
+function isDatabaseError(err: any): boolean {
+  if (!err || typeof err !== "object") return false;
+  if (err.severity && typeof err.severity === "string") return true;
+  if (typeof err.code === "string" && /^[0-9A-Z]{5}$/.test(err.code)) return true;
+  if (typeof err.message === "string" && SERVER_DB_ERROR_PATTERN.test(err.message)) return true;
+  return false;
+}
+
+export function withSentry<T extends (req: any, res: any) => Promise<any> | any>(handler: T) {
+  return async function sentryWrappedHandler(req: any, res: any) {
+    initServerSentry();
+    const safeUrl = typeof req?.url === "string" ? req.url.split("?")[0] : "unknown";
+    const method = typeof req?.method === "string" ? req.method : "UNKNOWN";
+
+    try {
+      const result = await handler(req, res);
+      const statusCode = Number(res?.statusCode || 200);
+
+      if (statusCode >= 500) {
+        Sentry.captureException(
+          new Error(`Server error (${statusCode}) on ${method} ${safeUrl}`)
+        );
+        await Sentry.flush(2000);
+      }
+
+      return result;
+    } catch (err: any) {
+      const sanitizedError = isDatabaseError(err)
+        ? new Error("Database operation failed")
+        : err instanceof Error
+        ? new Error(scrubServerString(err.message || "Internal server error"))
+        : new Error("Internal server error");
+
+      Sentry.captureException(sanitizedError);
+
+      if (res && !res.headersSent && !res.writableEnded) {
+        sendJson(res, 500, {
+          success: false,
+          error: "Internal server error",
+        });
+      }
+
+      await Sentry.flush(2000);
+    }
+  };
+}
+

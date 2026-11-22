@@ -1,8 +1,10 @@
-import crypto from "crypto";
-import { setCorsHeaders, sendJson, verifyAdminRequest } from "../_shared.js";
+import { z } from "zod";
+import { setCorsHeaders, sendJson, verifyAdminRequest, timingSafeCompare, logSecurityEvent, getClientIp } from "../_shared.js";
 import { getTelegramConfig, getTelegramWebhookSecret, registerTelegramWebhook, saveTelegramConfig } from "./_client.js";
 import { processTelegramUpdate } from "./_processor.js";
 import { startTelegramPoller, recordDetectedTelegramUser } from "./_poller.js";
+
+const webhookUrlQuerySchema = z.string().trim().url("Invalid webhook URL").max(512);
 
 export default async function handler(req: any, res: any) {
   setCorsHeaders(res, req);
@@ -22,19 +24,23 @@ export default async function handler(req: any, res: any) {
     }
     const queryUrl = req.query?.url || "";
     if (queryUrl && typeof queryUrl === "string") {
-      const trimmedUrl = queryUrl.trim();
-      if (trimmedUrl.length > 512 || !/^https?:\/\/[^\s/$.?#].[^\s]*$/i.test(trimmedUrl)) {
+      const parsedUrl = webhookUrlQuerySchema.safeParse(queryUrl);
+      if (!parsedUrl.success) {
         return sendJson(res, 400, { success: false, error: "Invalid webhook URL parameter" });
       }
+      const cleanUrl = parsedUrl.data;
+      if (!cleanUrl.startsWith("https://") && process.env.NODE_ENV === "production") {
+        return sendJson(res, 400, { success: false, error: "Webhook URL must use HTTPS" });
+      }
       try {
-        await saveTelegramConfig({ webhookUrl: trimmedUrl });
-        if (process.env.VERCEL || trimmedUrl.startsWith("https://")) {
-          const reg = await registerTelegramWebhook(trimmedUrl);
+        await saveTelegramConfig({ webhookUrl: cleanUrl });
+        if (process.env.VERCEL || cleanUrl.startsWith("https://")) {
+          const reg = await registerTelegramWebhook(cleanUrl);
           return sendJson(res, reg.success ? 200 : 400, {
             success: reg.success,
             status: "active",
             description: reg.description,
-            error: reg.success ? undefined : "Failed to register webhook",
+            error: reg.error,
           });
         } else {
           startTelegramPoller().catch(() => {});
@@ -46,7 +52,7 @@ export default async function handler(req: any, res: any) {
           });
         }
       } catch {
-        return sendJson(res, 500, { success: false, error: "Internal server error configuring webhook" });
+        return sendJson(res, 500, { success: false, error: "Failed to configure Telegram webhook" });
       }
     }
 
@@ -54,7 +60,6 @@ export default async function handler(req: any, res: any) {
       success: true,
       status: "active",
       endpoint: "/api/telegram/webhook",
-      info: "Telegram Bot Webhook endpoint is listening for verified callback queries and messages",
     });
   }
 
@@ -62,12 +67,16 @@ export default async function handler(req: any, res: any) {
     return sendJson(res, 405, { success: false, error: "Method not allowed" });
   }
 
-  // Security: Enforce secret token header verification using crypto.timingSafeEqual and fail closed if missing
+  // Security: Fail closed if secret token is not configured; verify in constant time
   const expectedSecret = getTelegramWebhookSecret();
   if (!expectedSecret) {
-    return sendJson(res, 403, {
+    logSecurityEvent("PERMISSION_DENIED", {
+      scope: "TELEGRAM_WEBHOOK_SECRET_MISSING",
+      ip: getClientIp(req),
+    });
+    return sendJson(res, 503, {
       success: false,
-      error: "Forbidden: Missing or invalid Telegram webhook secret token",
+      error: "Telegram webhook secret is not configured",
     });
   }
 
@@ -76,14 +85,11 @@ export default async function handler(req: any, res: any) {
     req.headers?.["X-Telegram-Bot-Api-Secret-Token"];
   const incomingSecret = typeof incomingSecretRaw === "string" ? incomingSecretRaw.trim() : "";
 
-  const expectedBuf = Buffer.from(expectedSecret, "utf-8");
-  const incomingBuf = Buffer.from(incomingSecret, "utf-8");
-  const isValidSecret =
-    incomingSecret.length > 0 &&
-    expectedBuf.length === incomingBuf.length &&
-    crypto.timingSafeEqual(expectedBuf, incomingBuf);
-
-  if (!isValidSecret) {
+  if (!timingSafeCompare(incomingSecret, expectedSecret)) {
+    logSecurityEvent("PERMISSION_DENIED", {
+      scope: "TELEGRAM_WEBHOOK_INVALID_SECRET",
+      ip: getClientIp(req),
+    });
     return sendJson(res, 403, {
       success: false,
       error: "Forbidden: Missing or invalid Telegram webhook secret token",
@@ -96,11 +102,11 @@ export default async function handler(req: any, res: any) {
       try {
         update = JSON.parse(update);
       } catch {
-        return sendJson(res, 400, { success: false, error: "Invalid webhook JSON body" });
+        return sendJson(res, 400, { success: false, error: "Invalid webhook payload" });
       }
     }
     if (!update || typeof update !== "object") {
-      return sendJson(res, 400, { success: false, error: "Invalid webhook update payload" });
+      return sendJson(res, 400, { success: false, error: "Invalid webhook payload" });
     }
 
     recordDetectedTelegramUser(update);
@@ -125,6 +131,7 @@ export default async function handler(req: any, res: any) {
     const result = await processTelegramUpdate(update);
     return sendJson(res, 200, { ok: true, ...result });
   } catch {
-    return sendJson(res, 500, { success: false, error: "Internal server error processing webhook" });
+    console.error("Error in Telegram webhook handler");
+    return sendJson(res, 500, { success: false, error: "Webhook processing error" });
   }
 }

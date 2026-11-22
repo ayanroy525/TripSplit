@@ -1,14 +1,49 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
+import { sentryVitePlugin } from '@sentry/vite-plugin';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+/**
+ * Ensures hidden .map files never remain in the deployed dist/ output even
+ * when SENTRY_AUTH_TOKEN is absent (e.g. local or preview builds).
+ */
+function deleteResidualSourceMapsPlugin(): Plugin {
+  const removeMaps = (dir: string) => {
+    if (!fs.existsSync(dir)) return;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        removeMaps(fullPath);
+      } else if (entry.isFile() && entry.name.endsWith('.map')) {
+        try {
+          fs.unlinkSync(fullPath);
+        } catch {}
+      }
+    }
+  };
+
+  return {
+    name: 'delete-residual-source-maps',
+    apply: 'build',
+    closeBundle() {
+      removeMaps(path.resolve(__dirname, 'dist'));
+    },
+  };
+}
+
 export default defineConfig(() => {
+  const sentryAuthToken = process.env.SENTRY_AUTH_TOKEN;
+  const sentryOrg = process.env.SENTRY_ORG;
+  const sentryProject = process.env.SENTRY_PROJECT;
+  const hasSentryUploadConfig = Boolean(sentryAuthToken && sentryOrg && sentryProject);
+
   return {
     envPrefix: ['VITE_', 'NEXT_PUBLIC_'],
     plugins: [
@@ -94,8 +129,25 @@ export default defineConfig(() => {
           enabled: false,
         },
       }),
+      ...(hasSentryUploadConfig
+        ? [
+            sentryVitePlugin({
+              org: sentryOrg,
+              project: sentryProject,
+              authToken: sentryAuthToken,
+              release: process.env.VITE_APP_VERSION
+                ? { name: process.env.VITE_APP_VERSION }
+                : undefined,
+              sourcemaps: {
+                filesToDeleteAfterUpload: ['./dist/**/*.map'],
+              },
+              telemetry: false,
+            }),
+          ]
+        : [deleteResidualSourceMapsPlugin()]),
     ],
     build: {
+      sourcemap: 'hidden' as const,
       chunkSizeWarningLimit: 1000,
       rollupOptions: {
         output: {

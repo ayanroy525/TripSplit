@@ -1,9 +1,9 @@
 import settingsHandler from "./_settings.js";
 import testHandler from "./_test.js";
 import detectChatHandler from "./_detect-chat.js";
-import { setCorsHeaders, sendJson, verifyAdminRequest } from "../_shared.js";
+import { setCorsHeaders, sendJson, verifyAdminRequest, withSentry } from "../_shared.js";
 
-export default async function handler(req: any, res: any) {
+async function handler(req: any, res: any) {
   setCorsHeaders(res, req);
   if (req.method === "OPTIONS") {
     res.statusCode = 204;
@@ -36,3 +36,5 @@ export default async function handler(req: any, res: any) {
     error: "Unknown admin action. Supported actions: settings, test, detect-chat",
   });
 }
+
+export default withSentry(handler);

@@ -72,11 +72,8 @@ export const SystemHealthModal: React.FC<SystemHealthModalProps> = ({ isOpen, on
     if (token) {
       headers.Authorization = `Bearer ${token}`;
     }
-    if (currentUser?.email) {
-      headers["X-Admin-Email"] = currentUser.email;
-    }
     return headers;
-  }, [token, currentUser?.email]);
+  }, [token]);
 
   const fetchHealthData = useCallback(async () => {
     try {

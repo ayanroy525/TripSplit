@@ -7,10 +7,6 @@ export default async function handler(req: any, res: any) {
     return res.end();
   }
 
-  if (req.method !== "GET") {
-    return sendJson(res, 405, { success: false, error: "Method Not Allowed" });
-  }
-
   const authResult = await verifyAuthRequest(req);
   if (!authResult.authorized || !authResult.userId) {
     return sendJson(res, authResult.statusCode || 401, {
@@ -97,6 +93,7 @@ export default async function handler(req: any, res: any) {
 
     return sendJson(res, 200, { success: true, trips: fullTrips });
   } catch {
-    return sendJson(res, 500, { success: false, error: "Failed to load trips" });
+    console.error("Error in /api/user-trips");
+    return sendJson(res, 500, { success: false, error: "Failed to load trips." });
   }
 }

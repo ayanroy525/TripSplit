@@ -53,7 +53,7 @@ export default async function handler(req: any, res: any) {
   } catch {
     return sendJson(res, 500, {
       connected: false,
-      error: "Database health check failed",
+      error: "Database connectivity check failed",
     });
   }
 }

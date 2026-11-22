@@ -37,9 +37,8 @@ let isSyncingInternal = false;
 let lastErrorInternal: string | null = null;
 
 /**
- * Retrieve request headers for server API calls.
- * Authentication uses the HttpOnly session cookie (via credentials: "include")
- * and includes X-Requested-With for CSRF protection on state-changing requests.
+ * Retrieve CSRF and optional test-environment authorization headers.
+ * Browser sessions authenticate via the HttpOnly tripsplit_session cookie (credentials: "include").
  */
 export function getAuthHeaders(includeContentType = true): Record<string, string> {
   const headers: Record<string, string> = {
@@ -48,10 +47,12 @@ export function getAuthHeaders(includeContentType = true): Record<string, string
   if (includeContentType) {
     headers["Content-Type"] = "application/json";
   }
-  if (typeof globalThis !== "undefined" && (globalThis as any).__TRIPSPLIT_TEST_AUTH_TOKEN__) {
-    const testToken = String((globalThis as any).__TRIPSPLIT_TEST_AUTH_TOKEN__);
-    headers["Cookie"] = `tripsplit_session=${encodeURIComponent(testToken)}`;
-    headers["Authorization"] = `Bearer ${testToken}`;
+  if (typeof globalThis !== "undefined") {
+    if ((globalThis as any).__TRIPSPLIT_TEST_AUTH_COOKIE__) {
+      headers["Cookie"] = String((globalThis as any).__TRIPSPLIT_TEST_AUTH_COOKIE__);
+    } else if ((globalThis as any).__TRIPSPLIT_TEST_AUTH_TOKEN__) {
+      headers["Authorization"] = `Bearer ${(globalThis as any).__TRIPSPLIT_TEST_AUTH_TOKEN__}`;
+    }
   }
   return headers;
 }

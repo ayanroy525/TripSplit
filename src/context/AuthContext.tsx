@@ -119,7 +119,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         if (user) {
           localStorage.setItem(ACTIVE_USER_KEY, JSON.stringify(user));
-          linkUserToExistingTripMembers(user).catch(() => {});
+          if (!user.id.startsWith("guest_")) {
+            linkUserToExistingTripMembers(user).catch(() => {});
+          }
         } else {
           localStorage.removeItem(ACTIVE_USER_KEY);
         }
@@ -134,7 +136,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setIsPasswordRecovery(true);
     }
 
-    // 2. Initial session check (for Supabase password recovery flows only)
+    // 2. Initial session check
     supabase.auth.getSession().then(async ({ data: { session } }) => {
       if (session?.user) {
         setTokenState(session.access_token);
@@ -257,7 +259,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const resData = await response.json();
         if (response.ok && resData.success && resData.user) {
           const userAccount: UserAccount = resData.user;
-          setTokenState(null);
           persistUser(userAccount);
           setAccounts((prev) => [userAccount, ...prev.filter((a) => a.id !== userAccount.id)]);
 
@@ -521,7 +522,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     } catch {}
 
-    // Synchronize the bcrypt password_hash and token_version in PostgreSQL public.users
+    // Synchronize the bcrypt password_hash and token_version in PostgreSQL public.users (sets fresh HttpOnly cookie)
     try {
       const activeBearer = token || supabaseAccessToken || "";
 
@@ -564,7 +565,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return { success: true };
   };
 
-  // Logout handler - clears HttpOnly session cookie via server endpoint and local user state
+  // Logout handler - clear HttpOnly session cookie on server and purge client caches
   const logout = () => {
     fetch("/api/auth/logout", {
       method: "POST",

@@ -1,11 +1,10 @@
-import { setCorsHeaders, sendJson, verifyAdminRequest } from "../_shared.js";
-import { sendTelegramMessage, getTelegramConfig, registerTelegramWebhook } from "./_client.js";
 import { z } from "zod";
+import { setCorsHeaders, sendJson, verifyAdminRequest, parseBody, validateWithSchema } from "../_shared.js";
+import { sendTelegramMessage, getTelegramConfig, registerTelegramWebhook } from "./_client.js";
 
-const telegramTestPayloadSchema = z.object({
-  chatId: z.union([z.string().trim().max(64), z.number()]).optional(),
-  customMessage: z.string().trim().max(4000, "Custom message cannot exceed 4000 characters").optional(),
-  type: z.enum(["test", "report"]).optional(),
+const testPostSchema = z.object({
+  chatId: z.string().trim().regex(/^-?[A-Za-z0-9_@]{1,64}$/, "Invalid chat ID").optional().or(z.literal("")),
+  customMessage: z.string().trim().max(4000, "Message is too long").optional(),
 });
 
 export default async function handler(req: any, res: any) {
@@ -28,40 +27,22 @@ export default async function handler(req: any, res: any) {
   }
 
   try {
-    let body = req.body;
-    if (typeof body === "string") {
-      try {
-        body = JSON.parse(body);
-      } catch {
-        return sendJson(res, 400, { success: false, error: "Invalid JSON body" });
-      }
-    }
-
-    const parsed = telegramTestPayloadSchema.safeParse(body || {});
-    if (!parsed.success) {
-      return sendJson(res, 400, {
-        success: false,
-        error: parsed.error.issues?.[0]?.message || "Invalid Telegram test payload",
-      });
+    const body = parseBody(req);
+    const parsed = validateWithSchema(testPostSchema, body);
+    if (!parsed.success || !parsed.data) {
+      return sendJson(res, 400, { success: false, error: parsed.error || "Invalid test payload" });
     }
 
     const { chatId, customMessage } = parsed.data;
     const config = await getTelegramConfig();
 
     const targetToken = config.botToken;
-    const targetChatId = chatId !== undefined ? String(chatId).trim() : config.chatId;
+    const targetChatId = chatId ? chatId.trim() : config.chatId;
 
-    if (!targetToken) {
+    if (!targetToken || !targetChatId) {
       return sendJson(res, 400, {
         success: false,
-        error: "TELEGRAM_BOT_TOKEN is not configured in environment variables.",
-      });
-    }
-
-    if (!targetChatId) {
-      return sendJson(res, 400, {
-        success: false,
-        error: "TELEGRAM_CHAT_ID is not configured in environment variables.",
+        error: "Telegram integration is not configured.",
       });
     }
 
@@ -72,7 +53,7 @@ export default async function handler(req: any, res: any) {
     });
 
     const testMessage = customMessage
-      ? String(customMessage).trim()
+      ? customMessage.trim()
       : `
 ✈️ <b>TripSplit Telegram Alerts Connected!</b>
 
@@ -91,7 +72,7 @@ export default async function handler(req: any, res: any) {
     if (!result.success) {
       return sendJson(res, 400, {
         success: false,
-        error: "Failed to deliver message to Telegram. Check TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.",
+        error: "Failed to deliver message to Telegram.",
       });
     }
 

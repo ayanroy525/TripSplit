@@ -46,13 +46,12 @@ export default async function handler(req: any, res: any) {
   if (!healthAuth.authorized) {
     return sendJson(res, healthAuth.statusCode || 401, {
       success: false,
-      error: healthAuth.error || "Unauthorized: Administrator or cron authentication required.",
+      error: healthAuth.error || "Unauthorized",
     });
   }
 
   return sendJson(res, 200, {
     status: "ok",
     timestamp: new Date().toISOString(),
-    service: "TripSplit Health & API Gateway",
   });
 }

@@ -19,30 +19,32 @@ import {
 } from "../_shared.js";
 import { z } from "zod";
 
-const allowedMutationTypes = new Set([
-  "RECORD_PAYMENT",
-  "DELETE_PAYMENT",
+const ALLOWED_MUTATION_TYPES = new Set([
+  "SAVE_TRIP_SNAPSHOT",
+  "DELETE_TRIP",
   "SAVE_EXPENSE",
   "DELETE_EXPENSE",
+  "RECORD_PAYMENT",
+  "DELETE_PAYMENT",
   "SAVE_MEMBER",
   "DELETE_MEMBER",
   "SAVE_ACTIVITY",
-  "SAVE_TRIP_SNAPSHOT",
-  "DELETE_TRIP",
 ]);
 
-const memberRoleAllowlist = new Set(["owner", "admin", "member", "participant", "editor", "viewer"]);
-const memberStatusAllowlist = new Set(["accepted", "pending", "invited", "active", "removed"]);
-const paymentStatusAllowlist = new Set(["pending", "confirmed", "cancelled", "completed", "settled"]);
+const ALLOWED_MEMBER_ROLES = new Set(["owner", "admin", "member", "participant", "editor", "viewer"]);
+const ALLOWED_MEMBER_STATUSES = new Set(["accepted", "pending", "invited", "active", "removed"]);
+const ALLOWED_PAYMENT_STATUSES = new Set(["pending", "confirmed", "cancelled", "completed", "settled"]);
+const ALLOWED_TRIP_STATUSES = new Set(["ACTIVE", "SETTLED", "ARCHIVED", "COMPLETED", "PLANNING", "active", "settled", "archived"]);
 
 function validateMutationPayload(type: string, payload: any): string | null {
   if (type === "DELETE_TRIP") return null;
   if (!payload || typeof payload !== "object") {
     return "Mutation payload must be a valid object";
   }
+
   if (type === "SAVE_EXPENSE") {
     if (!payload.id || !safeIdSchema.safeParse(String(payload.id)).success) {
-      return "Valid expense id is required";
+      return "Invalid expense ID";
     }
     if (payload.title !== undefined && (typeof payload.title !== "string" || payload.title.trim().length === 0 || payload.title.trim().length > 160)) {
       return "Expense title must be between 1 and 160 characters";
@@ -52,67 +54,63 @@ function validateMutationPayload(type: string, payload: any): string | null {
       return "Expense amount must be a valid number between 0 and 100,000,000";
     }
     if (payload.method !== undefined && !splitMethodSchema.safeParse(payload.method).success) {
-      return "Invalid split method";
+      return "Invalid expense split method";
     }
-    if (payload.notes !== undefined && payload.notes !== null && String(payload.notes).length > 1000) {
+    if (payload.splitType !== undefined && !splitMethodSchema.safeParse(payload.splitType).success) {
+      return "Invalid expense split type";
+    }
+    if (payload.notes !== undefined && payload.notes !== null && (typeof payload.notes !== "string" || payload.notes.length > 1000)) {
       return "Expense notes cannot exceed 1000 characters";
     }
+    if (payload.category !== undefined && (typeof payload.category !== "string" || payload.category.length > 64)) {
+      return "Invalid expense category";
+    }
   } else if (type === "DELETE_EXPENSE") {
-    const expId = payload.expenseId || payload.id;
-    if (!expId || !safeIdSchema.safeParse(String(expId)).success) {
-      return "Valid expenseId is required";
-    }
+    const id = payload.expenseId || payload.id;
+    if (!id || !safeIdSchema.safeParse(String(id)).success) return "Invalid expense ID";
   } else if (type === "RECORD_PAYMENT") {
-    if (!payload.id || !safeIdSchema.safeParse(String(payload.id)).success) {
-      return "Valid payment id is required";
-    }
+    if (!payload.id || !safeIdSchema.safeParse(String(payload.id)).success) return "Invalid payment ID";
     if (payload.amount !== undefined && payload.amount !== null) {
       const numAmount = typeof payload.amount === "number" ? payload.amount : Number(payload.amount);
       if (typeof payload.amount === "boolean" || !amountSchema.safeParse(numAmount).success) {
         return "Payment amount must be a valid number between 0 and 100,000,000";
       }
     }
-    if (payload.status !== undefined && !paymentStatusAllowlist.has(String(payload.status).toLowerCase())) {
+    if (payload.status !== undefined && !ALLOWED_PAYMENT_STATUSES.has(String(payload.status).toLowerCase())) {
       return "Invalid payment status";
     }
-    if (payload.note !== undefined && payload.note !== null && String(payload.note).length > 500) {
+    if (payload.note !== undefined && payload.note !== null && (typeof payload.note !== "string" || payload.note.length > 500)) {
       return "Payment note cannot exceed 500 characters";
     }
   } else if (type === "DELETE_PAYMENT") {
-    const payId = payload.paymentId || payload.id;
-    if (!payId || !safeIdSchema.safeParse(String(payId)).success) {
-      return "Valid paymentId is required";
-    }
+    const id = payload.paymentId || payload.id;
+    if (!id || !safeIdSchema.safeParse(String(id)).success) return "Invalid payment ID";
   } else if (type === "SAVE_MEMBER") {
-    const memId = payload.id || payload.userId;
-    if (memId !== undefined && !safeIdSchema.safeParse(String(memId)).success) {
-      return "Invalid member id format";
-    }
+    if (payload.id !== undefined && !safeIdSchema.safeParse(String(payload.id)).success) return "Invalid member ID";
     if (payload.name !== undefined && (typeof payload.name !== "string" || payload.name.trim().length === 0 || payload.name.trim().length > 100)) {
       return "Member name must be between 1 and 100 characters";
     }
-    if (payload.role !== undefined && !memberRoleAllowlist.has(String(payload.role).toLowerCase())) {
+    if (payload.role !== undefined && !ALLOWED_MEMBER_ROLES.has(String(payload.role).toLowerCase())) {
       return "Invalid member role";
     }
-    if (payload.status !== undefined && !memberStatusAllowlist.has(String(payload.status).toLowerCase())) {
+    if (payload.status !== undefined && !ALLOWED_MEMBER_STATUSES.has(String(payload.status).toLowerCase())) {
       return "Invalid member status";
     }
     if (payload.email !== undefined && payload.email !== null && String(payload.email).trim() !== "") {
       if (!z.string().email().max(160).safeParse(String(payload.email).trim()).success) {
-        return "Invalid member email address";
+        return "Invalid member email";
       }
     }
+    if (payload.phone !== undefined && payload.phone !== null && String(payload.phone).length > 30) {
+      return "Member phone is too long";
+    }
   } else if (type === "DELETE_MEMBER") {
-    const memId = payload.memberId || payload.id;
-    if (!memId || !safeIdSchema.safeParse(String(memId)).success) {
-      return "Valid memberId is required";
-    }
+    const id = payload.memberId || payload.id;
+    if (!id || !safeIdSchema.safeParse(String(id)).success) return "Invalid member ID";
   } else if (type === "SAVE_ACTIVITY") {
-    if (!payload.id || !safeIdSchema.safeParse(String(payload.id)).success) {
-      return "Valid activity id is required";
-    }
+    if (!payload.id || !safeIdSchema.safeParse(String(payload.id)).success) return "Invalid activity ID";
     if (payload.detail !== undefined && payload.detail !== null && String(payload.detail).length > 1000) {
-      return "Activity detail cannot exceed 1000 characters";
+      return "Activity detail exceeds maximum length";
     }
   } else if (type === "SAVE_TRIP_SNAPSHOT") {
     const title = payload.title ?? payload.name;
@@ -122,7 +120,11 @@ function validateMutationPayload(type: string, payload: any): string | null {
     if (payload.currency !== undefined && !currencySchema.safeParse(payload.currency).success) {
       return "Invalid currency code";
     }
+    if (payload.status !== undefined && !ALLOWED_TRIP_STATUSES.has(String(payload.status))) {
+      return "Invalid trip status";
+    }
   }
+
   return null;
 }
 
@@ -150,18 +152,17 @@ export default async function handler(req: any, res: any) {
   const body = parseBody(req);
   const { type, tripId, payload } = body || {};
 
-  if (!type || !tripId) {
-    return sendJson(res, 400, { success: false, error: "type and tripId are required" });
+  if (!type || typeof type !== "string" || !ALLOWED_MUTATION_TYPES.has(type)) {
+    return sendJson(res, 400, { success: false, error: "Invalid or unsupported mutation type" });
   }
-  if (typeof type !== "string" || !allowedMutationTypes.has(type)) {
-    return sendJson(res, 400, { success: false, error: "Invalid mutation type" });
+
+  if (!tripId || typeof tripId !== "string" || !safeIdSchema.safeParse(tripId).success) {
+    return sendJson(res, 400, { success: false, error: "Valid tripId is required" });
   }
-  if (typeof tripId !== "string" || !safeIdSchema.safeParse(tripId).success) {
-    return sendJson(res, 400, { success: false, error: "Invalid tripId format" });
-  }
-  const payloadErr = validateMutationPayload(type, payload);
-  if (payloadErr) {
-    return sendJson(res, 400, { success: false, error: payloadErr });
+
+  const payloadError = validateMutationPayload(type, payload);
+  if (payloadError) {
+    return sendJson(res, 400, { success: false, error: payloadError });
   }
 
   if (process.env.NODE_ENV === "production" && !pool) {
@@ -190,52 +191,27 @@ export default async function handler(req: any, res: any) {
       return sendJson(res, 400, { success: false, error: "Trip ID mismatch in snapshot payload." });
     }
     if (payload?.ownerId && payload.ownerId !== userId) {
-      logSecurityEvent("PERMISSION_DENIED", {
-        scope: "mutation-create-trip-owner-mismatch",
-        userId,
-        tripId,
-        type,
-        ip: clientIp,
-      });
       return sendJson(res, 403, { success: false, error: "Access denied: Cannot create a trip owned by another user." });
     }
     isTripAdmin = true;
   } else {
     const authCheck = await checkTripAuthorization(tripId, userId, pool);
     if (!authCheck.canAccess) {
-      logSecurityEvent("PERMISSION_DENIED", {
-        scope: "mutation-trip-access",
-        userId,
-        tripId,
-        type,
-        ip: clientIp,
-      });
+      logSecurityEvent("PERMISSION_DENIED", { scope: "sync_mutation", type, tripId, userId, ip: clientIp });
       return sendJson(res, 403, {
         success: false,
         error: "Access denied: You are not an authorized member of this trip.",
       });
     }
     if (type === "DELETE_TRIP" && !authCheck.isOwner) {
-      logSecurityEvent("PERMISSION_DENIED", {
-        scope: "mutation-delete-trip-non-owner",
-        userId,
-        tripId,
-        type,
-        ip: clientIp,
-      });
+      logSecurityEvent("PERMISSION_DENIED", { scope: "sync_delete_trip", tripId, userId, ip: clientIp });
       return sendJson(res, 403, {
         success: false,
         error: "Access denied: Only the trip owner can delete this trip.",
       });
     }
     if (authCheck.role === "viewer") {
-      logSecurityEvent("PERMISSION_DENIED", {
-        scope: "mutation-viewer-write",
-        userId,
-        tripId,
-        type,
-        ip: clientIp,
-      });
+      logSecurityEvent("PERMISSION_DENIED", { scope: "sync_viewer_write", type, tripId, userId, ip: clientIp });
       return sendJson(res, 403, {
         success: false,
         error: "Access denied: Viewers have read-only access to this trip.",
@@ -246,13 +222,7 @@ export default async function handler(req: any, res: any) {
     // Participant-level RBAC enforcement
     if (!isTripAdmin) {
       if (type === "DELETE_MEMBER") {
-        logSecurityEvent("PERMISSION_DENIED", {
-          scope: "mutation-delete-member",
-          userId,
-          tripId,
-          type,
-          ip: clientIp,
-        });
+        logSecurityEvent("PERMISSION_DENIED", { scope: "sync_delete_member", tripId, userId, ip: clientIp });
         return sendJson(res, 403, {
           success: false,
           error: "Access denied: Only trip admins can remove members.",
@@ -261,13 +231,7 @@ export default async function handler(req: any, res: any) {
       if (type === "SAVE_MEMBER") {
         const requestedRole = String(payload?.role || "").toLowerCase();
         if (requestedRole === "admin" || requestedRole === "owner") {
-          logSecurityEvent("PERMISSION_DENIED", {
-            scope: "mutation-promote-member",
-            userId,
-            tripId,
-            type,
-            ip: clientIp,
-          });
+          logSecurityEvent("PERMISSION_DENIED", { scope: "sync_promote_member", tripId, userId, ip: clientIp });
           return sendJson(res, 403, {
             success: false,
             error: "Access denied: Participants cannot promote members to admin.",
@@ -297,13 +261,6 @@ export default async function handler(req: any, res: any) {
               row.paid_by === userId ||
               Boolean(row.is_member_owner);
             if (!isExpenseOwner) {
-              logSecurityEvent("PERMISSION_DENIED", {
-                scope: "mutation-modify-others-expense",
-                userId,
-                tripId,
-                type,
-                ip: clientIp,
-              });
               return sendJson(res, 403, {
                 success: false,
                 error: "Access denied: Participants can only edit or delete their own expenses.",

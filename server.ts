@@ -11,25 +11,22 @@ import {
 import loginHandler from "./api/auth/login";
 import signupHandler from "./api/auth/signup";
 import tripHandler from "./api/trips/[tripId]";
-import syncMutationHandler from "./api/sync/mutation";
 import userTripsHandler from "./api/user-trips";
+import syncMutationHandler from "./api/sync/mutation";
 import healthHandler from "./api/health";
 import dbStatusHandler from "./api/db/status";
-import dailyCheckHandler from "./api/cron/daily-check";
+import cronDailyCheckHandler from "./api/cron/daily-check";
 import telegramSettingsHandler from "./api/telegram/_settings";
 import telegramTestHandler from "./api/telegram/_test";
 import telegramWebhookHandler from "./api/telegram/webhook";
 import telegramDetectChatHandler from "./api/telegram/_detect-chat";
 import { startTelegramPoller } from "./api/telegram/_poller";
 import {
-  pool,
   verifyAuthRequest,
   verifyAdminRequest,
   sanitizeReceiptUrl as sharedSanitizeReceiptUrl,
   setCorsHeaders,
-  clearSessionCookie,
-  getLocalStore,
-  saveLocalStore,
+  type SessionPayload,
 } from "./api/_shared";
 
 dotenv.config();
@@ -43,7 +40,9 @@ const PORT = process.env.PORT || 3000;
 
 // CORS Whitelist Protection & Security Headers using shared strict policy
 app.use((req, res, next) => {
-  setCorsHeaders(res, req);
+  if (req.path.startsWith("/api/") || process.env.NODE_ENV === "production") {
+    setCorsHeaders(res, req);
+  }
   if (req.path.startsWith("/api/")) {
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
     res.setHeader("Pragma", "no-cache");
@@ -65,15 +64,6 @@ app.use((req, res, next) => {
 // Body parser
 app.use(express.json({ limit: "25mb" }));
 app.use(express.urlencoded({ extended: true, limit: "25mb" }));
-
-interface SessionPayload {
-  userId: string;
-  email?: string;
-  name?: string;
-  tokenVersion?: number;
-  iat: number;
-  exp: number;
-}
 
 interface AuthRequest extends Request {
   userId?: string;
@@ -108,101 +98,45 @@ async function adminOnlyMiddleware(req: AuthRequest, res: Response, next: NextFu
 
 export const sanitizeReceiptUrl = sharedSanitizeReceiptUrl;
 
-// Health, Cron & DB Status Endpoints (Protected by Admin / Cron Secret)
+// Health, DB Status, and Cron endpoints (delegated to hardened /api handlers)
 app.all("/api/health", (req, res) => healthHandler(req, res));
-app.all("/api/health/history", (req, res) => {
-  req.query = { ...(req.query || {}), action: "history" };
-  return healthHandler(req, res);
-});
-app.all("/api/health/run-check", (req, res) => {
-  req.query = { ...(req.query || {}), action: "run-check" };
-  return healthHandler(req, res);
-});
-app.all("/api/cron/daily-check", (req, res) => dailyCheckHandler(req, res));
+app.all("/api/health/history", (req, res) => healthHandler(req, res));
+app.all("/api/health/run-check", (req, res) => healthHandler(req, res));
 app.all("/api/db/status", (req, res) => dbStatusHandler(req, res));
+app.all("/api/cron/daily-check", (req, res) => cronDailyCheckHandler(req, res));
 
-// Authentication Endpoints (Postgres-backed rate limiting, Cookie Auth, CSRF & Zod Validation)
+// Auth endpoints (delegated to hardened /api/auth handlers with Postgres-backed rate limiting & HttpOnly cookies)
 app.all("/api/auth/login", (req, res) => loginHandler(req, res));
-app.all("/api/auth/logout", (req, res) => {
-  req.query = { ...(req.query || {}), action: "logout" };
-  return loginHandler(req, res);
-});
+app.all("/api/auth/logout", (req, res) => loginHandler(req, res));
 app.all("/api/auth/signup", (req, res) => signupHandler(req, res));
-app.all("/api/auth/update-password", (req, res) => {
-  req.query = { ...(req.query || {}), action: "update-password" };
-  return loginHandler(req, res);
-});
+app.all("/api/auth/update-password", (req, res) => loginHandler(req, res));
+app.all("/api/auth/revoke-all-sessions", (req, res) => loginHandler(req, res));
 
-app.post("/api/auth/revoke-all-sessions", authMiddleware, async (req: AuthRequest, res: Response) => {
-  const userId = req.userId;
-  if (!userId) {
-    return res.status(401).json({ success: false, error: "Unauthorized" });
-  }
-
-  if (pool) {
-    try {
-      await pool.query("UPDATE public.users SET token_version = COALESCE(token_version, 1) + 1, updated_at = NOW() WHERE id = $1;", [userId]);
-    } catch {
-      if (process.env.NODE_ENV === "production") {
-        return res.status(503).json({ success: false, error: "Database unavailable" });
-      }
-    }
-  } else if (process.env.NODE_ENV === "production") {
-    return res.status(503).json({ success: false, error: "Database unavailable" });
-  }
-
-  if (process.env.NODE_ENV !== "production") {
-    const store = getLocalStore();
-    const u = store.users.find((user) => user.id === userId);
-    if (u) {
-      (u as any).token_version = ((u as any).token_version || 1) + 1;
-      saveLocalStore(store);
-    }
-  }
-
-  clearSessionCookie(res);
-  return res.json({ success: true, message: "All existing sessions have been revoked. Please log in again with new credentials." });
-});
-
-// User Trips & Trip Data Endpoints (Delegated to hardened Vercel serverless handlers)
+// User Trips & Trip CRUD / Invite endpoints (delegated to hardened /api handlers)
 app.all("/api/user-trips", (req, res) => userTripsHandler(req, res));
-
-app.all("/api/trips/invite/lookup", (req, res) => {
-  req.query = { ...(req.query || {}), action: "invite-lookup" };
+app.all("/api/trips/invite/lookup", (req, res) => tripHandler(req, res));
+app.all("/api/trips/invite/join", (req, res) => tripHandler(req, res));
+app.all("/api/trips/invite/:code", (req, res) => {
+  (req as any).query = { ...(req.query || {}), action: "invite-lookup", code: req.params.code };
   return tripHandler(req, res);
 });
-app.get("/api/trips/invite/:code", (req, res) => {
-  req.query = { ...(req.query || {}), action: "invite-lookup", code: req.params.code };
-  return tripHandler(req, res);
-});
-app.all("/api/trips/invite/join", (req, res) => {
-  req.query = { ...(req.query || {}), action: "invite-join" };
-  return tripHandler(req, res);
-});
-app.all("/api/trips/join", (req, res) => {
-  req.query = { ...(req.query || {}), action: "invite-join" };
-  return tripHandler(req, res);
-});
-app.all("/api/trips/link-members", (req, res) => {
-  req.query = { ...(req.query || {}), action: "link-members" };
-  return tripHandler(req, res);
-});
-
-app.post("/api/trips", (req, res) => tripHandler(req, res));
-app.put("/api/trips", (req, res) => tripHandler(req, res));
-
+app.all("/api/trips/join", (req, res) => tripHandler(req, res));
+app.all("/api/trips/link-members", (req, res) => tripHandler(req, res));
+app.all("/api/trips", (req, res) => tripHandler(req, res));
 app.all("/api/trips/:tripId/:resource/:itemId", (req, res) => tripHandler(req, res));
 app.all("/api/trips/:tripId/:resource", (req, res) => tripHandler(req, res));
 app.all("/api/trips/:tripId", (req, res) => tripHandler(req, res));
 
+// Sync Mutation endpoint
 app.all("/api/sync/mutation", (req, res) => syncMutationHandler(req, res));
 
+// Audit PDF download (Admin only)
 app.get("/api/download-audit-pdf", adminOnlyMiddleware, (_req, res) => {
   const filePath = path.resolve(__dirname, "public", "Spliito_Application_Review.pdf");
   res.download(filePath, "Spliito_Application_Review.pdf");
 });
 
-// Telegram Alerts & Webhook Endpoints (Admin / Secret Protected)
+// Telegram Alerts & Webhook Endpoints
 app.all("/api/telegram/settings", (req, res) => telegramSettingsHandler(req, res));
 app.all("/api/telegram/test", (req, res) => telegramTestHandler(req, res));
 app.all("/api/telegram/webhook", (req, res) => telegramWebhookHandler(req, res));
@@ -219,8 +153,8 @@ app.all("/api/*", authMiddleware, (_req, res) => {
 async function checkAndRunMissedDailyCheck() {
   try {
     await ensureDaily2AMCheckRan();
-  } catch {
-    // Non-fatal background check
+  } catch (err) {
+    console.warn("[Scheduler] Error checking missed daily 2 AM IST check:", err);
   }
 }
 
@@ -238,15 +172,17 @@ function scheduleDailyNightCheck() {
 
   setTimeout(async () => {
     try {
+      console.log("[Scheduler] Executing scheduled daily 2:00 AM IST health check sweep...");
       await runDiagnosticSweep("scheduled_2am");
-    } catch {
-      // Non-fatal scheduled check
+    } catch (err) {
+      console.error("[Scheduler] Error in daily 2:00 AM IST health check:", err);
     }
     setInterval(async () => {
       try {
+        console.log("[Scheduler] Executing scheduled daily 2:00 AM IST health check sweep...");
         await runDiagnosticSweep("scheduled_2am");
-      } catch {
-        // Non-fatal scheduled check
+      } catch (err) {
+        console.error("[Scheduler] Error in daily 2:00 AM IST health check:", err);
       }
     }, 24 * 60 * 60 * 1000);
   }, msUntilNext2AMIST);
@@ -281,6 +217,50 @@ async function setupServer() {
       try {
         let template = fs.readFileSync(path.resolve(__dirname, "index.html"), "utf-8");
         template = await vite.transformIndexHtml(url, template);
+        const filterTag = `<script>
+(function(){
+  if(typeof window!=='undefined'&&window.WebSocket){
+    var OrigWS=window.WebSocket;
+    var DummyWS=function(u,p){
+      if(p==='vite-hmr'||(typeof u==='string'&&(u.indexOf('24678')!==-1||u.indexOf('token=')!==-1))){
+        var t=new EventTarget();
+        t.readyState=1;
+        t.url=u;
+        t.protocol='vite-hmr';
+        t.send=function(){};
+        t.close=function(){};
+        setTimeout(function(){
+          var ev=new Event('open');
+          t.dispatchEvent(ev);
+          if(typeof t.onopen==='function')t.onopen(ev);
+        },10);
+        return t;
+      }
+      return new OrigWS(u,p);
+    };
+    DummyWS.prototype=OrigWS.prototype;
+    DummyWS.CONNECTING=0;DummyWS.OPEN=1;DummyWS.CLOSING=2;DummyWS.CLOSED=3;
+    window.WebSocket=DummyWS;
+  }
+  var _e=console.error;
+  console.error=function(){
+    if(arguments[0]&&typeof arguments[0]==='string'&&(arguments[0].indexOf('[vite]')!==-1||arguments[0].indexOf('websocket')!==-1||arguments[0].indexOf('WebSocket')!==-1))return;
+    return _e.apply(console,arguments);
+  };
+  var _w=console.warn;
+  console.warn=function(){
+    if(arguments[0]&&typeof arguments[0]==='string'&&(arguments[0].indexOf('[vite]')!==-1||arguments[0].indexOf('websocket')!==-1||arguments[0].indexOf('WebSocket')!==-1))return;
+    return _w.apply(console,arguments);
+  };
+  window.addEventListener('unhandledrejection',function(e){
+    if(e.reason&&(typeof e.reason==='string'||e.reason.message)&&(String(e.reason.message||e.reason).indexOf('[vite]')!==-1||String(e.reason.message||e.reason).indexOf('WebSocket')!==-1)){
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }
+  });
+})();
+</script>`;
+        template = template.replace("<head>", `<head>\n    ${filterTag}`);
         res.status(200).set({ "Content-Type": "text/html" }).end(template);
       } catch (e: any) {
         vite.ssrFixStacktrace(e);
@@ -295,9 +275,10 @@ async function setupServer() {
     });
   }
 
-  // Centralized Error Handling Middleware (Never leaks stack traces or SQL details)
-  app.use((_err: any, req: Request, res: Response, next: NextFunction) => {
-    if (res.headersSent) return next(_err);
+  // Centralized Error Handling Middleware
+  app.use((err: any, req: Request, res: Response, next: NextFunction) => {
+    console.error(`[Error] Request ${(req as any).id || "unknown"}:`, err?.message || err);
+    if (res.headersSent) return next(err);
     return res.status(500).json({
       success: false,
       error: "An unexpected internal server error occurred.",
@@ -313,8 +294,8 @@ async function setupServer() {
 }
 
 if (!process.env.VERCEL) {
-  setupServer().catch(() => {
-    console.error("Failed to start server");
+  setupServer().catch((err) => {
+    console.error("Failed to start server:", err);
   });
 }
 

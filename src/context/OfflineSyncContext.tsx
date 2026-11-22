@@ -8,6 +8,7 @@ import {
   OfflineMutationType,
 } from "../utils/offlineSync";
 import { registerSW } from "virtual:pwa-register";
+import { setSentryNetworkTag } from "../utils/sentry";
 
 interface OfflineSyncContextType {
   isOnline: boolean;
@@ -32,6 +33,10 @@ export function OfflineSyncProvider({ children }: { children: React.ReactNode })
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(getLastSyncTime());
   const [needRefresh, setNeedRefresh] = useState(false);
   const [updateSWFn, setUpdateSWFn] = useState<(() => Promise<void>) | null>(null);
+
+  useEffect(() => {
+    setSentryNetworkTag(isOnline);
+  }, [isOnline]);
 
   // Register PWA Service Worker with auto update check
   useEffect(() => {

@@ -1,7 +1,7 @@
-import { pool, setCorsHeaders, sendJson, verifyAdminRequest } from "../_shared.js";
+import { pool, setCorsHeaders, sendJson, verifyAdminRequest, withSentry } from "../_shared.js";
 import { inMemoryHealthChecks, ensureDaily2AMCheckRan } from "./_runner.js";
 
-export default async function handler(req: any, res: any) {
+async function handler(req: any, res: any) {
   setCorsHeaders(res, req);
   if (req.method === "OPTIONS") {
     res.statusCode = 204;
@@ -54,3 +54,5 @@ export default async function handler(req: any, res: any) {
     history: [],
   });
 }
+
+export default withSentry(handler);

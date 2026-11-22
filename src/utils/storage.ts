@@ -445,7 +445,9 @@ export function isEmailMatch(emailA?: string | null, emailB?: string | null): bo
 export async function linkUserToExistingTripMembers(
   user: UserAccount
 ): Promise<{ linkedTripsCount: number; linkedMembersCount: number }> {
-  if (!user || !user.id) return { linkedTripsCount: 0, linkedMembersCount: 0 };
+  if (!user || !user.id || user.id.startsWith("guest_")) {
+    return { linkedTripsCount: 0, linkedMembersCount: 0 };
+  }
 
   const cleanUserPhone = normalizePhone(user.phone);
   const cleanUserEmail = user.email ? user.email.trim().toLowerCase() : "";
@@ -495,8 +497,8 @@ export function subscribeToUserTrips(
   onTripsUpdate: (trips: Trip[]) => void,
   onError?: (err: Error) => void
 ): () => void {
-  if (!userId) {
-    onTripsUpdate([]);
+  if (!userId || userId.startsWith("guest_")) {
+    if (!userId) onTripsUpdate([]);
     return () => {};
   }
 
@@ -512,7 +514,7 @@ export function subscribeToUserTrips(
     isFetching = true;
     try {
       const apiRes = await fetch(
-        getApiUrl(`/api/user-trips?userId=${encodeURIComponent(userId)}`),
+        getApiUrl("/api/user-trips"),
         {
           credentials: "include",
           headers: getAuthHeaders(false),
@@ -1513,7 +1515,10 @@ export async function getTripByInviteCode(
     const apiRes = await fetch(getApiUrl("/api/trips/invite/lookup"), {
       method: "POST",
       credentials: "include",
-      headers: getAuthHeaders(true),
+      headers: {
+        "Content-Type": "application/json",
+        "X-Requested-With": "XMLHttpRequest",
+      },
       body: JSON.stringify({ inviteCode: clean }),
     });
     const ct = apiRes.headers.get("content-type") || "";

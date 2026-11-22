@@ -1,10 +1,9 @@
-import { setCorsHeaders, sendJson, verifyAdminRequest } from "../_shared.js";
-import { getTelegramConfig, saveTelegramConfig, registerTelegramWebhook } from "./_client.js";
 import { z } from "zod";
+import { setCorsHeaders, sendJson, verifyAdminRequest, parseBody, validateWithSchema } from "../_shared.js";
+import { getTelegramConfig, saveTelegramConfig, registerTelegramWebhook } from "./_client.js";
 
 const settingsPostSchema = z.object({
   dailyEnabled: z.boolean().optional(),
-  dailyReportEnabled: z.boolean().optional(),
   webhookUrl: z.string().trim().url("Invalid webhook URL").max(512).optional().or(z.literal("")),
 });
 
@@ -47,38 +46,27 @@ export default async function handler(req: any, res: any) {
 
   if (req.method === "POST") {
     try {
-      let body = req.body;
-      if (typeof body === "string") {
-        try {
-          body = JSON.parse(body);
-        } catch {
-          return sendJson(res, 400, { configured: false, error: "Invalid JSON body" });
-        }
+      const body = parseBody(req);
+      const parsed = validateWithSchema(settingsPostSchema, body);
+      if (!parsed.success || !parsed.data) {
+        return sendJson(res, 400, { configured: false, error: parsed.error || "Invalid settings payload" });
       }
 
-      const parsed = settingsPostSchema.safeParse(body || {});
-      if (!parsed.success) {
-        return sendJson(res, 400, {
-          configured: false,
-          error: parsed.error.issues?.[0]?.message || "Invalid Telegram settings payload",
-        });
-      }
-
-      const { dailyEnabled, dailyReportEnabled, webhookUrl } = parsed.data;
+      const { dailyEnabled, webhookUrl } = parsed.data;
       const updated = await saveTelegramConfig({
-        dailyEnabled: dailyEnabled ?? dailyReportEnabled,
+        dailyEnabled,
         webhookUrl,
       });
 
-      if (updated.botToken && webhookUrl && process.env.VERCEL && String(webhookUrl).startsWith("https://")) {
-        await registerTelegramWebhook(String(webhookUrl).trim()).catch(() => {});
+      if (updated.botToken && webhookUrl && process.env.VERCEL && webhookUrl.startsWith("https://")) {
+        await registerTelegramWebhook(webhookUrl).catch(() => {});
       }
 
       return sendJson(res, 200, {
         configured: Boolean(updated.botToken && updated.chatId),
       });
     } catch {
-      return sendJson(res, 500, { configured: false, error: "Failed to update Telegram settings" });
+      return sendJson(res, 500, { configured: false, error: "Failed to save Telegram settings" });
     }
   }
 

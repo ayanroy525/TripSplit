@@ -56,7 +56,7 @@ export default async function handler(req: any, res: any) {
     if (!csrf.valid) {
       return sendJson(res, 403, { success: false, error: csrf.error || "CSRF validation failed" });
     }
-    clearSessionCookie(res);
+    clearSessionCookie(res, req);
     return sendJson(res, 200, {
       success: true,
       message: "Logged out successfully.",
@@ -98,7 +98,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    clearSessionCookie(res);
+    clearSessionCookie(res, req);
     logSecurityEvent("AUTH_SESSIONS_REVOKED", { userId, ip: clientIp });
     return sendJson(res, 200, {
       success: true,
@@ -121,21 +121,37 @@ export default async function handler(req: any, res: any) {
       );
     }
 
+    const pwValidation = validateWithSchema(updatePasswordBodySchema, body);
+    if (!pwValidation.success) {
+      return sendJson(res, 400, {
+        success: false,
+        error: pwValidation.error,
+      });
+    }
+
+    const { newPassword } = pwValidation.data;
+    const strength = validatePasswordStrength(newPassword);
+    if (!strength.valid) {
+      return sendJson(res, 400, {
+        success: false,
+        error: strength.error || "Password does not meet security requirements.",
+      });
+    }
+
     let resolvedUserId = "";
     let resolvedEmail = "";
 
     const authResult = await verifyAuthRequest(req);
-    if (authResult.statusCode === 403) {
-      return sendJson(res, 403, {
-        success: false,
-        error: authResult.error || "CSRF validation failed",
-      });
-    }
     if (authResult.authorized && authResult.userId) {
       resolvedUserId = authResult.userId;
       if (authResult.session?.email) {
         resolvedEmail = authResult.session.email.trim().toLowerCase();
       }
+    } else if (authResult.statusCode === 403) {
+      return sendJson(res, 403, {
+        success: false,
+        error: authResult.error || "CSRF validation failed",
+      });
     } else {
       const authHeader = String(req.headers?.authorization || req.headers?.Authorization || "");
       const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
@@ -176,23 +192,6 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    const pwValidation = validateWithSchema(updatePasswordBodySchema, body);
-    if (!pwValidation.success) {
-      return sendJson(res, 400, {
-        success: false,
-        error: pwValidation.error,
-      });
-    }
-
-    const { newPassword } = pwValidation.data;
-    const strength = validatePasswordStrength(newPassword);
-    if (!strength.valid) {
-      return sendJson(res, 400, {
-        success: false,
-        error: strength.error || "Password does not meet security requirements.",
-      });
-    }
-
     const newHashed = hashPasswordNode(newPassword);
     let updatedUser: any = null;
     let newTokenVersion = 1;
@@ -222,8 +221,33 @@ export default async function handler(req: any, res: any) {
         if (updatedUser) {
           newTokenVersion = Number(updatedUser.token_version || 1);
         }
-      } catch {
-        if (process.env.NODE_ENV === "production") {
+      } catch (updErr: any) {
+        if (updErr?.code === "42703") {
+          try {
+            const fallbackUpdate = resolvedUserId
+              ? await pool.query(
+                  `UPDATE public.users
+                   SET password_hash = $1,
+                       updated_at = NOW()
+                   WHERE id = $2
+                   RETURNING id, email, name;`,
+                  [newHashed, resolvedUserId]
+                )
+              : await pool.query(
+                  `UPDATE public.users
+                   SET password_hash = $1,
+                       updated_at = NOW()
+                   WHERE LOWER(TRIM(COALESCE(email, ''))) = $2
+                   RETURNING id, email, name;`,
+                  [newHashed, resolvedEmail]
+                );
+            updatedUser = fallbackUpdate.rows[0];
+          } catch {
+            if (process.env.NODE_ENV === "production") {
+              return sendJson(res, 503, { success: false, error: "Database unavailable" });
+            }
+          }
+        } else if (process.env.NODE_ENV === "production") {
           return sendJson(res, 503, { success: false, error: "Database unavailable" });
         }
       }
@@ -255,7 +279,7 @@ export default async function handler(req: any, res: any) {
     const finalName = updatedUser?.name || "Traveler";
     if (finalUserId) {
       const freshToken = generateSessionToken(finalUserId, finalEmail, finalName, newTokenVersion);
-      setSessionCookie(res, freshToken);
+      setSessionCookie(res, freshToken, req);
     }
 
     logSecurityEvent("AUTH_PASSWORD_UPDATED", {
@@ -340,9 +364,30 @@ export default async function handler(req: any, res: any) {
           created_at DESC
         LIMIT 5;
       `;
-      const userRes = await pool.query(usersQuery, [trimmedLower, phoneTail]);
-      candidateUsers = userRes.rows || [];
-      usedPostgres = true;
+      try {
+        const userRes = await pool.query(usersQuery, [trimmedLower, phoneTail]);
+        candidateUsers = userRes.rows || [];
+        usedPostgres = true;
+      } catch (qErr: any) {
+        if (qErr?.code === "42703") {
+          // Fallback if public.users does not yet have token_version or updated_at column
+          const fallbackQuery = `
+            SELECT id, email, name, phone, avatar_color, avatar_url, bio, password_hash, 1 AS token_version, created_at
+            FROM public.users
+            WHERE LOWER(TRIM(COALESCE(email, ''))) = $1
+               OR ($2 <> '' AND RIGHT(regexp_replace(COALESCE(phone, ''), '\\D', '', 'g'), 10) = $2)
+            ORDER BY
+              CASE WHEN LOWER(TRIM(COALESCE(email, ''))) = $1 THEN 0 ELSE 1 END,
+              created_at DESC
+            LIMIT 5;
+          `;
+          const fallbackRes = await pool.query(fallbackQuery, [trimmedLower, phoneTail]);
+          candidateUsers = fallbackRes.rows || [];
+          usedPostgres = true;
+        } else {
+          throw qErr;
+        }
+      }
     } catch {
       dbDownError = true;
     }
@@ -454,7 +499,7 @@ export default async function handler(req: any, res: any) {
               });
 
               const sessionToken = generateSessionToken(userAccount.id, userAccount.email, userAccount.name, 1);
-              setSessionCookie(res, sessionToken);
+              setSessionCookie(res, sessionToken, req);
               return sendJson(res, 200, {
                 success: true,
                 user: userAccount,
@@ -544,6 +589,6 @@ export default async function handler(req: any, res: any) {
 
   const tokenVersion = Number(foundUser.token_version || 1);
   const sessionToken = generateSessionToken(foundUser.id, foundUser.email, foundUser.name, tokenVersion);
-  setSessionCookie(res, sessionToken);
+  setSessionCookie(res, sessionToken, req);
   return sendJson(res, 200, { success: true, user: userAccount });
 }
