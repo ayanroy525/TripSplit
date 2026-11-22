@@ -1,12 +1,13 @@
 import { z } from "zod";
 import { setCorsHeaders, sendJson, verifyAdminRequest, timingSafeCompare, logSecurityEvent, getClientIp } from "../_shared.js";
+import type { ApiRequest, ApiResponse, TelegramUpdate } from "../_types.js";
 import { getTelegramConfig, getTelegramWebhookSecret, registerTelegramWebhook, saveTelegramConfig } from "./_client.js";
 import { processTelegramUpdate } from "./_processor.js";
 import { startTelegramPoller, recordDetectedTelegramUser } from "./_poller.js";
 
 const webhookUrlQuerySchema = z.string().trim().url("Invalid webhook URL").max(512);
 
-export default async function handler(req: any, res: any) {
+export default async function handler(req: ApiRequest, res: ApiResponse) {
   setCorsHeaders(res, req);
   if (req.method === "OPTIONS") {
     res.statusCode = 204;
@@ -97,17 +98,18 @@ export default async function handler(req: any, res: any) {
   }
 
   try {
-    let update = req.body;
-    if (typeof update === "string") {
+    let rawUpdate: unknown = req.body;
+    if (typeof rawUpdate === "string") {
       try {
-        update = JSON.parse(update);
+        rawUpdate = JSON.parse(rawUpdate);
       } catch {
         return sendJson(res, 400, { success: false, error: "Invalid webhook payload" });
       }
     }
-    if (!update || typeof update !== "object") {
+    if (!rawUpdate || typeof rawUpdate !== "object") {
       return sendJson(res, 400, { success: false, error: "Invalid webhook payload" });
     }
+    const update = rawUpdate as TelegramUpdate;
 
     recordDetectedTelegramUser(update);
 

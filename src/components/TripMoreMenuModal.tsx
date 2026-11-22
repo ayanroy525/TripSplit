@@ -7,18 +7,15 @@ import {
   Share2,
   Bell,
   Compass,
-  ChevronRight,
-  Plus,
-  LogOut,
   Activity,
   TrendingUp,
   Clock,
 } from "lucide-react";
 import { Trip, Member, UserAccount } from "../types";
-import { Avatar } from "./Atoms";
 import { ThemeToggle } from "./ThemeToggle";
 import { useAuth } from "../context/AuthContext";
-import { getRoleDisplayName } from "../utils/permissions";
+import { AccountSection } from "./trip-more-menu/AccountSection";
+import { MenuActionRow } from "./trip-more-menu/MenuActionRow";
 
 interface TripMoreMenuModalProps {
   isOpen: boolean;
@@ -43,6 +40,22 @@ interface TripMoreMenuModalProps {
   onNavigateToActivity?: () => void;
 }
 
+const sectionLabelStyle: React.CSSProperties = {
+  fontSize: 11,
+  fontWeight: 800,
+  textTransform: "uppercase",
+  letterSpacing: "0.06em",
+  color: "var(--c-inkSoft, #6B7280)",
+  paddingLeft: 4,
+};
+
+const sectionCardStyle: React.CSSProperties = {
+  background: "var(--c-card, #FFFFFF)",
+  border: "1px solid var(--c-line, #E5E7EB)",
+  borderRadius: 16,
+  overflow: "hidden",
+};
+
 export function TripMoreMenuModal({
   isOpen,
   onClose,
@@ -51,8 +64,6 @@ export function TripMoreMenuModal({
   currentUserId,
   onSelectUserId,
   authUser,
-  isViewer = false,
-  onOpenAddExpense,
   onOpenProfile,
   onOpenAuthPage,
   onOpenWhatsAppAlerts,
@@ -76,6 +87,11 @@ export function TripMoreMenuModal({
   };
 
   if (!isOpen) return null;
+
+  const runAction = (fn: () => void) => () => {
+    onClose();
+    fn();
+  };
 
   return (
     <div
@@ -197,214 +213,20 @@ export function TripMoreMenuModal({
             gap: 16,
           }}
         >
-          {/* SECTION 1: YOUR ACCOUNT */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <span
-              style={{
-                fontSize: 11,
-                fontWeight: 800,
-                textTransform: "uppercase",
-                letterSpacing: "0.06em",
-                color: "var(--c-inkSoft, #6B7280)",
-                paddingLeft: 4,
-              }}
-            >
-              Your Account
-            </span>
-
-            <div
-              style={{
-                background: "var(--c-card, #FFFFFF)",
-                border: "1px solid var(--c-line, #E5E7EB)",
-                borderRadius: 16,
-                overflow: "hidden",
-              }}
-            >
-              {/* Account profile row */}
-              <button
-                id="btn-menu-open-profile"
-                type="button"
-                onClick={() => {
-                  onClose();
-                  onOpenProfile();
-                }}
-                style={{
-                  width: "100%",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "14px 16px",
-                  background: "transparent",
-                  border: "none",
-                  cursor: "pointer",
-                  textAlign: "left",
-                  transition: "background 0.15s ease",
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <div
-                    style={{
-                      width: 40,
-                      height: 40,
-                      borderRadius: "50%",
-                      background: authUser?.avatarColor || "var(--c-teal, #0F9F86)",
-                      color: "#ffffff",
-                      fontSize: 16,
-                      fontWeight: 800,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      flexShrink: 0,
-                    }}
-                  >
-                    {authUser?.name ? authUser.name.charAt(0).toUpperCase() : "U"}
-                  </div>
-                  <div>
-                    <div
-                      style={{
-                        fontSize: 14.5,
-                        fontWeight: 700,
-                        color: "var(--c-ink, #17202A)",
-                      }}
-                    >
-                      {authUser?.name || "Logged In User"}
-                    </div>
-                    <div
-                      style={{
-                        fontSize: 12,
-                        color: "var(--c-inkSoft, #6B7280)",
-                        marginTop: 1,
-                      }}
-                    >
-                      {authUser?.email || "Manage profile & settings"}
-                    </div>
-                  </div>
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                  <span
-                    style={{
-                      fontSize: 12,
-                      fontWeight: 600,
-                      color: "var(--c-teal, #0F9F86)",
-                    }}
-                  >
-                    Edit
-                  </span>
-                  <ChevronRight size={16} color="var(--c-inkSoft, #6B7280)" />
-                </div>
-              </button>
-
-              {/* Log Out Button directly in Account card */}
-              <button
-                id="btn-menu-account-logout"
-                type="button"
-                onClick={handleLogout}
-                style={{
-                  width: "100%",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "11px 16px",
-                  background: "rgba(220, 38, 38, 0.05)",
-                  border: "none",
-                  borderTop: "1px solid var(--c-line, #E5E7EB)",
-                  cursor: "pointer",
-                  color: "var(--c-rust, #DC2626)",
-                  fontSize: 13,
-                  fontWeight: 700,
-                  transition: "background 0.15s ease",
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <LogOut size={15} />
-                  <span>Log Out ({authUser?.name || "User"})</span>
-                </div>
-                <ChevronRight size={15} color="var(--c-rust, #DC2626)" />
-              </button>
-
-              {/* Active Traveler Context Switcher */}
-              <div
-                style={{
-                  borderTop: "1px solid var(--c-line, #E5E7EB)",
-                  padding: "12px 16px",
-                  background: "var(--c-paper, #F6F8F7)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: 10,
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                  <Avatar member={currentUser} size={28} />
-                  <div style={{ minWidth: 0 }}>
-                    <div
-                      style={{
-                        fontSize: 11,
-                        fontWeight: 700,
-                        textTransform: "uppercase",
-                        color: "var(--c-inkSoft, #6B7280)",
-                        letterSpacing: "0.03em",
-                      }}
-                    >
-                      Acting As Traveler
-                    </div>
-                    <div
-                      style={{
-                        fontSize: 13,
-                        fontWeight: 700,
-                        color: "var(--c-ink, #17202A)",
-                        whiteSpace: "nowrap",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                      }}
-                    >
-                      {currentUser?.name} ({getRoleDisplayName(currentUser?.role)})
-                    </div>
-                  </div>
-                </div>
-
-                <select
-                  id="select-menu-active-user"
-                  value={currentUserId}
-                  onChange={(e) => onSelectUserId(e.target.value)}
-                  style={{
-                    background: "var(--c-card, #FFFFFF)",
-                    border: "1px solid var(--c-line, #E5E7EB)",
-                    borderRadius: 8,
-                    padding: "6px 10px",
-                    fontSize: 12,
-                    fontWeight: 700,
-                    color: "var(--c-ink, #17202A)",
-                    cursor: "pointer",
-                    outline: "none",
-                    maxWidth: 130,
-                  }}
-                  title="Switch acting traveler"
-                >
-                  {(trip?.members || []).map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-          </div>
+          <AccountSection
+            trip={trip}
+            currentUser={currentUser}
+            currentUserId={currentUserId}
+            onSelectUserId={onSelectUserId}
+            authUser={authUser}
+            onOpenProfile={onOpenProfile}
+            onLogout={handleLogout}
+            onClose={onClose}
+          />
 
           {/* SECTION 2: ACTIVE TRIP */}
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <span
-              style={{
-                fontSize: 11,
-                fontWeight: 800,
-                textTransform: "uppercase",
-                letterSpacing: "0.06em",
-                color: "var(--c-inkSoft, #6B7280)",
-                paddingLeft: 4,
-              }}
-            >
-              Active Trip
-            </span>
+            <span style={sectionLabelStyle}>Active Trip</span>
 
             <div
               style={{
@@ -431,13 +253,7 @@ export function TripMoreMenuModal({
                 >
                   🌴 {trip?.title || "No Active Trip"}
                 </div>
-                <div
-                  style={{
-                    fontSize: 12,
-                    color: "var(--c-inkSoft, #6B7280)",
-                    marginTop: 2,
-                  }}
-                >
+                <div style={{ fontSize: 12, color: "var(--c-inkSoft, #6B7280)", marginTop: 2 }}>
                   {trip ? `${trip.location} · ${trip.members.length} members` : "No trip selected"}
                 </div>
               </div>
@@ -445,10 +261,7 @@ export function TripMoreMenuModal({
               <button
                 id="btn-menu-open-trips-hub"
                 type="button"
-                onClick={() => {
-                  onClose();
-                  onOpenTripsHub();
-                }}
+                onClick={runAction(onOpenTripsHub)}
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
@@ -473,594 +286,127 @@ export function TripMoreMenuModal({
 
           {/* SECTION 3: GROUP & COMMUNICATION */}
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <span
-              style={{
-                fontSize: 11,
-                fontWeight: 800,
-                textTransform: "uppercase",
-                letterSpacing: "0.06em",
-                color: "var(--c-inkSoft, #6B7280)",
-                paddingLeft: 4,
-              }}
-            >
-              Group & Communication
-            </span>
-
-            <div
-              style={{
-                background: "var(--c-card, #FFFFFF)",
-                border: "1px solid var(--c-line, #E5E7EB)",
-                borderRadius: 16,
-                overflow: "hidden",
-              }}
-            >
-              {/* Row 1: WhatsApp Group Alerts */}
-              <button
+            <span style={sectionLabelStyle}>Group & Communication</span>
+            <div style={sectionCardStyle}>
+              <MenuActionRow
                 id="btn-menu-open-whatsapp"
-                type="button"
-                onClick={() => {
-                  onClose();
-                  onOpenWhatsAppAlerts();
-                }}
-                style={{
-                  width: "100%",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "14px 16px",
-                  background: "transparent",
-                  border: "none",
-                  borderBottom: "1px solid var(--c-line, #E5E7EB)",
-                  cursor: "pointer",
-                  textAlign: "left",
-                  transition: "background 0.15s ease",
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <div
-                    style={{
-                      width: 36,
-                      height: 36,
-                      borderRadius: 10,
-                      background: "#E7F8EE",
-                      color: "#25D366",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      flexShrink: 0,
-                    }}
-                  >
-                    <MessageCircle size={18} color="#25D366" />
-                  </div>
-                  <div>
-                    <div
-                      style={{
-                        fontSize: 14,
-                        fontWeight: 700,
-                        color: "var(--c-ink, #17202A)",
-                      }}
-                    >
-                      WhatsApp Group Alerts
-                    </div>
-                    <div
-                      style={{
-                        fontSize: 12,
-                        color: "var(--c-inkSoft, #6B7280)",
-                      }}
-                    >
-                      One-click expense & payment updates
-                    </div>
-                  </div>
-                </div>
-
-                <ChevronRight size={16} color="var(--c-inkSoft, #6B7280)" />
-              </button>
-
-              {/* Row 2: Invite Friends */}
-              <button
+                onClick={runAction(onOpenWhatsAppAlerts)}
+                icon={<MessageCircle size={18} color="#25D366" />}
+                iconBg="#E7F8EE"
+                iconColor="#25D366"
+                title="WhatsApp Group Alerts"
+                subtitle="One-click expense & payment updates"
+                showDivider
+              />
+              <MenuActionRow
                 id="btn-menu-open-invite"
-                type="button"
-                onClick={() => {
-                  onClose();
-                  onOpenInviteModal();
-                }}
-                style={{
-                  width: "100%",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "14px 16px",
-                  background: "transparent",
-                  border: "none",
-                  borderBottom: "1px solid var(--c-line, #E5E7EB)",
-                  cursor: "pointer",
-                  textAlign: "left",
-                  transition: "background 0.15s ease",
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <div
-                    style={{
-                      width: 36,
-                      height: 36,
-                      borderRadius: 10,
-                      background: "var(--c-tealSoft, #E6F7F2)",
-                      color: "var(--c-teal, #0F9F86)",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      flexShrink: 0,
-                    }}
-                  >
-                    <UserPlus size={18} />
-                  </div>
-                  <div>
-                    <div
-                      style={{
-                        fontSize: 14,
-                        fontWeight: 700,
-                        color: "var(--c-ink, #17202A)",
-                      }}
-                    >
-                      Invite Friends
-                    </div>
-                    <div
-                      style={{
-                        fontSize: 12,
-                        color: "var(--c-inkSoft, #6B7280)",
-                      }}
-                    >
-                      Share trip link or QR code
-                    </div>
-                  </div>
-                </div>
-
-                <ChevronRight size={16} color="var(--c-inkSoft, #6B7280)" />
-              </button>
-
-              {/* Row 3: Manage Members */}
-              <button
+                onClick={runAction(onOpenInviteModal)}
+                icon={<UserPlus size={18} />}
+                iconBg="var(--c-tealSoft, #E6F7F2)"
+                iconColor="var(--c-teal, #0F9F86)"
+                title="Invite Friends"
+                subtitle="Share trip link or QR code"
+                showDivider
+              />
+              <MenuActionRow
                 id="btn-menu-open-members"
-                type="button"
-                onClick={() => {
-                  onClose();
-                  onOpenMembersModal();
-                }}
-                style={{
-                  width: "100%",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "14px 16px",
-                  background: "transparent",
-                  border: "none",
-                  cursor: "pointer",
-                  textAlign: "left",
-                  transition: "background 0.15s ease",
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <div
-                    style={{
-                      width: 36,
-                      height: 36,
-                      borderRadius: 10,
-                      background: "var(--c-paper, #F6F8F7)",
-                      color: "var(--c-ink, #17202A)",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      flexShrink: 0,
-                    }}
-                  >
-                    <Users size={18} />
-                  </div>
-                  <div>
-                    <div
-                      style={{
-                        fontSize: 14,
-                        fontWeight: 700,
-                        color: "var(--c-ink, #17202A)",
-                      }}
-                    >
-                      Manage Members
-                    </div>
-                    <div
-                      style={{
-                        fontSize: 12,
-                        color: "var(--c-inkSoft, #6B7280)",
-                      }}
-                    >
-                      {trip?.members?.length || 0} members · roles & UPI
-                    </div>
-                  </div>
-                </div>
-
-                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <span
-                    style={{
-                      fontSize: 12,
-                      fontWeight: 700,
-                      color: "var(--c-inkSoft, #6B7280)",
-                    }}
-                  >
+                onClick={runAction(onOpenMembersModal)}
+                icon={<Users size={18} />}
+                iconBg="var(--c-paper, #F6F8F7)"
+                iconColor="var(--c-ink, #17202A)"
+                title="Manage Members"
+                subtitle={`${trip?.members?.length || 0} members · roles & UPI`}
+                trailing={
+                  <span style={{ fontSize: 12, fontWeight: 700, color: "var(--c-inkSoft, #6B7280)" }}>
                     {trip?.members?.length || 0}
                   </span>
-                  <ChevronRight size={16} color="var(--c-inkSoft, #6B7280)" />
-                </div>
-              </button>
+                }
+              />
             </div>
           </div>
 
           {/* SECTION 4: TOOLS & REPORTS */}
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <span
-              style={{
-                fontSize: 11,
-                fontWeight: 800,
-                textTransform: "uppercase",
-                letterSpacing: "0.06em",
-                color: "var(--c-inkSoft, #6B7280)",
-                paddingLeft: 4,
-              }}
-            >
-              Tools & Reports
-            </span>
-
-            <div
-              style={{
-                background: "var(--c-card, #FFFFFF)",
-                border: "1px solid var(--c-line, #E5E7EB)",
-                borderRadius: 16,
-                overflow: "hidden",
-              }}
-            >
-              {/* Row 1: Share & Export Balance Sheet */}
-              <button
+            <span style={sectionLabelStyle}>Tools & Reports</span>
+            <div style={sectionCardStyle}>
+              <MenuActionRow
                 id="btn-menu-open-share"
-                type="button"
-                onClick={() => {
-                  onClose();
-                  onOpenShareModal();
-                }}
-                style={{
-                  width: "100%",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "14px 16px",
-                  background: "transparent",
-                  border: "none",
-                  borderBottom: "1px solid var(--c-line, #E5E7EB)",
-                  cursor: "pointer",
-                  textAlign: "left",
-                  transition: "background 0.15s ease",
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <div
-                    style={{
-                      width: 36,
-                      height: 36,
-                      borderRadius: 10,
-                      background: "var(--c-tealSoft, #E6F7F2)",
-                      color: "var(--c-teal, #0F9F86)",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      flexShrink: 0,
-                    }}
-                  >
-                    <Share2 size={18} />
-                  </div>
-                  <div>
-                    <div
-                      style={{
-                        fontSize: 14,
-                        fontWeight: 700,
-                        color: "var(--c-ink, #17202A)",
-                      }}
-                    >
-                      Share & Export Balance Sheet
-                    </div>
-                    <div
-                      style={{
-                        fontSize: 12,
-                        color: "var(--c-inkSoft, #6B7280)",
-                      }}
-                    >
-                      PDF, Excel & WhatsApp summaries
-                    </div>
-                  </div>
-                </div>
-
-                <ChevronRight size={16} color="var(--c-inkSoft, #6B7280)" />
-              </button>
-
-              {/* Row 2: Notifications Center */}
-              <button
+                onClick={runAction(onOpenShareModal)}
+                icon={<Share2 size={18} />}
+                iconBg="var(--c-tealSoft, #E6F7F2)"
+                iconColor="var(--c-teal, #0F9F86)"
+                title="Share & Export Balance Sheet"
+                subtitle="PDF, Excel & WhatsApp summaries"
+                showDivider
+              />
+              <MenuActionRow
                 id="btn-menu-open-notifications"
-                type="button"
-                onClick={() => {
-                  onClose();
-                  onOpenNotificationsModal();
-                }}
-                style={{
-                  width: "100%",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "14px 16px",
-                  background: "transparent",
-                  border: "none",
-                  borderBottom: onOpenHealthModal ? "1px solid var(--c-line, #E5E7EB)" : "none",
-                  cursor: "pointer",
-                  textAlign: "left",
-                  transition: "background 0.15s ease",
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <div
-                    style={{
-                      width: 36,
-                      height: 36,
-                      borderRadius: 10,
-                      background: "var(--c-paper, #F6F8F7)",
-                      color: "var(--c-ink, #17202A)",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      flexShrink: 0,
-                    }}
-                  >
-                    <Bell size={18} />
-                  </div>
-                  <div>
-                    <div
-                      style={{
-                        fontSize: 14,
-                        fontWeight: 700,
-                        color: "var(--c-ink, #17202A)",
-                      }}
-                    >
-                      Notifications
-                    </div>
-                    <div
-                      style={{
-                        fontSize: 12,
-                        color: "var(--c-inkSoft, #6B7280)",
-                      }}
-                    >
-                      Push, WhatsApp & in-app alerts
-                    </div>
-                  </div>
-                </div>
-
-                <ChevronRight size={16} color="var(--c-inkSoft, #6B7280)" />
-              </button>
-
-              {/* Row 3: Spending Analytics */}
+                onClick={runAction(onOpenNotificationsModal)}
+                icon={<Bell size={18} />}
+                iconBg="var(--c-paper, #F6F8F7)"
+                iconColor="var(--c-ink, #17202A)"
+                title="Notifications"
+                subtitle="Push, WhatsApp & in-app alerts"
+                showDivider={Boolean(onNavigateToAnalytics || onNavigateToActivity || onOpenHealthModal)}
+              />
               {onNavigateToAnalytics && (
-                <button
+                <MenuActionRow
                   id="btn-menu-open-analytics"
-                  type="button"
-                  onClick={() => {
-                    onClose();
-                    onNavigateToAnalytics();
-                  }}
-                  style={{
-                    width: "100%",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    padding: "14px 16px",
-                    background: "transparent",
-                    border: "none",
-                    borderBottom: "1px solid var(--c-line, #E5E7EB)",
-                    cursor: "pointer",
-                    textAlign: "left",
-                    transition: "background 0.15s ease",
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                    <div
-                      style={{
-                        width: 36,
-                        height: 36,
-                        borderRadius: 10,
-                        background: "rgba(99, 102, 241, 0.12)",
-                        color: "#6366F1",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        flexShrink: 0,
-                      }}
-                    >
-                      <TrendingUp size={18} />
-                    </div>
-                    <div>
-                      <div
-                        style={{
-                          fontSize: 14,
-                          fontWeight: 700,
-                          color: "var(--c-ink, #17202A)",
-                        }}
-                      >
-                        Spending Analytics
-                      </div>
-                      <div
-                        style={{
-                          fontSize: 12,
-                          color: "var(--c-inkSoft, #6B7280)",
-                        }}
-                      >
-                        Category breakdown & spending charts
-                      </div>
-                    </div>
-                  </div>
-                  <ChevronRight size={16} color="var(--c-inkSoft, #6B7280)" />
-                </button>
+                  onClick={runAction(onNavigateToAnalytics)}
+                  icon={<TrendingUp size={18} />}
+                  iconBg="rgba(99, 102, 241, 0.12)"
+                  iconColor="#6366F1"
+                  title="Spending Analytics"
+                  subtitle="Category breakdown & spending charts"
+                  showDivider={Boolean(onNavigateToActivity || onOpenHealthModal)}
+                />
               )}
-
-              {/* Row 4: Activity Audit Trail */}
               {onNavigateToActivity && (
-                <button
+                <MenuActionRow
                   id="btn-menu-open-activity"
-                  type="button"
-                  onClick={() => {
-                    onClose();
-                    onNavigateToActivity();
-                  }}
-                  style={{
-                    width: "100%",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    padding: "14px 16px",
-                    background: "transparent",
-                    border: "none",
-                    borderBottom: onOpenHealthModal ? "1px solid var(--c-line, #E5E7EB)" : "none",
-                    cursor: "pointer",
-                    textAlign: "left",
-                    transition: "background 0.15s ease",
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                    <div
-                      style={{
-                        width: 36,
-                        height: 36,
-                        borderRadius: 10,
-                        background: "rgba(234, 179, 8, 0.12)",
-                        color: "#EAB308",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        flexShrink: 0,
-                      }}
-                    >
-                      <Clock size={18} />
-                    </div>
-                    <div>
-                      <div
-                        style={{
-                          fontSize: 14,
-                          fontWeight: 700,
-                          color: "var(--c-ink, #17202A)",
-                        }}
-                      >
-                        Activity Audit Trail
-                      </div>
-                      <div
-                        style={{
-                          fontSize: 12,
-                          color: "var(--c-inkSoft, #6B7280)",
-                        }}
-                      >
-                        Chronological record of edits and payments
-                      </div>
-                    </div>
-                  </div>
-                  <ChevronRight size={16} color="var(--c-inkSoft, #6B7280)" />
-                </button>
+                  onClick={runAction(onNavigateToActivity)}
+                  icon={<Clock size={18} />}
+                  iconBg="rgba(234, 179, 8, 0.12)"
+                  iconColor="#EAB308"
+                  title="Activity Audit Trail"
+                  subtitle="Chronological record of edits and payments"
+                  showDivider={Boolean(onOpenHealthModal)}
+                />
               )}
-
-              {/* Row 5: System Health & 2 AM Diagnostics */}
               {onOpenHealthModal && (
-                <button
+                <MenuActionRow
                   id="btn-menu-open-system-health"
-                  type="button"
-                  onClick={() => {
-                    onClose();
-                    onOpenHealthModal();
-                  }}
-                  style={{
-                    width: "100%",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    padding: "14px 16px",
-                    background: "transparent",
-                    border: "none",
-                    cursor: "pointer",
-                    textAlign: "left",
-                    transition: "background 0.15s ease",
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                    <div
-                      style={{
-                        width: 36,
-                        height: 36,
-                        borderRadius: 10,
-                        background: "rgba(45, 212, 191, 0.12)",
-                        color: "#14B8A6",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        flexShrink: 0,
-                      }}
-                    >
-                      <Activity size={18} />
-                    </div>
-                    <div>
-                      <div
+                  onClick={runAction(onOpenHealthModal)}
+                  icon={<Activity size={18} />}
+                  iconBg="rgba(45, 212, 191, 0.12)"
+                  iconColor="#14B8A6"
+                  title={
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                      <span>System Health & DB</span>
+                      <span
                         style={{
-                          fontSize: 14,
+                          fontSize: 10,
+                          padding: "1px 6px",
+                          borderRadius: 6,
+                          background: "rgba(16, 185, 129, 0.15)",
+                          color: "#10B981",
                           fontWeight: 700,
-                          color: "var(--c-ink, #17202A)",
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 6,
+                          letterSpacing: "0.02em",
                         }}
                       >
-                        <span>System Health & DB</span>
-                        <span
-                          style={{
-                            fontSize: 10,
-                            padding: "1px 6px",
-                            borderRadius: 6,
-                            background: "rgba(16, 185, 129, 0.15)",
-                            color: "#10B981",
-                            fontWeight: 700,
-                            letterSpacing: "0.02em",
-                          }}
-                        >
-                          2 AM Cron
-                        </span>
-                      </div>
-                      <div
-                        style={{
-                          fontSize: 12,
-                          color: "var(--c-inkSoft, #6B7280)",
-                        }}
-                      >
-                        Automated checks, DB tables & live status
-                      </div>
-                    </div>
-                  </div>
-
-                  <ChevronRight size={16} color="var(--c-inkSoft, #6B7280)" />
-                </button>
+                        2 AM Cron
+                      </span>
+                    </span>
+                  }
+                  subtitle="Automated checks, DB tables & live status"
+                />
               )}
             </div>
           </div>
 
           {/* SECTION 5: APP SETTINGS */}
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <span
-              style={{
-                fontSize: 11,
-                fontWeight: 800,
-                textTransform: "uppercase",
-                letterSpacing: "0.06em",
-                color: "var(--c-inkSoft, #6B7280)",
-                paddingLeft: 4,
-              }}
-            >
-              App Settings
-            </span>
-
+            <span style={sectionLabelStyle}>App Settings</span>
             <div
               style={{
                 background: "var(--c-card, #FFFFFF)",
@@ -1069,7 +415,6 @@ export function TripMoreMenuModal({
                 overflow: "visible",
               }}
             >
-              {/* App Theme */}
               <div
                 style={{
                   display: "flex",
@@ -1081,25 +426,13 @@ export function TripMoreMenuModal({
                 }}
               >
                 <div>
-                  <div
-                    style={{
-                      fontSize: 14,
-                      fontWeight: 700,
-                      color: "var(--c-ink, #17202A)",
-                    }}
-                  >
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "var(--c-ink, #17202A)" }}>
                     App Theme
                   </div>
-                  <div
-                    style={{
-                      fontSize: 12,
-                      color: "var(--c-inkSoft, #6B7280)",
-                    }}
-                  >
+                  <div style={{ fontSize: 12, color: "var(--c-inkSoft, #6B7280)" }}>
                     Switch between light and dark
                   </div>
                 </div>
-
                 <ThemeToggle variant="segmented" />
               </div>
             </div>

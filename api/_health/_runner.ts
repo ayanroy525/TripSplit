@@ -1,4 +1,5 @@
 import { pool } from "../_shared.js";
+import { getErrorMessage } from "../_types.js";
 import { getTelegramConfig, sendTelegramMessage } from "../telegram/_client.js";
 import { formatDiagnosticTelegramReport } from "../telegram/_formatter.js";
 
@@ -61,18 +62,26 @@ export async function runDiagnosticSweep(checkType = "scheduled_2am"): Promise<D
               (SELECT count(*) FROM public.payments) as payments,
               (SELECT count(*) FROM public.activities) as activities;
           `)
-          .catch((tableErr: any) => {
-            console.warn("Unified count query notice:", tableErr?.message);
-            return { rows: [] };
+          .catch((tableErr: unknown) => {
+            console.warn("Unified count query notice:", getErrorMessage(tableErr));
+            return { rows: [] as Record<string, string | undefined>[] };
           }),
         pool
           .query("SELECT * FROM public.lookup_user_for_auth($1);", ["test@gmail.com"])
-          .then((res) => ({ ok: true, rows: res.rows, error: "" }))
-          .catch((authErr: any) => ({ ok: false, rows: [] as any[], error: String(authErr?.message || authErr) })),
+          .then((res) => ({ ok: true, rows: res.rows as Record<string, unknown>[], error: "" }))
+          .catch((authErr: unknown) => ({
+            ok: false,
+            rows: [] as Record<string, unknown>[],
+            error: getErrorMessage(authErr),
+          })),
         pool
           .query("SELECT public.get_user_trips_data($1) as trips;", ["0afe2cf3-ea87-46ae-9993-8d8d4c37ba31"])
-          .then((res) => ({ ok: true, rows: res.rows, error: "" }))
-          .catch((rpcErr: any) => ({ ok: false, rows: [] as any[], error: String(rpcErr?.message || rpcErr) })),
+          .then((res) => ({ ok: true, rows: res.rows as Array<{ trips?: unknown }>, error: "" }))
+          .catch((rpcErr: unknown) => ({
+            ok: false,
+            rows: [] as Array<{ trips?: unknown }>,
+            error: getErrorMessage(rpcErr),
+          })),
       ]);
 
       if (countsRes.rows && countsRes.rows[0]) {
@@ -90,7 +99,7 @@ export async function runDiagnosticSweep(checkType = "scheduled_2am"): Promise<D
         errorDetails = `Auth RPC error: ${authRes.error}`;
       }
 
-      rpcOk = rpcRes.ok && Array.isArray((rpcRes.rows as any)?.[0]?.trips);
+      rpcOk = rpcRes.ok && Array.isArray(rpcRes.rows[0]?.trips);
       if (!rpcOk) {
         const rpcMsg = `RPC error: ${rpcRes.error || "Invalid response format"}`;
         errorDetails = errorDetails ? `${errorDetails}; ${rpcMsg}` : rpcMsg;
@@ -120,12 +129,12 @@ export async function runDiagnosticSweep(checkType = "scheduled_2am"): Promise<D
             executedAt,
           ]
         );
-      } catch (dbLogErr: any) {
-        console.warn("Could not insert log into public.health_checks:", dbLogErr?.message);
+      } catch (dbLogErr: unknown) {
+        console.warn("Could not insert log into public.health_checks:", getErrorMessage(dbLogErr));
       }
-    } catch (dbErr: any) {
+    } catch (dbErr: unknown) {
       status = "offline";
-      errorDetails = `Database connection error: ${dbErr?.message || dbErr}`;
+      errorDetails = `Database connection error: ${getErrorMessage(dbErr)}`;
     }
   } else {
     status = "degraded";
@@ -172,9 +181,10 @@ export async function runDiagnosticSweep(checkType = "scheduled_2am"): Promise<D
           }
         }
       }
-    } catch (tgErr: any) {
-      result.telegram_error = tgErr?.message || String(tgErr);
-      console.warn("Could not dispatch Telegram health alert:", tgErr?.message || tgErr);
+    } catch (tgErr: unknown) {
+      const msg = getErrorMessage(tgErr);
+      result.telegram_error = msg;
+      console.warn("Could not dispatch Telegram health alert:", msg);
     }
   }
 
@@ -259,13 +269,12 @@ export async function ensureDaily2AMCheckRan(): Promise<DiagnosticResult | null>
           lastCompletedWindowIso = today2AMUtcIso;
           return null;
         }
-      } catch (err: any) {
-        console.warn("Notice checking existing scheduled_2am log (will retry next cycle):", err?.message || err);
+      } catch (err: unknown) {
+        console.warn("Notice checking existing scheduled_2am log (will retry next cycle):", getErrorMessage(err));
         return null;
       }
     }
 
-    console.log(`[2 AM IST Auto-Catchup] Running missed daily 2:00 AM IST diagnostic for window >= ${today2AMUtcIso}...`);
     const result = await runDiagnosticSweep("scheduled_2am");
     lastCompletedWindowIso = today2AMUtcIso;
     return result;

@@ -216,7 +216,7 @@ export interface SecurityTestCaseResult {
   actualStatus: string;
   passed: boolean;
   details: string;
-  responsePayload?: any;
+  responsePayload?: unknown;
 }
 
 export interface SecurityTestReport {

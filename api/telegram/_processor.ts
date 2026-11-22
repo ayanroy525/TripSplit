@@ -11,8 +11,12 @@ import {
   formatDiagnosticTelegramReport,
 } from "./_formatter.js";
 import { runDiagnosticSweep } from "../_health/_runner.js";
+import { getErrorMessage } from "../_types.js";
+import type { TelegramUpdate } from "../_types.js";
 
-export async function processTelegramUpdate(update: any): Promise<{ success: boolean; action?: string; error?: string }> {
+export async function processTelegramUpdate(
+  update: TelegramUpdate
+): Promise<{ success: boolean; action?: string; error?: string }> {
   try {
     const config = await getTelegramConfig();
 
@@ -33,8 +37,6 @@ export async function processTelegramUpdate(update: any): Promise<{ success: boo
         return { success: false, error: "Unauthorized Telegram user" };
       }
 
-      console.log(`[Telegram] Processing verified button click: ${data} from chat ${chatId}`);
-
       if (data.startsWith("approve:")) {
         const diagId = data.replace("approve:", "");
         // 1. Instant visual toast in Telegram app
@@ -54,7 +56,6 @@ export async function processTelegramUpdate(update: any): Promise<{ success: boo
           await editTelegramMessage(chatId, messageId, resolvedText);
         }
 
-        console.log(`[Telegram] Auto-fix completed & verified for diagnostic ${diagId}`);
         return { success: true, action: "approved" };
       }
 
@@ -71,7 +72,6 @@ export async function processTelegramUpdate(update: any): Promise<{ success: boo
           await editTelegramMessage(chatId, messageId, rejectedText);
         }
 
-        console.log(`[Telegram] Auto-fix rejected for diagnostic ${diagId}`);
         return { success: true, action: "rejected" };
       }
 
@@ -127,8 +127,8 @@ I monitor your group travel expense database, table integrity, and authenticatio
     }
 
     return { success: true };
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error("[Telegram] Error processing update:", err);
-    return { success: false, error: err?.message };
+    return { success: false, error: getErrorMessage(err) };
   }
 }

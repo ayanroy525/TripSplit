@@ -1,9 +1,10 @@
 import { setCorsHeaders, sendJson, verifyCronOrAdminRequest } from "./_shared.js";
+import type { ApiRequest, ApiResponse } from "./_types.js";
 import historyHandler from "./_health/_history.js";
 import runCheckHandler from "./_health/_run-check.js";
 import { runDiagnosticSweep } from "./_health/_runner.js";
 
-export default async function handler(req: any, res: any) {
+export default async function handler(req: ApiRequest, res: ApiResponse) {
   setCorsHeaders(res, req);
   if (req.method === "OPTIONS") {
     res.statusCode = 204;

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { setCorsHeaders, sendJson, verifyAdminRequest, parseBody, validateWithSchema } from "../_shared.js";
+import type { ApiRequest, ApiResponse } from "../_types.js";
 import { getTelegramConfig, saveTelegramConfig, registerTelegramWebhook } from "./_client.js";
 
 const settingsPostSchema = z.object({
@@ -7,7 +8,7 @@ const settingsPostSchema = z.object({
   webhookUrl: z.string().trim().url("Invalid webhook URL").max(512).optional().or(z.literal("")),
 });
 
-export default async function handler(req: any, res: any) {
+export default async function handler(req: ApiRequest, res: ApiResponse) {
   setCorsHeaders(res, req);
   if (req.method === "OPTIONS") {
     res.statusCode = 204;

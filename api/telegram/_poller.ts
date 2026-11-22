@@ -1,5 +1,7 @@
 import { getTelegramConfig } from "./_client.js";
 import { processTelegramUpdate } from "./_processor.js";
+import { getErrorMessage } from "../_types.js";
+import type { TelegramApiResponse, TelegramUpdate } from "../_types.js";
 
 let isPolling = false;
 let shouldStop = false;
@@ -15,7 +17,7 @@ export interface DetectedTelegramUser {
 
 let lastDetectedUser: DetectedTelegramUser | null = null;
 
-export function recordDetectedTelegramUser(update: any) {
+export function recordDetectedTelegramUser(update: TelegramUpdate) {
   const msg = update?.message || update?.callback_query?.message;
   const from = update?.message?.from || update?.callback_query?.from;
   const chatId = msg?.chat?.id || from?.id;
@@ -41,19 +43,16 @@ export function getLastDetectedTelegramUser(): DetectedTelegramUser | null {
  */
 export async function startTelegramPoller() {
   if (isPolling) {
-    console.log("[Telegram Poller] Already running.");
     return;
   }
 
   isPolling = true;
   shouldStop = false;
-  console.log("[Telegram Poller] Starting background update listener...");
 
   const config = await getTelegramConfig();
   const token = config.botToken;
 
   if (!token) {
-    console.log("[Telegram Poller] No bot token configured yet. Waiting for configuration.");
     isPolling = false;
     return;
   }
@@ -63,12 +62,11 @@ export async function startTelegramPoller() {
     const infoRes = await fetch(`https://api.telegram.org/bot${token}/getWebhookInfo`);
     const infoData = await infoRes.json();
     if (infoData?.ok && infoData?.result?.url) {
-      console.log("[Telegram Poller] Active webhook detected, skipping long-polling:", infoData.result.url);
       isPolling = false;
       return;
     }
-  } catch (e: any) {
-    console.warn("[Telegram Poller] Notice checking webhook info:", e?.message);
+  } catch (e: unknown) {
+    console.warn("[Telegram Poller] Notice checking webhook info:", getErrorMessage(e));
   }
 
   // Poll loop
@@ -86,36 +84,36 @@ export async function startTelegramPoller() {
         clearTimeout(timeoutId);
 
         if (res.ok) {
-          const data = await res.json();
+          const data = (await res.json()) as TelegramApiResponse<TelegramUpdate[]>;
           if (data.ok && Array.isArray(data.result)) {
             for (const update of data.result) {
-              lastUpdateId = Math.max(lastUpdateId, update.update_id);
+              if (typeof update.update_id === "number") {
+                lastUpdateId = Math.max(lastUpdateId, update.update_id);
+              }
               recordDetectedTelegramUser(update);
               try {
                 await processTelegramUpdate(update);
-              } catch (updateErr: any) {
-                console.error("[Telegram Poller] Error handling update:", updateErr?.message);
+              } catch (updateErr: unknown) {
+                console.error("[Telegram Poller] Error handling update:", getErrorMessage(updateErr));
               }
             }
           }
         } else {
           // If 409 Conflict, a webhook is active on Telegram (e.g. Vercel deployment); stop polling instead of deleting the webhook
           if (res.status === 409) {
-            console.log("[Telegram Poller] Webhook is active on Telegram (409 Conflict); stopping local poller.");
             shouldStop = true;
             break;
           }
           await new Promise((r) => setTimeout(r, 3000));
         }
-      } catch (err: any) {
-        if (err?.name !== "AbortError") {
-          console.warn("[Telegram Poller] Polling cycle notice:", err?.message);
+      } catch (err: unknown) {
+        if (!(err instanceof Error && err.name === "AbortError")) {
+          console.warn("[Telegram Poller] Polling cycle notice:", getErrorMessage(err));
         }
         await new Promise((r) => setTimeout(r, 3000));
       }
     }
     isPolling = false;
-    console.log("[Telegram Poller] Stopped.");
   })();
 }
 

@@ -1,6 +1,7 @@
 import { pool, verifyAuthRequest, setCorsHeaders, sendJson, getFullTripsForUser } from "./_shared.js";
+import type { ApiRequest, ApiResponse, DbRecord, DbTripChildRow } from "./_types.js";
 
-export default async function handler(req: any, res: any) {
+export default async function handler(req: ApiRequest, res: ApiResponse) {
   setCorsHeaders(res, req);
   if (req.method === "OPTIONS") {
     res.statusCode = 204;
@@ -37,28 +38,37 @@ export default async function handler(req: any, res: any) {
       ORDER BY t.created_at DESC;
     `;
     const tripsRes = await pool.query(tripsQuery, [userId]);
-    const trips = tripsRes.rows;
+    const trips = tripsRes.rows as DbRecord[];
 
     if (trips.length === 0) {
       return sendJson(res, 200, { success: true, trips: [] });
     }
 
     // Batch-fetch all relational rows in 4 parallel queries instead of 4 * N queries
-    const tripIds = trips.map((t: any) => t.id);
+    const tripIds = trips.map((t) => t.id);
     const [membersRes, expensesRes, paymentsRes, activitiesRes] = await Promise.all([
-      pool.query("SELECT * FROM public.trip_members WHERE trip_id = ANY($1::text[]) ORDER BY joined_at ASC;", [tripIds]),
-      pool.query(
+      pool.query<DbTripChildRow>(
+        "SELECT * FROM public.trip_members WHERE trip_id = ANY($1::text[]) ORDER BY joined_at ASC;",
+        [tripIds]
+      ),
+      pool.query<DbTripChildRow>(
         "SELECT * FROM public.expenses WHERE trip_id = ANY($1::text[]) AND COALESCE(deleted, false) = false ORDER BY created_at DESC;",
         [tripIds]
       ),
-      pool.query("SELECT * FROM public.payments WHERE trip_id = ANY($1::text[]) ORDER BY created_at DESC;", [tripIds]),
-      pool.query("SELECT * FROM public.activities WHERE trip_id = ANY($1::text[]) ORDER BY created_at DESC;", [tripIds]),
+      pool.query<DbTripChildRow>(
+        "SELECT * FROM public.payments WHERE trip_id = ANY($1::text[]) ORDER BY created_at DESC;",
+        [tripIds]
+      ),
+      pool.query<DbTripChildRow>(
+        "SELECT * FROM public.activities WHERE trip_id = ANY($1::text[]) ORDER BY created_at DESC;",
+        [tripIds]
+      ),
     ]);
 
-    const membersByTrip = new Map<string, any[]>();
-    const expensesByTrip = new Map<string, any[]>();
-    const paymentsByTrip = new Map<string, any[]>();
-    const activitiesByTrip = new Map<string, any[]>();
+    const membersByTrip = new Map<string, DbTripChildRow[]>();
+    const expensesByTrip = new Map<string, DbTripChildRow[]>();
+    const paymentsByTrip = new Map<string, DbTripChildRow[]>();
+    const activitiesByTrip = new Map<string, DbTripChildRow[]>();
 
     for (const m of membersRes.rows) {
       const list = membersByTrip.get(m.trip_id) || [];
@@ -83,7 +93,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    const fullTrips = trips.map((trip: any) => ({
+    const fullTrips = trips.map((trip) => ({
       ...trip,
       members: membersByTrip.get(trip.id) || [],
       expenses: expensesByTrip.get(trip.id) || [],

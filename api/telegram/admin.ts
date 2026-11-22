@@ -2,8 +2,9 @@ import settingsHandler from "./_settings.js";
 import testHandler from "./_test.js";
 import detectChatHandler from "./_detect-chat.js";
 import { setCorsHeaders, sendJson, verifyAdminRequest, withSentry } from "../_shared.js";
+import type { ApiRequest, ApiResponse } from "../_types.js";
 
-async function handler(req: any, res: any) {
+async function handler(req: ApiRequest, res: ApiResponse) {
   setCorsHeaders(res, req);
   if (req.method === "OPTIONS") {
     res.statusCode = 204;

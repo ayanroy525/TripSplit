@@ -27,6 +27,7 @@ import {
 import { Expense, Member, SplitMethod, Trip } from "../types";
 import { money, formatDate } from "../utils/calculations";
 import { Avatar } from "./Atoms";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { CATEGORY_META, getCategoryMeta, PRIMARY_CATEGORIES } from "../utils/constants";
 import { getTripPermissions } from "../utils/permissions";
 
@@ -82,6 +83,7 @@ export function ExpensesListView({
   const [selectedPayer, setSelectedPayer] = useState<string>("all");
   const [sortBy, setSortBy] = useState<"date_desc" | "date_asc" | "amount_desc" | "amount_asc">("date_desc");
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [pendingDeleteExpense, setPendingDeleteExpense] = useState<Expense | null>(null);
 
   const parentRef = useRef<HTMLDivElement>(null);
 
@@ -586,11 +588,7 @@ export function ExpensesListView({
                         {permissions.canDeleteExpense(expense) && (
                           <button
                             type="button"
-                            onClick={() => {
-                              if (window.confirm(`Delete expense "${expense.title}"?`)) {
-                                onDeleteExpense(expense.id);
-                              }
-                            }}
+                            onClick={() => setPendingDeleteExpense(expense)}
                             className="p-1.5 text-[var(--c-inkSoft)] hover:text-[var(--c-rust)] hover:bg-[var(--c-rustSoft)] rounded-lg transition-colors cursor-pointer"
                             title="Delete Expense"
                           >
@@ -606,6 +604,24 @@ export function ExpensesListView({
           </div>
         </div>
       )}
+
+      <ConfirmDialog
+        open={Boolean(pendingDeleteExpense)}
+        title="Delete Expense"
+        message={
+          pendingDeleteExpense
+            ? `Delete expense "${pendingDeleteExpense.title}"?`
+            : ""
+        }
+        confirmLabel="Delete"
+        onCancel={() => setPendingDeleteExpense(null)}
+        onConfirm={() => {
+          if (pendingDeleteExpense) {
+            onDeleteExpense(pendingDeleteExpense.id);
+          }
+          setPendingDeleteExpense(null);
+        }}
+      />
     </div>
   );
 }

@@ -1,7 +1,9 @@
 import { pool, setCorsHeaders, sendJson, verifyAdminRequest, withSentry } from "../_shared.js";
+import type { ApiRequest, ApiResponse } from "../_types.js";
+import { getErrorMessage } from "../_types.js";
 import { inMemoryHealthChecks, ensureDaily2AMCheckRan } from "./_runner.js";
 
-async function handler(req: any, res: any) {
+async function handler(req: ApiRequest, res: ApiResponse) {
   setCorsHeaders(res, req);
   if (req.method === "OPTIONS") {
     res.statusCode = 204;
@@ -18,8 +20,8 @@ async function handler(req: any, res: any) {
 
   try {
     await ensureDaily2AMCheckRan();
-  } catch (catchupErr: any) {
-    console.warn("Notice during 2 AM catchup check in history:", catchupErr?.message || catchupErr);
+  } catch (catchupErr: unknown) {
+    console.warn("Notice during 2 AM catchup check in history:", getErrorMessage(catchupErr));
   }
 
   if (pool) {
@@ -35,8 +37,8 @@ async function handler(req: any, res: any) {
         source: "postgres",
         history: result.rows,
       });
-    } catch (err: any) {
-      console.warn("Notice querying health_checks in PostgreSQL:", err?.message || err);
+    } catch (err: unknown) {
+      console.warn("Notice querying health_checks in PostgreSQL:", getErrorMessage(err));
     }
   }
 

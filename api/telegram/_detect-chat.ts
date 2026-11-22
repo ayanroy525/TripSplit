@@ -1,8 +1,9 @@
 import { setCorsHeaders, sendJson, verifyAdminRequest } from "../_shared.js";
+import type { ApiRequest, ApiResponse } from "../_types.js";
 import { getTelegramConfig, saveTelegramConfig, sendTelegramMessage } from "./_client.js";
 import { getLastDetectedTelegramUser, recordDetectedTelegramUser } from "./_poller.js";
 
-export default async function handler(req: any, res: any) {
+export default async function handler(req: ApiRequest, res: ApiResponse) {
   setCorsHeaders(res, req);
   if (req.method === "OPTIONS") {
     res.statusCode = 204;

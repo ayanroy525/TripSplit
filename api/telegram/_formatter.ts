@@ -14,7 +14,7 @@ export function formatDiagnosticTelegramReport(
     timeStyle: "short",
   });
 
-  const counts = diag.table_counts || ({} as any);
+  const counts: Partial<DiagnosticResult["table_counts"]> = diag.table_counts || {};
   const tablesFormatted = `
 <b>Database Tables Verified:</b>
 <code>• users:        ${counts.users ?? 0}</code>

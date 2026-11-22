@@ -46,7 +46,7 @@ export function OfflineSyncProvider({ children }: { children: React.ReactNode })
           setNeedRefresh(true);
         },
         onOfflineReady() {
-          console.log("TripSplit PWA is cached and ready for offline use.");
+          // PWA assets cached for offline use
         },
       });
       setUpdateSWFn(() => updateSW);

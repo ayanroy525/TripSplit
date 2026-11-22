@@ -1,4 +1,6 @@
 import { pool } from "../_shared.js";
+import { getErrorMessage } from "../_types.js";
+import type { TelegramApiResponse } from "../_types.js";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
@@ -39,8 +41,8 @@ export async function getTelegramConfig(): Promise<TelegramConfig> {
         }
         if (row.webhook_url) webhookUrl = row.webhook_url;
       }
-    } catch (err: any) {
-      console.warn("Notice reading telegram config from DB:", err?.message);
+    } catch (err: unknown) {
+      console.warn("Notice reading telegram config from DB:", getErrorMessage(err));
     }
   }
 
@@ -84,8 +86,8 @@ export async function saveTelegramConfig(config: Partial<TelegramConfig>): Promi
            updated_at = NOW();`,
         [updated.dailyEnabled, updated.webhookUrl]
       );
-    } catch (err: any) {
-      console.warn("Notice saving telegram config to DB:", err?.message);
+    } catch (err: unknown) {
+      console.warn("Notice saving telegram config to DB:", getErrorMessage(err));
     }
   } else if (process.env.NODE_ENV !== "production") {
     try {
@@ -119,7 +121,7 @@ export async function sendTelegramMessage(
     customChatId?: string;
     customToken?: string;
   }
-): Promise<{ success: boolean; data?: any; error?: string }> {
+): Promise<{ success: boolean; data?: TelegramApiResponse; error?: string }> {
   const config = await getTelegramConfig();
   const token = options?.customToken || config.botToken;
   const chatId = options?.customChatId || config.chatId;
@@ -129,7 +131,13 @@ export async function sendTelegramMessage(
   }
 
   const url = `https://api.telegram.org/bot${token}/sendMessage`;
-  const body: any = {
+  const body: {
+    chat_id: string;
+    text: string;
+    parse_mode: string;
+    disable_web_page_preview: boolean;
+    reply_markup?: { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> };
+  } = {
     chat_id: chatId,
     text,
     parse_mode: "HTML",
@@ -148,13 +156,13 @@ export async function sendTelegramMessage(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    const data = await res.json();
+    const data = (await res.json()) as TelegramApiResponse;
     if (!data.ok) {
       return { success: false, error: data.description || "Failed to send Telegram message", data };
     }
     return { success: true, data };
-  } catch (err: any) {
-    return { success: false, error: err?.message || String(err) };
+  } catch (err: unknown) {
+    return { success: false, error: getErrorMessage(err) };
   }
 }
 
@@ -167,13 +175,20 @@ export async function editTelegramMessage(
   text: string,
   inlineKeyboard?: Array<Array<{ text: string; callback_data: string }>>,
   customToken?: string
-): Promise<{ success: boolean; data?: any; error?: string }> {
+): Promise<{ success: boolean; data?: TelegramApiResponse; error?: string }> {
   const config = await getTelegramConfig();
   const token = customToken || config.botToken;
   if (!token) return { success: false, error: "No bot token configured" };
 
   const url = `https://api.telegram.org/bot${token}/editMessageText`;
-  const body: any = {
+  const body: {
+    chat_id: string | number;
+    message_id: number;
+    text: string;
+    parse_mode: string;
+    disable_web_page_preview: boolean;
+    reply_markup?: { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> };
+  } = {
     chat_id: chatId,
     message_id: messageId,
     text,
@@ -191,13 +206,13 @@ export async function editTelegramMessage(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    const data = await res.json();
+    const data = (await res.json()) as TelegramApiResponse;
     if (!data.ok) {
       return { success: false, error: data.description || "Failed to edit message", data };
     }
     return { success: true, data };
-  } catch (err: any) {
-    return { success: false, error: err?.message || String(err) };
+  } catch (err: unknown) {
+    return { success: false, error: getErrorMessage(err) };
   }
 }
 
@@ -225,10 +240,10 @@ export async function answerCallbackQuery(
         show_alert: showAlert,
       }),
     });
-    const data = await res.json();
+    const data = (await res.json()) as TelegramApiResponse;
     return { success: data.ok, error: data.description };
-  } catch (err: any) {
-    return { success: false, error: err?.message };
+  } catch (err: unknown) {
+    return { success: false, error: getErrorMessage(err) };
   }
 }
 

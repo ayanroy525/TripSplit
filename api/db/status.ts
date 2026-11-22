@@ -1,6 +1,7 @@
 import { pool, setCorsHeaders, sendJson, verifyAdminRequest } from "../_shared.js";
+import type { ApiRequest, ApiResponse } from "../_types.js";
 
-export default async function handler(req: any, res: any) {
+export default async function handler(req: ApiRequest, res: ApiResponse) {
   setCorsHeaders(res, req);
   if (req.method === "OPTIONS") {
     res.statusCode = 204;

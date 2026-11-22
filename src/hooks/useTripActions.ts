@@ -68,6 +68,19 @@ export function useTripActions({
   netBalances,
   totalTripSpent,
 }: UseTripActionsProps) {
+  const showAlertToast = (message: string) => {
+    notify({
+      tripId: trip?.id || activeTripId || "system",
+      tripTitle: trip?.title || "TripSplit",
+      type: "system",
+      title: "Notice",
+      body: message,
+      actorName: currentUser?.name || "System",
+      actorAvatarColor: currentUser?.avatarColor || "#DC2626",
+      skipPush: true,
+    });
+  };
+
   // 1. EXPENSE HANDLERS
   const handleSaveExpense = async (savedExpense: Expense) => {
     if (!trip) return;
@@ -75,11 +88,11 @@ export function useTripActions({
     const perms = getTripPermissions(trip, currentUser, authUser?.id);
 
     if (isEdit && !perms.canEditExpense(savedExpense)) {
-      alert("Permission Denied: Participants can only edit their own expenses.");
+      showAlertToast("Permission Denied: Participants can only edit their own expenses.");
       return false;
     }
     if (!isEdit && !perms.canAddExpense) {
-      alert("Permission Denied: Viewers cannot add expenses.");
+      showAlertToast("Permission Denied: Viewers cannot add expenses.");
       return false;
     }
 
@@ -136,7 +149,7 @@ export function useTripActions({
       return true;
     } catch (err: any) {
       console.error("Failed to save expense:", err);
-      alert(err?.message || "Failed to save expense. Please check your network connection and try again.");
+      showAlertToast(err?.message || "Failed to save expense. Please check your network connection and try again.");
       return false;
     }
   };
@@ -148,7 +161,7 @@ export function useTripActions({
 
     const perms = getTripPermissions(trip, currentUser, authUser?.id);
     if (!perms.canDeleteExpense(exp)) {
-      alert("Permission Denied: Participants can only delete their own expenses.");
+      showAlertToast("Permission Denied: Participants can only delete their own expenses.");
       return;
     }
 
@@ -174,7 +187,7 @@ export function useTripActions({
       updateActiveTrip(updatedTripObj);
     } catch (err: any) {
       console.error("Failed to delete expense:", err);
-      alert(err?.message || "Failed to delete expense. Please try again.");
+      showAlertToast(err?.message || "Failed to delete expense. Please try again.");
     }
   };
 
@@ -245,7 +258,7 @@ export function useTripActions({
       return true;
     } catch (err: any) {
       console.error("Failed to record payment:", err);
-      alert(err?.message || "Failed to record payment. Please try again.");
+      showAlertToast(err?.message || "Failed to record payment. Please try again.");
       return false;
     }
   };
@@ -303,7 +316,7 @@ export function useTripActions({
       });
     } catch (err: any) {
       console.error("Failed to confirm payment:", err);
-      alert(err?.message || "Failed to confirm payment. Please try again.");
+      showAlertToast(err?.message || "Failed to confirm payment. Please try again.");
     }
   };
 
@@ -332,7 +345,7 @@ export function useTripActions({
       updateActiveTrip(updatedTripObj);
     } catch (err: any) {
       console.error("Failed to cancel payment:", err);
-      alert(err?.message || "Failed to cancel payment. Please try again.");
+      showAlertToast(err?.message || "Failed to cancel payment. Please try again.");
     }
   };
 
@@ -343,14 +356,14 @@ export function useTripActions({
     const isEdit = trip.members.some((m) => m.id === member.id);
 
     if (!isEdit && !perms.canInviteMember) {
-      alert("Permission Denied: Viewers cannot invite members.");
+      showAlertToast("Permission Denied: Viewers cannot invite members.");
       return false;
     }
 
     if (isEdit) {
       const existing = trip.members.find((m) => m.id === member.id);
       if (existing && existing.role !== member.role && !perms.canChangeRole) {
-        alert("Permission Denied: Only a Trip Admin can change member roles.");
+        showAlertToast("Permission Denied: Only a Trip Admin can change member roles.");
         return false;
       }
     }
@@ -373,7 +386,7 @@ export function useTripActions({
       return true;
     } catch (err: any) {
       console.error("Failed to save member:", err);
-      alert(err?.message || "Failed to save member. Please try again.");
+      showAlertToast(err?.message || "Failed to save member. Please try again.");
       return false;
     }
   };
@@ -382,7 +395,7 @@ export function useTripActions({
     if (!trip) return;
     const perms = getTripPermissions(trip, currentUser, authUser?.id);
     if (!perms.canRemoveMember(memberId)) {
-      alert("Permission Denied: Only a Trip Admin can remove members.");
+      showAlertToast("Permission Denied: Only a Trip Admin can remove members.");
       return false;
     }
 
@@ -395,7 +408,7 @@ export function useTripActions({
       return true;
     } catch (err: any) {
       console.error("Failed to delete member:", err);
-      alert(err?.message || "Failed to delete member. Please try again.");
+      showAlertToast(err?.message || "Failed to delete member. Please try again.");
       return false;
     }
   };
@@ -445,7 +458,7 @@ export function useTripActions({
       }
     } catch (err: any) {
       console.error("Failed to delete trip:", err);
-      alert(err?.message || "Failed to delete trip. Please try again.");
+      showAlertToast(err?.message || "Failed to delete trip. Please try again.");
     }
   };
 
